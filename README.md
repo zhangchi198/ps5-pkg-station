@@ -35,11 +35,39 @@ Open `http://<host>:8765`.
 
 | Page | |
 |---|---|
-| Dashboard | the current run first (how far along, about how long it will take, each build's stage), run now, stop after the current games, rescan; what is being prepared and what is next; the last run's result when idle; setup checklist; free space; why a scan or run failed |
+| Dashboard | the current run first (how far along, about how long it will take, each build's stage), run now (after a summary), stop (after the current games, or now), cancel a single game, pause the schedule, rescan; what is being prepared and what is next; the last run's result when idle; setup checklist; free space; why a scan or run failed |
 | Library | every game found, the copy that will be used and why (each copy with its path, version and what became of it), whether it runs on your console's firmware, the backport decision, files that could not be identified; per-game options: copy to use, keep the backport or the original, extra files folder, never build, build just this one |
 | History | every finished package with its validation result, size and times |
 | Settings | in plain language, with a description and the default of every setting: console firmware, performance (games at once, threads, compression level, priority, free space), cleanup patterns with a test against your last scan, schedule, notifications, folders; mistakes are shown next to the field and nothing is saved until all of it is valid |
 | Logs | the run log and each build's log, live |
+
+### Controlling a run
+
+- **Run now** first shows what it would do: "Build 5 games (1.2 TiB of sources, about 6 h)", and how much room the work drive
+  has. The time is the pipeline's estimate from earlier builds on this machine (sizes only until there has been one).
+  "Don't ask me again" is kept in the browser only; a link on the Dashboard turns the question back on. **Build only this**
+  (Library) asks the same way.
+- **Stop…** offers two choices. *Finish current games, then stop* starts nothing new and lets what is running finish (the
+  dialog says about how long), and **Resume** takes it back until the last game ends. *Stop now* asks once more, saying what is
+  lost ("2 builds in progress will be discarded; 1 prepared copy is kept for next time"), then ends every UltraPack and
+  7-Zip process the run started and removes their work folders.
+- **Cancel** on a game that is being built or prepared ends just that game (the other builds go on); **Remove from this run**
+  takes a queued game out. A cancelled game is recorded as `cancelled` in the run's results, never as a failure: no failure is
+  remembered, no notification is sent, and the next run builds it again. A game that was already prepared keeps its prepared
+  copy for the next run.
+- **Pause schedule** is one click: no run starts by itself until you press **Resume schedule**, or until the optional "until"
+  time (on the server's clock). The header says "schedule paused until Mon 08:00". A run that comes due while the schedule is
+  paused is skipped (the log says so), not made up later.
+- A button that can't be pressed says why ("A run is active", "A scan is running", the failing Setup items).
+
+What a cancel removes: only the game's own work folder (under the work folder) and its folder or half-copied file in
+`<output>/.staging`, through the same guarded delete as everything else. Source folders are only ever read, and a finished
+package in the output folder is never touched: an older package of the same name is moved aside only when the new one is
+complete, so a build that is cancelled, or fails, while it is copied leaves the older one where it was.
+
+The web page and the engine talk through small files in the state folder: `stop.request` (`{"mode": "after_current" | "now"}`),
+`cancel/<TITLE ID>.request`, and `schedule_pause.json`. The API: `POST /api/stop` (`{"mode": ...}`; `DELETE /api/stop` takes an
+`after_current` request back), `POST /api/builds/<TITLE ID>/cancel`, `POST` / `DELETE /api/schedule/pause`.
 
 ### Progress and time estimates
 
@@ -337,7 +365,7 @@ version of the app and of the bundled UltraPack.
 includes `ledger.json`; `failures.json` only if you tick the box for it.
 
 **What is safe to delete:** `ident_cache.json` and `listing_cache/` (they are rebuilt by the next scan, which is
-then slower), `plan.json` and `plan_settings.json` (the Library then asks for a rescan), `status.json`, `last_run.json`, the `logs` folder, and `backups/` (the automatic
+then slower), `plan.json` and `plan_settings.json` (the Library then asks for a rescan), `schedule_pause.json` (deleting it resumes the schedule), `status.json`, `last_run.json`, the `logs` folder, and `backups/` (the automatic
 backups, below).
 
 On the Settings page:
@@ -387,7 +415,8 @@ is counted, not announced again: you get one notification per distinct failure.
 ## Updating
 
 `docker compose pull && docker compose up -d`. Recreating the container stops a run that's in progress.
-Already-finished packages are kept, so wait for the Dashboard to go idle first.
+Already-finished packages are kept, so wait for the Dashboard to go idle first, or press **Stop now** (Dashboard > Stop…) and let it
+end the builds cleanly: a `docker stop` leaves the build's work folder for the next run to clear.
 
 ## Credits and license
 

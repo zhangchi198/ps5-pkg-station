@@ -275,7 +275,7 @@ class Page(unittest.TestCase):
             self.assertIn(needle, self.HTML)
         self.assertIn(".savebar{position:sticky;bottom:0", self.HTML)
         nav = self.body('document.querySelectorAll("nav button")', "\n")
-        self.assertRegex(nav, r'settingsDirty\(\)&&!confirm\("You have unsaved changes on the Settings page')
+        self.assertRegex(nav, r'settingsDirty\(\)&&!\(await askConfirm\(\{title:"Discard your changes\?",html:"<p>You have unsaved changes on the Settings page')
         self.assertIn('window.addEventListener("beforeunload"', self.JS)
         self.assertIn("settingsDirty()", self.body('window.addEventListener("beforeunload"', "\n"))
 

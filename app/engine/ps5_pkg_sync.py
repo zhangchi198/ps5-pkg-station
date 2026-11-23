@@ -53,6 +53,8 @@ import ps5_progress as PG  # noqa: E402  (what UltraPack's log says, how far a b
 import ps5_ps4pkg  # noqa: E402  (PS4 package headers: name and classify packages by what they say)
 import ps5_hostpaths  # noqa: E402  (where the container's folders are on the host: validated here, shown by the server)
 import ps5_setup  # noqa: E402  (first-run setup checks, shared with the web server)
+import ps5_runctl as RC  # noqa: E402  (stop, cancel, pause: the files and flags that control a run)
+from ps5_runctl import Cancelled  # noqa: E402
 
 ROOT = HERE.parent
 IN_DOCKER = os.environ.get("PS5PKG_PROFILE") == "docker"
@@ -636,7 +638,7 @@ def ident_image_or_folder(path):
 
 
 def seven(cfg, args, **kw):
-    return subprocess.run([str(Path(cfg["ultrapack_src"]) / SEVENZ), *args], capture_output=True, **kw)
+    return RC.run_tracked([str(Path(cfg["ultrapack_src"]) / SEVENZ), *args], capture_output=True, **kw)
 
 
 LISTING_CACHE = STATE / "listing_cache"
@@ -1279,6 +1281,7 @@ EXEC_RE = re.compile(r"(^|/)(eboot\.bin|[^/]+\.(prx|sprx|self|elf))$|^fakelib/",
 def image_crc(uw, e):
     crc, off = 0, 0
     while off < e.size:
+        RC.check_cancel()
         chunk = uw.fs.read(e, off, min(16 << 20, e.size - off))
         if not chunk:
             raise RuntimeError("short read")
@@ -1379,6 +1382,7 @@ def extract_image_files(image, app: Path, want: dict, log, against=""):
         for k, e in uw.fs.files.items():
             if not k.startswith(root):
                 continue
+            RC.check_cancel()
             rel = k[len(root):]
             out = app / rel
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -1386,6 +1390,7 @@ def extract_image_files(image, app: Path, want: dict, log, against=""):
             with open(out, "wb") as fh:
                 off = 0
                 while off < e.size:
+                    RC.check_cancel()
                     chunk = uw.fs.read(e, off, min(16 << 20, e.size - off))
                     if not chunk:
                         raise RuntimeError(f"short read in {k}")
@@ -1409,6 +1414,22 @@ def extract_image_files(image, app: Path, want: dict, log, against=""):
                                          files=differing[:50], count=mism, checked=checked, against=str(against))
         if checked == 0:
             raise ps5_failures.GameError("crc_no_common_files", "CRC check found no common files", against=str(against))
+
+
+def copy_cancelable(src, dst, *, follow_symlinks=True):
+    """shutil.copy2 for a folder copy that looks at a cancel between files and every 16 MiB of a big one."""
+    RC.check_cancel()
+    if os.path.islink(src) or os.path.getsize(src) < (64 << 20):
+        return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        while True:
+            chunk = fi.read(16 << 20)
+            if not chunk:
+                break
+            fo.write(chunk)
+            RC.check_cancel()
+    shutil.copystat(src, dst, follow_symlinks=follow_symlinks)
+    return dst
 
 
 def materialise(cfg, job, jobdir: Path, log) -> Path:
@@ -1437,7 +1458,7 @@ def materialise(cfg, job, jobdir: Path, log) -> Path:
         if r.returncode != 0:
             raise ps5_failures.GameError("extract_failed", f"7zz extract of {job['inner']} failed ({r.returncode})", rc=r.returncode)
         pkg = next((jobdir / "pkg").rglob("*.pkg"))
-        r = subprocess.run([cfg["python"], "-B", "backend/cli.py", "placeholder", str(dest / "pkgx"), "--fpkg-extract", str(pkg)],
+        r = RC.run_tracked([cfg["python"], "-B", "backend/cli.py", "placeholder", str(dest / "pkgx"), "--fpkg-extract", str(pkg)],
                            cwd=cfg["ultrapack_src"], capture_output=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
         if r.returncode != 0:
             raise ps5_failures.GameError("extract_failed", f"--fpkg-extract failed: {(r.stdout + r.stderr).decode(errors='replace')[-400:]}",
@@ -1465,7 +1486,7 @@ def materialise(cfg, job, jobdir: Path, log) -> Path:
             guarded_rmtree(nas_tmp, Path(cfg["output"]))
     elif job["kind"] == "folder":
         app = dest / "app"
-        shutil.copytree(job["source"], app, ignore=shutil.ignore_patterns("._*", ".DS_Store"))
+        shutil.copytree(job["source"], app, ignore=shutil.ignore_patterns("._*", ".DS_Store"), copy_function=copy_cancelable)
     else:
         app = dest / "app"
         want = want or {}
@@ -1555,7 +1576,8 @@ def build_progress(logf):
 
 
 def stop_requested():
-    return (STATE / "stop.request").exists()
+    """Nothing new is started: someone asked the run to stop (after the current games, or now)."""
+    return RC.stop_mode(STATE) is not None
 
 
 def jobdir_of(cfg, job):
@@ -1595,7 +1617,23 @@ def name_after_patch(job, app, cleaned, log):
 
 
 def prepare(cfg, job, log, headroom=0):
-    """Extract + clean the game on the SSD. headroom = bytes the running build may still grow."""
+    """Extract + clean the game on the SSD. headroom = bytes the running build may still grow. Raises Cancelled when the game was
+    cancelled (its half-made copy is removed; a finished, verified one is kept for the next run)."""
+    tid = job["title_id"]
+    with RC.working_on(tid):
+        RC.check_cancel(tid)
+        try:
+            return _prepare(cfg, job, log, headroom)
+        except BaseException as ex:
+            if isinstance(ex, Cancelled) or RC.cancel_requested(tid):        # the process we killed made it fail: not a failure
+                jd = jobdir_of(cfg, job)
+                if jd.exists() and not (jd / ".prepared.json").exists():
+                    guarded_rmtree(jd, Path(cfg["temp"]))
+                raise Cancelled(tid) from None
+            raise
+
+
+def _prepare(cfg, job, log, headroom=0):
     log = job_log(log, job["title_id"])
     _JOB_LINES[job["title_id"]] = []
     temp_root = Path(cfg["temp"])
@@ -1688,7 +1726,7 @@ class PidProc:
 
     def wait(self):
         while self.poll() is None:
-            time.sleep(10)
+            time.sleep(2)
         return self.returncode
 
 
@@ -1747,10 +1785,11 @@ def _drop_cache(fd):
         os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
 
 
-def copy_verified(src: Path, dst: Path, log, progress=None):
+def copy_verified(src: Path, dst: Path, log, progress=None, before_rename=None):
     """Copy src -> dst (dst + '.partial' first) in 64 MiB writes; SHA-256 of the source while writing, then a
     cache-bypassing read-back of the NAS copy must match before the rename. `progress("copying" | "verifying",
-    bytes done, total)` is told after every chunk."""
+    bytes done, total)` is told after every chunk; `before_rename()` just before the copy takes its place (where an
+    older package of the same name is moved aside, so a copy that fails or is cancelled never touches it)."""
     part = dst.parent / ".staging" / (dst.name + ".partial")
     part.parent.mkdir(exist_ok=True)
     t0 = time.time()
@@ -1789,6 +1828,8 @@ def copy_verified(src: Path, dst: Path, log, progress=None):
     if h.digest() != h2.digest() or part.stat().st_size != size:
         part.unlink(missing_ok=True)
         raise ps5_failures.GameError("copy_failed", f"NAS copy of {src.name} failed verification", phase="copy")
+    if before_rename:
+        before_rename()
     part.rename(dst)
     t2 = time.time()
     log(f"  copied to NAS: {size / 2**30:.1f} GiB, write {size / 2**20 / max(t1 - t0, 1):.0f} MiB/s, "
@@ -1817,7 +1858,33 @@ def ultrapack_failure_data(logf, rc, packages):
                 errors=[ln for ln in lines if re.search(r"\[ERROR\]|Traceback|Error:|No module named", ln)][-5:], tail=lines[-12:])
 
 
+def discard_staged(cfg, stage, name):
+    """What a cancelled build left in <output>/.staging: its folder and a half-copied package. Nothing else is touched, and
+    never anything outside .staging (a finished package in the output folder is never here)."""
+    staging = Path(cfg["output"]) / ".staging"
+    try:
+        if stage.exists() and staging.resolve() in stage.resolve().parents:
+            guarded_rmtree(stage, staging)
+    except RuntimeError:
+        pass
+    part = staging / (name + ".partial")
+    if part.is_file():
+        part.unlink(missing_ok=True)
+    try:
+        staging.rmdir()
+    except OSError:
+        pass
+
+
 def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
+    with RC.working_on(b["job"]["title_id"]):
+        return _finish_build(cfg, b, log, ledger_p, ledger, ledger_lock)
+
+
+CANCEL_WHERE = {"building": "building", "validating": "checking the package", "copying": "copying it to the output folder"}
+
+
+def _finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
     job, prep, stage, logf = b["job"], b["prep"], b["stage"], b["logf"]
     log = job_log(log, job["title_id"])
     out = Path(cfg["output"])
@@ -1825,9 +1892,10 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
     jd = jobdir_of(cfg, job)
     res = dict(title=job["title"], title_id=job["title_id"], name=job["name"], source=job["source"], size=job.get("size"),
                status="failed", clean=prep.get("clean"), prep_min=prep.get("prep_min"), log=str(logf))
-    tid, tr, validate_secs, copy_secs = job["title_id"], b.get("tracker"), 0.0, 0.0
+    tid, tr, validate_secs, copy_secs, where = job["title_id"], b.get("tracker"), 0.0, 0.0, "building"
     try:
         rc = b["proc"].wait()
+        RC.check_cancel(tid)                                # killed on request: no failure, no package
         res.update(rc=rc, build_min=round((time.time() - b["t0"]) / 60, 1))
         if tr is not None:
             tr.read(logf, time.time())                      # the last lines: the stages that ended just now
@@ -1837,9 +1905,11 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             res.update(phase="build", code="ultrapack_failed", data=ultrapack_failure_data(logf, rc, len(pkgs)))
             return res
         FINISH[tid] = dict(phase="validating", frac=0.0)
+        where = "validating"
         t_val = time.time()
-        v = subprocess.run([cfg["python"], "-B", "backend/cli.py", "--fpkg-validate", str(pkgs[0])],
+        v = RC.run_tracked([cfg["python"], "-B", "backend/cli.py", "--fpkg-validate", str(pkgs[0])],
                            cwd=cfg["ultrapack_src"], capture_output=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+        RC.check_cancel(tid)
         validate_secs = time.time() - t_val
         vtxt = (v.stdout + v.stderr).decode("utf-8", "replace")
         with open(logf, "a") as fh:
@@ -1853,20 +1923,26 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
                        data=dict(summary=summ, failed_checks=int(m.group(1)) if m else None, stage=str(stage)))
             return res
         final = out / job["name"]
-        if final.exists():
-            final.rename(final.with_name(final.stem + f" (replaced {time.strftime('%Y%m%d%H%M')}).pkg"))
+        where = "copying"
+
+        def make_room():                                    # an older package of this name is moved aside only when the new one is complete
+            if final.exists():
+                final.rename(final.with_name(final.stem + f" (replaced {time.strftime('%Y%m%d%H%M')}).pkg"))
         if Path(cfg["temp"]).resolve() in pkgs[0].resolve().parents:
             marks = {}
 
             def copy_progress(phase, done, total):
+                RC.check_cancel(tid)
                 now_ = time.time()
                 t0_ = marks.setdefault(phase, now_)
                 FINISH[tid] = dict(phase=phase, done=done, total=total, rate=(done / (now_ - t0_)) if now_ - t0_ > 2 else None,
                                    frac=(0.5 if phase == "verifying" else 0.0) + 0.5 * (done / total if total else 1.0))
             t_cp = time.time()
-            res["sha256"] = copy_verified(pkgs[0], final, log, progress=copy_progress)
+            res["sha256"] = copy_verified(pkgs[0], final, log, progress=copy_progress, before_rename=make_room)
             copy_secs = time.time() - t_cp
         else:
+            RC.check_cancel(tid)
+            make_room()
             pkgs[0].rename(final)
         res.update(status="built", output=str(final), gib=round(final.stat().st_size / 2**30, 2), build_secs=round(time.time() - b["t0"], 1),
                    backport=job.get("backport_outcome"))
@@ -1886,15 +1962,21 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
         return res
     except Exception as ex:
+        if isinstance(ex, Cancelled) or RC.cancel_requested(tid):
+            res.update(status="cancelled", why=f"cancelled while {CANCEL_WHERE[where]}", code="cancelled", phase=where, data={})
+            return res
         code, phase, data = ps5_failures.classify(ex)
         res.update(why=f"{type(ex).__name__}: {ex}", code=code, data=data, phase="build" if code == "unknown" else phase)
         return res
     finally:
         FINISH.pop(tid, None)
         res["at"] = time.time()
+        (jd / ".building").unlink(missing_ok=True)            # nothing may adopt this as a running build
         if jd.exists():
             guarded_rmtree(jd, temp_root)
         shutil.rmtree(stage / "_ultrapack_temp", ignore_errors=True)
+        if res.get("status") == "cancelled":
+            discard_staged(cfg, stage, job["name"])
         if res.get("status") == "built":
             shutil.rmtree(stage, ignore_errors=True)
             try:
@@ -1913,6 +1995,8 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             except Exception:
                 pass
             notify(cfg, "PS5 pkg: built", notification_text(cfg, job["name"], "built", None, res.get("output")))
+        elif res.get("status") == "cancelled":
+            pass                                              # not a failure: nothing remembered, nobody notified, tried again on the next run
         else:
             res.setdefault("code", "unknown")
             res.setdefault("phase", "build")
@@ -1972,7 +2056,8 @@ def copy_ps4(cfg, job, log):
             work = stage / "x" / str(i)
             work.mkdir(parents=True)
             log(f"  copying {f['name']} ({f['size'] / 2**30:.2f} GiB, {f['kind']})")
-            r = subprocess.run([exe, "x", "-y", "-bso0", "-bsp0", f"-o{work}", "-p-", src, member], capture_output=True,
+            RC.check_cancel(tid)
+            r = RC.run_tracked([exe, "x", "-y", "-bso0", "-bsp0", f"-o{work}", "-p-", src, member], capture_output=True,
                                stdin=subprocess.DEVNULL, env=seven_env())
             got = work / member
             if r.returncode != 0 or not got.is_file():
@@ -1985,6 +2070,7 @@ def copy_ps4(cfg, job, log):
             (stage / "final").mkdir(exist_ok=True)
             os.replace(got, stage / "final" / f["dest"])
             done.append(f)
+        RC.check_cancel(tid)                                    # from here the files are moved into place: not interrupted half-way
         dest.mkdir(parents=True, exist_ok=True)
         for f in done:
             target = dest / f["dest"]
@@ -2022,7 +2108,10 @@ def tree_bytes(*paths):
 
 
 def run_counts(results):
-    return {s: sum(1 for r in results if r.get("status") == s) for s in ("built", "copied", "failed", "deferred")}
+    return {s: sum(1 for r in results if r.get("status") == s) for s in ("built", "copied", "failed", "deferred", "cancelled")}
+
+
+CONTROL_INTERVAL = float(os.environ.get("PS5PKG_CONTROL_INTERVAL") or 1)    # seconds between looks at what the web page asked for
 
 
 class RunStatus:
@@ -2048,6 +2137,10 @@ class RunStatus:
         self.state = STATE                  # the folder it writes to: fixed now, so a writer that outlives its run can never write into another one
         self.stop_evt, self.thread, self.finished, self.last_error = threading.Event(), None, False, None
         self.lock = threading.Lock()
+        self.cancelling = set()             # games a cancel was asked for (shown until they are out of the run)
+        self.say = lambda msg: None         # the engine's log, when main() gives it
+        self.control_thread = None
+        RC.begin_run()                      # nothing is cancelled in a new run
 
     # -- what the engine tells it
     def plan(self, todo, copies):
@@ -2067,10 +2160,41 @@ class RunStatus:
         self.write()
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
+        self.control_thread = threading.Thread(target=self._control, daemon=True)
+        self.control_thread.start()
 
     def _loop(self):
         while not self.stop_evt.wait(STATUS_INTERVAL):
             self.write()
+
+    def _control(self):
+        while not self.stop_evt.wait(CONTROL_INTERVAL):
+            try:
+                self.control_tick()
+            except Exception as ex:                             # a bad request must not end the run's control
+                self.say(f"=== run control: {type(ex).__name__}: {ex}")
+
+    def control_tick(self):
+        """Act on what the web page asked for since the last look: "stop now" (everything running is ended) and the games to
+        cancel. A game's marker of a running build goes first, so nothing could adopt it as a live build."""
+        builds = list(self.q.get("all_builds", []))
+        if RC.stop_mode(self.state) == RC.STOP_NOW and not RC.CANCEL_ALL.is_set():
+            self.say("=== stop now requested: ending what is running; finished copies are kept for the next run")
+            RC.CANCEL_ALL.set()
+            for b in builds:
+                (jobdir_of(self.cfg, b["job"]) / ".building").unlink(missing_ok=True)
+            RC.kill_everything(builds)
+        for tid in RC.take_cancels(self.state):
+            self.cancelling.add(tid)
+            RC.cancel_title(tid)
+            self.say(f"=== cancel requested for {tid}")
+            drop = self.q.get("cancel_queued")
+            if drop and drop(tid):
+                self.say(f"  {tid}: it had not started: removed from this run")
+            for b in builds:
+                if b["job"]["title_id"] == tid:
+                    (jobdir_of(self.cfg, b["job"]) / ".building").unlink(missing_ok=True)
+            RC.kill_title(tid, builds)
 
     # -- assembling it
     def _scan(self, key, now, fn):
@@ -2260,14 +2384,22 @@ class RunStatus:
         now = now or time.time()
         q, bound = self.q, bool(self.q)
         todo, preparing, done_idx = q.get("todo", []), q.get("preparing", {}), q.get("done_idx", set())
+        skipped = q.get("skipped", set())
         results = list(q["results"]) if bound else list(self.ps4_results)
         results += [dict(f.result()) for f in q.get("finishing", []) if f.done()]
         builds, prep_rows = self._build_rows(now), self._prepare_rows(now)
         shown = {p["title_id"] for p in prep_rows}
         finished = {r.get("title_id") for r in results}
-        waiting = [j for k, j in enumerate(todo) if k not in preparing and k not in done_idx] if bound else list(self.jobs)
+        waiting = [j for k, j in enumerate(todo) if k not in preparing and k not in done_idx and k not in skipped] if bound else list(self.jobs)
+        started = {b["job"]["title_id"] for b in q.get("all_builds", [])}
+        ready = []                                          # prepared, waiting for a free slot: kept for the next run when the run stops
+        for k, (_t, f) in list(preparing.items()):
+            if k < len(todo) and k not in skipped and todo[k]["title_id"] not in started | finished and f.done() \
+                    and getattr(f, "exception", lambda: None)() is None:
+                ready.append(dict(title_id=todo[k]["title_id"], name=todo[k]["name"], size=todo[k]["size"], ready=True))
         queue = [dict(title_id=j["title_id"], name=j.get("name") or j["title_id"], size=j.get("size"), ps4=True) for j in self.ps4_jobs
                  if j["title_id"] not in finished and j["title_id"] not in shown]
+        queue += ready
         queue += [dict(title_id=j["title_id"], name=j["name"], size=j["size"]) for j in waiting]
         self._paced(results)
         progress = self._progress(results, builds, prep_rows)
@@ -2276,7 +2408,8 @@ class RunStatus:
         run = dict(started=self.started, trigger=self.trigger, phase="running" if (self.jobs or self.ps4_jobs or bound) else "scanning",
                    total=len(self.jobs) + len(self.ps4_jobs), done=len(results), progress=round(progress, 4), remaining=eta,
                    eta_at=(now + eta) if eta is not None else None, queue_bytes=sum(int(x.get("size") or 0) for x in queue), **run_counts(results))
-        return dict(updated=now, pid=os.getpid(), stopping=stop_requested(), run=run, queue=queue, preparing=prep_rows, builds=builds,
+        return dict(updated=now, pid=os.getpid(), stopping=stop_requested(), stop_mode=RC.stop_mode(self.state),
+                    cancelling=sorted(t for t in list(self.cancelling) if t not in finished), run=run, queue=queue, preparing=prep_rows, builds=builds,
                     results=[{k: r.get(k) for k in RESULT_KEYS} for r in results])
 
     def write(self):
@@ -2317,13 +2450,21 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger, rs=None):
             log(f"=== stop requested: not copying the remaining {len(jobs) - len(results)} PS4 title(s)")
             break
         tid = job["title_id"]
-        log(f"PS4 copy {job['name']}  <- {job['source']}")
         res = dict(title=job.get("title") or job["name"], title_id=tid, name=job["name"], status="failed", source=job["source"], size=job.get("size"))
+        if RC.cancel_requested(tid):                         # taken out of the run before it started
+            res.update(status="cancelled", why="removed from this run before it started", code="cancelled", phase="queue", data={}, at=time.time())
+            log(f"=== {job['name']}: removed from this run")
+            results.append(res)
+            if rs:
+                rs.ps4_results.append(res)
+            continue
+        log(f"PS4 copy {job['name']}  <- {job['source']}")
         if rs:
             rs.ps4_begin(job)
         t_copy = time.time()
         try:
-            r = copy_ps4(cfg, job, log)
+            with RC.working_on(tid):
+                r = copy_ps4(cfg, job, log)
             ledger[tid] = dict(version=job["version"], output=r["output"], source=job["source"], built=time.strftime("%Y-%m-%d %H:%M"),
                                built_ts=time.time(), bytes=r["bytes"], ps4=True, kind="ps4", files=r["files"], validate=r["validate"],
                                source_bytes=job.get("size"), copy_secs=round(time.time() - t_copy, 1))
@@ -2337,7 +2478,10 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger, rs=None):
             notify(cfg, "PS4: copied", notification_text(cfg, job["name"], "copied", None, res["output"]))
         except Exception as ex:
             code, phase, data = ps5_failures.classify(ex)
-            if code == "output_no_space":                    # not a failure: it is copied when there is room
+            if isinstance(ex, Cancelled) or RC.cancel_requested(tid):
+                res.update(status="cancelled", why="cancelled while copying", code="cancelled", phase="copy", data={})
+                log(f"  -> {job['name']}: cancelled")
+            elif code == "output_no_space":                    # not a failure: it is copied when there is room
                 res.update(status="deferred", why=str(ex), code=code, phase="copy", data=data)
                 log(f"  -> deferred: {ex}")
                 record_failure(cfg, job, log, phase="copy", code=code, message=str(ex), data=data, state=ps5_failures.WAITING)
@@ -2381,11 +2525,13 @@ def _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs):
     import threading
     results = list(preset or [])          # what ran before the queue (PS4 copies) is part of this run's results
     ledger_lock = threading.Lock()
+    qlock = threading.RLock()             # the run's loop and its controller both change what is queued
     prep_pool = ThreadPoolExecutor(max_workers=1)
     fin_pool = ThreadPoolExecutor(max_workers=cfg.get("max_builds", 3))
     prepared = {}            # index -> Future(prepare)
     active = []              # running builds
     finishing = []           # Futures(finish_build)
+    skipped = set()          # indices of games taken out of the run before they started
 
     for job in list(todo):
         b = adopt_build(cfg, job, log)
@@ -2399,17 +2545,43 @@ def _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs):
         return sum(int(b["job"]["size"] * g) for b in active if b["proc"].poll() is None)
 
     def try_prefetch(i):
-        if i < len(todo) and i not in prepared and not stop_requested():
+        if i < len(todo) and i not in prepared and i not in skipped and not stop_requested() and not RC.cancel_requested(todo[i]["title_id"]):
             need = int((todo[i]["size"] or 0) * 1.10)
             if need <= usable_ssd(cfg) - in_flight_growth():
                 prepared[i] = prep_pool.submit(prepare, cfg, todo[i], log, in_flight_growth())
                 return True
         return False
 
+    def nap(seconds, tid):
+        """Sleep, coming back at once when a stop is asked for, a cancel of this game, or a running build has ended (a slot is free)."""
+        running = sum(1 for b in active if b["proc"].poll() is None)
+        end = time.time() + seconds
+        while time.time() < end and not (stop_requested() or RC.cancel_requested(tid)):
+            time.sleep(0.5)
+            if sum(1 for b in active if b["proc"].poll() is None) < running:
+                break
+
+    def cancelled(job, phase, why):
+        """The game is out of this run: recorded as cancelled (never as a failure: nothing is remembered about it)."""
+        with qlock:
+            results.append(dict(job, status="cancelled", why=why, code="cancelled", phase=phase, data={}, at=time.time()))
+        job_log(log, job["title_id"])(f"  -> {job['title']}: cancelled ({why})")
+
+    def cancel_queued(tid):
+        """The controller's call for a cancel: a game the loop has not reached is taken out of the run at once. True when it was."""
+        with qlock:
+            k = next((i for i, j in enumerate(todo) if j["title_id"] == tid), None)
+            if k is None or k in done_idx or k in skipped:
+                return False
+            skipped.add(k)
+        cancelled(todo[k], "queue", "removed from this run before it started")
+        return True
+
     preparing = {}           # index -> (start time, Future(prepare))
     all_builds = list(active)
     done_idx = set()
-    rs.bind(todo=todo, preparing=preparing, done_idx=done_idx, all_builds=all_builds, finishing=finishing, results=results)
+    rs.bind(todo=todo, preparing=preparing, done_idx=done_idx, all_builds=all_builds, finishing=finishing, results=results,
+            skipped=skipped, cancel_queued=cancel_queued)
     _orig_submit = prep_pool.submit
 
     def _submit(fn, *a, **kw):
@@ -2420,24 +2592,95 @@ def _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs):
         return fut
     prep_pool.submit = _submit
 
-    try_prefetch(0)
-    for i, job in enumerate(todo):
-        if stop_requested():
+    def hold_for_stop():
+        """A stop was asked for: nothing new starts, and the run waits for what is running to end. True when the request stood until
+        nothing was running (the run is over); False when it was taken back meanwhile (the run goes on)."""
+        said = False
+        while stop_requested():
+            busy = (any(b["proc"].poll() is None for b in active) or any(not f.done() for f in finishing)
+                    or any(not f.done() for _t, f in list(preparing.values())))
+            if not busy:
+                return True
+            if not said:
+                said = True
+                log("=== stop requested: waiting for the running games to end (taking the request back lets the run go on)")
+            time.sleep(0.5)
+        return False
+
+    def stop_here(i):
+        if stop_requested() and hold_for_stop():
             log(f"=== stop requested: not starting the remaining {len(todo) - i} job(s); "
                 f"running builds finish normally, finished copies are kept for the next run")
-            break
-        done_idx.add(i)
-        log(f"[{i + 1}/{len(todo)}] {job['title']} ({job['size'] / 2**30:.0f} GiB)")
+            return True
+        return False
+
+    def wait_prepared(i, tid):
+        """Until game i is prepared, or can be: "ok", "stop" (the run stops here) or "cancel" (this game was taken out)."""
         while i not in prepared and not try_prefetch(i):
             active[:] = [b for b in active if b["proc"].poll() is None]
             if not active and not any(not f.done() for f in finishing):
-                break                    # nothing will free space; let prepare() report it
-            time.sleep(20)
+                return "ok"              # nothing will free space; let prepare() report it
+            if RC.title_cancelled(tid):
+                return "cancel"
+            if stop_requested():
+                if hold_for_stop():
+                    return "stop"
+                continue                 # taken back
+            nap(20, tid)
+        return "ok"
+
+    def wait_slot(tid):
+        """Until a compression slot (max_compress) and a process slot (max_builds) are free: "ok", "stop" or "cancel"."""
+        while True:
+            active[:] = [b for b in active if b["proc"].poll() is None]
+            if RC.title_cancelled(tid):
+                return "cancel"
+            if stop_requested():
+                if hold_for_stop():
+                    return "stop"
+                continue
+            compressing = sum(1 for b in active if not past_compression(b))
+            if len(active) < cfg.get("max_builds", 3) and compressing < cfg.get("max_compress", 2):
+                return "ok"
+            nap(15, tid)
+
+    try_prefetch(0)
+    for i, job in enumerate(todo):
+        tid = job["title_id"]
+        if stop_here(i):
+            break
+        with qlock:
+            if i in skipped:                  # taken out while it waited
+                try_prefetch(i + 1)
+                continue
+            if RC.title_cancelled(tid):       # asked, and the controller has not looked yet: the same
+                skipped.add(i)
+                cancelled(job, "queue", "removed from this run before it started")
+                try_prefetch(i + 1)
+                continue
+            done_idx.add(i)
+        log(f"[{i + 1}/{len(todo)}] {job['title']} ({job['size'] / 2**30:.0f} GiB)")
+        got = wait_prepared(i, tid)
+        if got == "stop":
+            log(f"=== stop requested: not starting the remaining {len(todo) - i} job(s); "
+                f"running builds finish normally, finished copies are kept for the next run")
+            break
+        if got == "cancel" and i not in prepared:
+            cancelled(job, "prepare", "cancelled before it was prepared")
+            try_prefetch(i + 1)
+            continue
         fut = prepared.pop(i, None) or prep_pool.submit(prepare, cfg, job, log, in_flight_growth())
         try:
             prep = fut.result()
         except Exception as ex:
             jlog = job_log(log, job["title_id"])
+            if isinstance(ex, Cancelled) or RC.cancel_requested(tid):     # ended on request: what it made is gone, it is not a failure
+                jd = jobdir_of(cfg, job)
+                if jd.exists() and not (jd / ".prepared.json").exists():
+                    guarded_rmtree(jd, Path(cfg["temp"]))
+                cancelled(job, "prepare", "cancelled while it was being prepared")
+                try_prefetch(i + 1)
+                continue
             code, phase, data = ps5_failures.classify(ex)
             if code == "no_space":            # not a failure: it will be tried again when there is room
                 results.append(dict(job, status="deferred", why=str(ex), code=code, phase="prepare", data=data, at=time.time()))
@@ -2458,13 +2701,15 @@ def _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs):
             failure_store().clear(job["title_id"], only_state=ps5_failures.WAITING)
         except Exception:
             pass
-        # wait for a free compression slot (max_compress) and a free process slot (max_builds)
-        while True:
-            active[:] = [b for b in active if b["proc"].poll() is None]
-            compressing = sum(1 for b in active if not past_compression(b))
-            if len(active) < cfg.get("max_builds", 3) and compressing < cfg.get("max_compress", 2):
-                break
-            time.sleep(15)
+        got = wait_slot(tid)
+        if got == "stop":
+            log(f"=== stop requested: not starting the remaining {len(todo) - i} job(s); "
+                f"running builds finish normally, finished copies are kept for the next run")
+            break
+        if got == "cancel":                   # prepared, then taken out: the copy stays for the next run
+            cancelled(job, "queue", "removed from this run; its prepared copy is kept")
+            try_prefetch(i + 1)
+            continue
         b = start_build(cfg, job, prep, log)
         active.append(b)
         all_builds.append(b)
@@ -2481,7 +2726,7 @@ def _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs):
     prep_pool.shutdown(wait=True)
     fin_pool.shutdown(wait=True)
     rs.finish(final)
-    (STATE / "stop.request").unlink(missing_ok=True)
+    RC.clear_requests(STATE)
     (STATE / "last_run.json").write_text(json.dumps(final, indent=2, ensure_ascii=False, default=str))
     return final
 
@@ -2525,7 +2770,7 @@ def main():
             log(f"another run holds {lock}; exiting")
             sys.exit(EXIT_LOCKED)
         lock.write_text(str(os.getpid()))
-        (STATE / "stop.request").unlink(missing_ok=True)
+        RC.clear_requests(STATE)
     try:
         cache_p = STATE / "ident_cache.json"
         cache = {} if a.rescan or not cache_p.exists() else json.loads(cache_p.read_text())
@@ -2535,6 +2780,7 @@ def main():
         ledger = json.loads(ledger_p.read_text()) if ledger_p.exists() else {}
         if a.mode == "run":
             rs = RunStatus(cfg, a.trigger, ledger)             # the page knows the run has started while it is still scanning
+            rs.say = log
             rs.start()
         log(f"=== {a.mode}: scanning")
         cands = discover(cfg, log, cache)
@@ -2573,7 +2819,7 @@ def main():
         rs.plan(todo, copies)
         results = run_queue(cfg, todo, log, ledger_p, ledger, preset=run_ps4(cfg, copies, log, ledger_p, ledger, rs=rs), rs=rs)
         log("=== summary: " + ", ".join(f"{s} {sum(1 for r in results if r['status'] == s)}"
-                                        for s in ("built", "copied", "failed", "deferred")))
+                                        for s in ("built", "copied", "failed", "deferred", "cancelled")))
     finally:
         if rs is not None and not rs.finished:          # the run did not get to its end: say so instead of leaving it "running"
             try:

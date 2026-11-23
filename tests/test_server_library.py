@@ -296,9 +296,9 @@ class Page(LibraryCase):
 
     def test_build_only_this_asks_with_the_size_and_an_estimate(self):
         body = self.body("async function buildOne", "function alertBox")
-        self.assertIn("confirm(", body)
+        self.assertIn("askConfirm(", body)                                                                         # in the page, not window.confirm
         self.assertIn("buildEstimate", body)
-        self.assertLess(body.index("confirm("), body.index('api("/api/run"'))                                      # asked before anything starts
+        self.assertLess(body.index("askConfirm("), body.index('api("/api/run"'))                                   # asked before anything starts
 
     def test_history_shows_what_a_build_did_about_a_backport(self):
         body = self.body("function builtRow", "async function loadHist")

@@ -19,7 +19,7 @@ button.btn{border:1px solid var(--line);background:var(--card);color:var(--fg);p
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button:disabled{opacity:.5;cursor:default}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:12px}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
-.t-build,.t-copy{color:var(--acc)}.t-copied{color:var(--ok)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred,.t-waiting{color:var(--warn)}.att{padding:10px 0;border-top:1px solid var(--line)}.att:first-of-type{border-top:0}.att pre{max-height:16em;margin:6px 0}.btnrow{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.btn.sm{padding:2px 9px;font-size:12px}
+.t-cancelled{color:var(--muted)}.t-build,.t-copy{color:var(--acc)}.t-copied{color:var(--ok)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred,.t-waiting{color:var(--warn)}.att{padding:10px 0;border-top:1px solid var(--line)}.att:first-of-type{border-top:0}.att pre{max-height:16em;margin:6px 0}.btnrow{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.btn.sm{padding:2px 9px;font-size:12px}
 #toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;max-width:90vw;z-index:9}
 .bar{height:8px;background:var(--bar);border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
 .muted{color:var(--muted)}.small{font-size:12px}pre{white-space:pre-wrap;word-break:break-all;font:12px/1.4 ui-monospace,Menlo,monospace;max-height:70vh;overflow:auto;margin:0}
@@ -40,8 +40,13 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
 .banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}.banner pre{color:var(--fg);max-height:14em;margin:8px 0}
 .lv-ok{color:var(--ok)}.lv-warn{color:var(--warn)}.lv-fail{color:var(--bad);font-weight:700}.setup td:first-child{width:3.5em;white-space:nowrap}
 a{color:var(--acc)}
+button.dng{background:var(--bad);border-color:var(--bad);color:#fff}
+.dlgback{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}.dlgback[hidden]{display:none}
+.dlg{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:18px 20px;max-width:520px;width:100%;max-height:92vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,.35)}
+.dlg h2{font-size:16px;margin:0 0 8px}.dlg p{margin:6px 0}.dlg .btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;justify-content:flex-end}.dlg .btnrow .btn{white-space:normal;text-align:left}
+.dlgck{display:flex;gap:6px;margin-top:10px}.dlgck[hidden]{display:none}body.dlgopen{overflow:hidden}.jobbtn{margin-left:auto;display:flex;gap:10px;align-items:center}.pause{gap:6px}.pause label{display:flex;gap:4px;align-items:center}
 .path code{word-break:break-all}.copy{font:inherit;font-size:11px;padding:0 6px;margin-left:4px;border:1px solid var(--line);border-radius:4px;background:none;color:var(--muted);cursor:pointer}
-@media (max-width:640px){label.f{grid-template-columns:1fr}main{padding:10px}td,th{padding:5px 4px}header{gap:8px;padding:8px 12px}.runline{font-size:15px}.card{padding:12px}}
+@media (max-width:640px){.dlg .btnrow .btn{flex:1 1 100%}label.f{grid-template-columns:1fr}main{padding:10px}td,th{padding:5px 4px}header{gap:8px;padding:8px 12px}.runline{font-size:15px}.card{padding:12px}}
 </style>
 </head>
 <body>
@@ -64,10 +69,14 @@ a{color:var(--acc)}
     <div class="runbar" id="runBar" hidden><div class="bar"><i></i></div><span id="runPct" class="small"></span></div>
     <div id="runSub" class="small muted"></div>
     <div class="row" style="margin-top:8px">
-      <button class="btn pri" id="bRun">Run now</button><button class="btn" id="bStop">Stop after current</button>
-      <button class="btn" id="bScan">Scan for new games</button><span class="muted small" id="msg"></span>
-      <span class="small err" id="runWhy"></span>
+      <button class="btn pri" id="bRun">Run now</button><button class="btn" id="bStop">Stop…</button>
+      <button class="btn" id="bScan">Scan for new games</button>
+      <span class="row pause" id="pauseBox" hidden><button class="btn" id="bPause">Pause schedule</button>
+        <label class="small muted" id="pauseUntilLbl">until <input type="datetime-local" id="pauseUntil" title="Optional: when the schedule starts again, on the server's clock"></label></span>
+      <span class="muted small" id="msg"></span>
     </div>
+    <div class="small err" id="runWhy" style="margin-top:6px"></div>
+    <div class="small muted" id="askAgain" hidden><a href="#" data-askagain>Ask before starting a run again</a> (you turned the question off in this browser)</div>
   </div>
   <div id="failBox"></div>
   <div id="liveBox"></div>
@@ -106,6 +115,10 @@ a{color:var(--acc)}
   <div class="card"><pre id="logTxt"></pre></div></section>
 </main>
 <footer class="small muted" style="text-align:center;padding:14px"><div id="ver"></div><div id="accessNote">No login: anyone who can open this page can use it. Keep it on your home network or behind a VPN.</div></footer>
+<div class="dlgback" id="dlg" hidden><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle" tabindex="-1">
+  <h2 id="dlgTitle"></h2><div id="dlgBody"></div>
+  <label class="small dlgck" id="dlgCheckRow" hidden><input type="checkbox" id="dlgCheck"><span id="dlgCheckText"></span></label>
+  <div class="btnrow" id="dlgBtns"></div></div></div>
 <script src="/static/app.js"></script>
 </body>
 </html>

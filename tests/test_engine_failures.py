@@ -311,7 +311,7 @@ class Running(EngineCase):
         self.assertIn("copying it to the output folder failed", notes[0][1])
 
     def test_an_unexpected_exception_is_stored_as_unknown_with_its_message(self):
-        with mock.patch.object(E.subprocess, "run", side_effect=ValueError("odd")):
+        with mock.patch.object(E.RC, "run_tracked", side_effect=ValueError("odd")):     # the validation step
             res, notes, _ = self.finish(0, "ok\n", cli="", stage_files={"game.pkg": 64})
         self.assertEqual((res["status"], res["code"], res["phase"]), ("failed", "unknown", "build"))
         self.assertEqual(self.store.load()["PPSA01234"]["message"], "ValueError: odd")

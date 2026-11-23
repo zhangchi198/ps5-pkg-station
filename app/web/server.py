@@ -34,6 +34,7 @@ import ps5_pkg_sync as E  # noqa: E402  (same defaults/validation as the engine)
 import ps5_failures as FL  # noqa: E402  (games that failed: why, and when another try can help)
 import ps5_progress as PG  # noqa: E402  (what earlier builds say about how long a game takes)
 import ps5_settingsmeta as M  # noqa: E402  (what the Settings page shows and checks)
+import ps5_runctl as RC  # noqa: E402  (stop, cancel and pause requests: the files the engine and the scheduler read)
 import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
 import ps5_settingsio as IO  # noqa: E402  (export / import of the settings)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
@@ -267,6 +268,35 @@ def build_pace(cfg):
     return dict(build_per_gib=h["build_per_gib"], prep_per_gib=h["prep_per_gib"], builds=h["builds"])
 
 
+def run_preview(cfg, plan):
+    """What a run started now would do, for the confirmation: {builds, copies, bytes (of the sources), seconds (about how long, from
+    what earlier builds took here, None until there has been one), work_free is the page's: it has the disks}."""
+    builds = sorted((p for p in plan if p.get("action") == "build" and not p.get("ps4")), key=lambda p: int(p.get("size") or 0))
+    copies = [p for p in plan if p.get("action") == "copy"]
+    ledger = read_json_cached(STATE / "ledger.json", {})
+    h = PG.history(ledger if isinstance(ledger, dict) else {}, cfg.get("compression_level"))
+    seconds = None
+    if builds and h["build_per_gib"] and not (copies and not h.get("ps4_per_gib")):
+        shares = PG.normalise(PG.shares_from(h), with_copy=bool(cfg.get("build_on_ssd")))
+        queue = []
+        for p in builds:
+            gib = int(p.get("size") or 0) / PG.GIB
+            total = h["build_per_gib"] * gib
+            queue.append(dict(prep=(h["prep_per_gib"] or 0.0) * gib, total=total, kraken=total * shares["1"]))
+        end = PG.simulate(0.0, [], queue, max_builds=int(cfg.get("max_builds", 3)), max_compress=int(cfg.get("max_compress", 2)))
+        if end is not None:
+            seconds = end + sum(int(p.get("size") or 0) / PG.GIB * (h.get("ps4_per_gib") or 0.0) for p in copies)
+    return dict(builds=len(builds), copies=len(copies), bytes=sum(int(p.get("size") or 0) for p in builds + copies), seconds=seconds)
+
+
+def pending_cancels_in(st, running):
+    """The games a cancel was asked for and that are not out of the run yet: the engine's list plus the requests it has not taken."""
+    if not running:
+        return []
+    mine = [t for t in (st.get("cancelling") or []) if isinstance(t, str)] if isinstance(st, dict) and not st.get("finished") else []
+    return sorted(set(mine) | set(RC.pending_cancels(STATE)))
+
+
 def library_extras(p, cfg, ledger):
     """A plan entry as the Library shows it, with what depends on the settings of the moment (so a change to the console
     firmware or a backport option shows at once, without a new scan): the backport decision, and whether the copy that
@@ -326,12 +356,12 @@ def last_run(st, running):
     results = st.get("results") if isinstance(st.get("results"), list) else []
     if isinstance(run, dict) and run.get("started"):
         interrupted = bool(run.get("interrupted")) or not st.get("finished")
-        counts = {k: int(run.get(k) or 0) for k in ("built", "copied", "failed", "deferred")}
+        counts = {k: int(run.get(k) or 0) for k in ("built", "copied", "failed", "deferred", "cancelled")}
         return dict(started=run.get("started"), finished=run.get("finished") or st.get("updated"), trigger=run.get("trigger"),
                     total=run.get("total") or run.get("done") or 0, done=int(run.get("done") or 0), interrupted=interrupted, **counts)
     if not results:
         return None
-    counts = {s: sum(1 for r in results if isinstance(r, dict) and r.get("status") == s) for s in ("built", "copied", "failed", "deferred")}
+    counts = {s: sum(1 for r in results if isinstance(r, dict) and r.get("status") == s) for s in ("built", "copied", "failed", "deferred", "cancelled")}
     return dict(started=None, finished=st.get("updated"), trigger=None, total=len(results), done=len(results), interrupted=not st.get("finished"), **counts)
 
 
@@ -491,7 +521,10 @@ def scheduler_tick(fired, now=None):
     if hm in (sch.get("times") or []) and key not in fired:
         fired.add(key)
         try:
-            msg = "started" if start_engine(trigger="scheduled") else "skipped (a run or scan is active)"
+            if RC.pause_read(STATE, time.mktime(now)):             # a run that comes due while paused is skipped, not made up later
+                msg = "skipped (the schedule is paused)"
+            else:
+                msg = "started" if start_engine(trigger="scheduled") else "skipped (a run or scan is active)"
         except EngineStartError as ex:
             msg = f"did not start: {ex}"
         with open(LOGS / "pkg_sync.log", "a", encoding="utf-8") as fh:
@@ -607,6 +640,7 @@ def status(request: Request):
     plan = plan_with_failures(entries, cfg, mapping)
     by_id = {p.get("title_id"): p for p in entries}
     attention = [failure_view(r, by_id.get(t), cfg, mapping) for t, r in failure_store().load().items() if not r.get("dismissed")]
+    pause = RC.pause_read(STATE)                     # the schedule starts nothing while it is paused (see scheduler_tick)
     big = S.biggest_build(plan)                      # the biggest game still to build: what the folders must have room for (as the Setup card judges it)
     space = dict(biggest=dict(title=big.get("title") or big["title_id"], size=big["size"]) if big else None,
                  reserve=int(cfg.get("ssd_reserve_gb") or 0) << 30)
@@ -616,8 +650,9 @@ def status(request: Request):
                 attention=[dict(title_id=a["title_id"], name=a.get("name"), state=a["state"], code=a["code"], summary=a["summary"],
                                 at_text=a.get("at_text"), will_retry=a["will_retry"]) for a in attention],
                 scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
-                status=st if pid else dict(st, live=False), next_run=next_run(cfg.get("schedule")), last_run=last_run(st, bool(pid)), space=space,
-                pace=build_pace(cfg), rescan=rescan_info(cfg),
+                status=st if pid else dict(st, live=False), next_run=None if pause else next_run(cfg.get("schedule")), last_run=last_run(st, bool(pid)), space=space,
+                pace=build_pace(cfg), rescan=rescan_info(cfg), todo=run_preview(cfg, plan), schedule_pause=pause,
+                stop_mode=RC.stop_mode(STATE), cancelling=pending_cancels_in(st, bool(pid)),
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "copy", "failed", "done", "skip", "error")},
@@ -690,10 +725,82 @@ async def run(req: Request):
 
 
 @app.post("/api/stop")
-def stop():
+async def stop(req: Request):
+    """Ask the run to stop: mode "after_current" (the default: start nothing new, let the running games finish) or "now" (also end
+    what is running: those games are cancelled, and prepared copies are kept)."""
+    body = await req.json() if (await req.body()) else {}
+    mode = body.get("mode", RC.STOP_AFTER) if isinstance(body, dict) else None
+    if mode not in (RC.STOP_AFTER, RC.STOP_NOW):
+        raise HTTPException(400, 'mode must be "after_current" or "now"')
     if not engine_pid():
         raise HTTPException(409, "no run is active")
-    (STATE / "stop.request").write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
+    return {"ok": True, "mode": RC.write_stop(STATE, mode)}
+
+
+@app.delete("/api/stop")
+def withdraw_stop():
+    """Take back a "finish the current games, then stop" request while the run is going. Not possible once "stop now" was asked."""
+    if not engine_pid():
+        raise HTTPException(409, "no run is active")
+    if RC.stop_mode(STATE) == RC.STOP_NOW:
+        raise HTTPException(409, "Stop now is already under way and can't be taken back.")
+    if not RC.withdraw_stop(STATE):
+        raise HTTPException(409, "No stop was requested.")
+    return {"ok": True}
+
+
+@app.post("/api/builds/{tid}/cancel")
+def cancel_build(tid: str):
+    """Take one game out of the run in progress: queued, it is left out; being prepared or built, it is ended and its work folders
+    are removed. It is recorded as cancelled, never as a failure, and is built again by the next run."""
+    if not E.valid_title_id(tid):
+        raise HTTPException(400, "not a title ID")
+    if not engine_pid():
+        raise HTTPException(409, "no run is active")
+    st = read_json(STATE / "status.json", {})
+    in_run = set()
+    if isinstance(st, dict) and not st.get("finished"):
+        in_run = {x.get("title_id") for key in ("builds", "preparing", "queue") for x in (st.get(key) or []) if isinstance(x, dict)}
+    if tid not in in_run:
+        raise HTTPException(404, "that game is not in the run in progress (it may just have finished)")
+    RC.request_cancel(STATE, tid)
+    return {"ok": True}
+
+
+def parse_until(v, now=None):
+    """The end of a pause as epoch seconds: a number, or a time on the server's clock like 2026-11-30T08:00. None for no end."""
+    if v in (None, ""):
+        return None
+    if isinstance(v, bool):
+        raise ValueError("until must be a time")
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return time.mktime(time.strptime(v.strip(), fmt))
+            except ValueError:
+                pass
+    raise ValueError("until must be a time like 2026-11-30T08:00 (the server's clock), or empty")
+
+
+@app.post("/api/schedule/pause")
+async def schedule_pause(req: Request):
+    """Pause the schedule (no run starts by itself) until `until` (server clock), or until it is resumed."""
+    body = await req.json() if (await req.body()) else {}
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+    try:
+        until = parse_until(body.get("until"))
+        got = RC.pause_write(STATE, until)
+    except ValueError as ex:
+        raise HTTPException(400, "that time has already passed" if "already be over" in str(ex) else str(ex))
+    return {"ok": True, "pause": got}
+
+
+@app.delete("/api/schedule/pause")
+def schedule_resume():
+    RC.pause_clear(STATE)
     return {"ok": True}
 
 

@@ -15,19 +15,98 @@ async function copyText(t){try{if(navigator.clipboard&&window.isSecureContext){a
   const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand("copy")}catch(e){}a.remove();return ok}   // plain http on a LAN has no clipboard API
 document.addEventListener("click",e=>{const b=e.target.closest("[data-copy]");if(!b)return;e.preventDefault();
   copyText(b.dataset.copy).then(ok=>{const t=b.textContent;b.textContent=ok?"copied":"select + Ctrl+C";setTimeout(()=>{b.textContent=t},1500)})});
-document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{if(tab==="set"&&b.dataset.tab!=="set"&&settingsDirty()&&!confirm("You have unsaved changes on the Settings page. Discard them?"))return;tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
+document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{if(tab==="set"&&b.dataset.tab!=="set"&&settingsDirty()&&!(await askConfirm({title:"Discard your changes?",html:"<p>You have unsaved changes on the Settings page.</p>",ok:"Discard them",cancel:"Keep editing",danger:true})))return;tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
 function say(t,bad){$("#msg").textContent=t;$("#msg").className="small "+(bad?"err":"muted")}
-$("#bRun").onclick=()=>api("/api/run",{method:"POST",body:"{}"}).then(()=>say("Run started")).catch(e=>say(e.message,1)).finally(()=>{refresh();loadSetup()});
-$("#bStop").onclick=()=>api("/api/stop",{method:"POST"}).then(()=>say("Stopping after the running builds")).catch(e=>say(e.message,1)).finally(refresh);
+// A question in the page, not window.confirm: a browser dialog can block an automation, and on a phone it is small and ugly. Everything in `html` is
+// escaped by the caller. Resolves {key, checked} for the button pressed, or null for Escape / a click outside.
+function showDialog({title,html,buttons,check}){return new Promise(resolve=>{
+  if(dlgDone)dlgDone(null);
+  const back=$("#dlg"),box=back.querySelector(".dlg"),ck=$("#dlgCheck"),prev=document.activeElement;
+  $("#dlgTitle").textContent=title;$("#dlgBody").innerHTML=html||"";$("#dlgCheckRow").hidden=!check;ck.checked=false;if(check)$("#dlgCheckText").textContent=check;
+  $("#dlgBtns").innerHTML=buttons.map(b=>`<button type="button" class="btn ${b.kind==="pri"?"pri":b.kind==="danger"?"dng":""}" data-dlg="${esc(b.key)}">${esc(b.label)}</button>`).join("");
+  const done=r=>{back.hidden=true;document.body.classList.remove("dlgopen");back.removeEventListener("click",onClick);document.removeEventListener("keydown",onKey,true);dlgDone=null;
+    try{if(prev&&prev.focus)prev.focus()}catch(e){}resolve(r)};
+  const onClick=e=>{const b=e.target.closest("[data-dlg]");if(b)return done({key:b.dataset.dlg,checked:ck.checked});if(e.target===back)done(null)};
+  const onKey=e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();done(null)}
+    else if(e.key==="Tab"){const els=[...box.querySelectorAll("button,input")].filter(x=>!x.disabled&&!x.closest("[hidden]"));if(!els.length)return;
+      const i=els.indexOf(document.activeElement);if(i===-1||(e.shiftKey&&i===0)||(!e.shiftKey&&i===els.length-1)){e.preventDefault();els[e.shiftKey?els.length-1:0].focus()}}};
+  back.addEventListener("click",onClick);document.addEventListener("keydown",onKey,true);dlgDone=done;
+  back.hidden=false;document.body.classList.add("dlgopen");(box.querySelector("button.pri,button.dng")||box.querySelector("button")||box).focus()})}
+let dlgDone=null;
+function askConfirm({title,html,ok="OK",cancel="Cancel",danger}){return showDialog({title,html,buttons:[{key:"ok",label:ok,kind:danger?"danger":"pri"},{key:"no",label:cancel}]}).then(r=>!!r&&r.key==="ok")}
+const plural=(n,one,many)=>`${n} ${n===1?one:(many||one+"s")}`;
+const bytesText=b=>b>=2**40?(b/2**40).toFixed(1)+" TiB":gib(b);
+// Run now: a summary first (how many games, how big, about how long, how much room), unless this browser was told not to ask
+const dontAskRun=()=>{try{return localStorage.getItem("ps5pkg.askRun")==="0"}catch(e){return false}};
+function renderAskAgain(){$("#askAgain").hidden=!dontAskRun()}
+document.addEventListener("click",e=>{if(!e.target.closest("[data-askagain]"))return;e.preventDefault();try{localStorage.removeItem("ps5pkg.askRun")}catch(x){}renderAskAgain()});
+async function startRun(){const s=lastS||{},t=s.todo||{},free=s.disks&&s.disks.temp?s.disks.temp.free:null;
+  if(!dontAskRun()){
+    const nothing=!num(t.builds)&&!num(t.copies);
+    const what=nothing?`<p>${s.plan_time?"Nothing is waiting to be built. The run starts by looking for new games anyway.":"No scan has been done yet: the run starts by looking for new games."}</p>`
+      :`<p><b>${num(t.builds)?`Build ${plural(num(t.builds),"game")}`:""}${num(t.builds)&&num(t.copies)?" and copy ":num(t.copies)?"Copy ":""}${num(t.copies)?plural(num(t.copies),"PS4 title"):""}</b> (${esc(bytesText(num(t.bytes)))} of sources, ${t.seconds!=null?`about ${esc(dur(t.seconds))}`:"no time estimate yet: no build has finished on this machine"}).</p>`;
+    const r=await showDialog({title:"Start a run now?",html:what+`<p class="small muted">Free on the work drive: ${free!=null?esc(bytesText(free)):"not known"}. You can stop the run at any time from the Dashboard.</p>`,
+      buttons:[{key:"go",label:"Start run",kind:"pri"},{key:"no",label:"Cancel"}],check:"Don't ask me again in this browser"});
+    if(!r||r.key!=="go")return;
+    if(r.checked){try{localStorage.setItem("ps5pkg.askRun","0")}catch(e){}renderAskAgain()}}
+  try{await api("/api/run",{method:"POST",body:"{}"});say("Run started")}catch(e){say(e.message,1)}finally{refresh();loadSetup()}}
+$("#bRun").onclick=startRun;
+// Stop: finish the current games (and take that back), or stop now (after saying what is lost)
+const runCounts=s=>{const st=s.status||{},P=st.preparing||[];return{building:(st.builds||[]).length,preparing:P.filter(x=>!x.ps4).length,ps4:P.filter(x=>x.ps4).length,ready:(st.queue||[]).filter(x=>x.ready).length}};
+function currentLeft(s){const st=s.status||{},rows=[...(st.builds||[]),...(st.preparing||[])];if(!rows.length)return 0;if(rows.some(x=>x.remaining==null))return null;return Math.max(...rows.map(x=>num(x.remaining)))}
+async function stopDialog(){const s=lastS||{};if(!s.engine_running||s.stop_mode==="now")return;
+  const c=runCounts(s),left=currentLeft(s),after=s.stop_mode==="after_current";
+  const wait=left===null?" (time not known yet)":left>0?` (about ${dur(left)})`:"";
+  const r=await showDialog({title:"Stop the run",
+    html:after?`<p>The run is stopping: nothing new is started, and the games in progress finish${esc(wait)}. You can carry on with the queue until the last one ends.</p>`
+      :`<p><b>Finish current games, then stop</b> starts nothing new and lets what is running finish${esc(wait)}. You can take it back until the last one ends.</p><p><b>Stop now</b> ends everything that is running (you are asked to confirm).</p>`,
+    buttons:[after?{key:"resume",label:"Resume: carry on with the queue",kind:"pri"}:{key:"after",label:"Finish current games, then stop"+wait,kind:"pri"},{key:"now",label:"Stop now…",kind:"danger"},{key:"no",label:after?"Close":"Cancel"}]});
+  if(!r||r.key==="no")return;
+  if(r.key==="now"&&!(await askConfirm({title:"Stop now?",html:nowLoss(c),ok:"Stop now and discard",cancel:"Back",danger:true})))return;
+  await doStop(r.key==="resume"?"resume":r.key==="now"?"now":"after_current")}
+function nowLoss(c){const lost=[];if(c.building)lost.push(plural(c.building,"build")+" in progress");if(c.preparing)lost.push(plural(c.preparing,"game")+" being prepared");if(c.ps4)lost.push(plural(c.ps4,"PS4 copy","PS4 copies")+" in progress");
+  return `<p>${lost.length?esc(lost.join(", ").replace(/, ([^,]*)$/," and $1"))+" will be discarded.":"Nothing is running at this moment."}</p>${c.ready?`<p>${esc(plural(c.ready,"prepared copy","prepared copies"))} ${c.ready===1?"is":"are"} kept for next time.</p>`:""}<p class="small muted">Games that have not started stay in the library and are built by the next run. Finished packages are never touched.</p>`}
+async function doStop(mode){try{if(mode==="resume"){await api("/api/stop",{method:"DELETE"});say("Resumed: the run carries on")}else{await api("/api/stop",{method:"POST",body:JSON.stringify({mode})});say(mode==="now"?"Stopping now…":"Stopping after the running games")}}catch(e){say(e.message,1)}finally{refresh()}}
+$("#bStop").onclick=stopDialog;
+// Cancel one game: a build or a prepare (asked first), or take a queued game out of the run
+async function cancelGame(tid,name,phase){
+  if(phase!=="queue"&&!(await askConfirm({title:`Cancel ${name}?`,html:`<p>${phase==="building"?"The build in progress is discarded.":"What has been prepared so far is discarded."}</p><p class="small muted">The game stays in the library and is built again by the next run. Finished packages are never touched.</p>`,ok:"Cancel this game",cancel:"Keep going",danger:true})))return;
+  try{await api(`/api/builds/${encodeURIComponent(tid)}/cancel`,{method:"POST",body:"{}"});say(phase==="queue"?"Taken out of this run":"Cancelling…")}catch(e){say(e.message,1)}finally{refresh()}}
+document.addEventListener("click",e=>{const b=e.target.closest("[data-cancel]");if(!b)return;e.preventDefault();b.disabled=true;cancelGame(b.dataset.cancel,b.dataset.name||b.dataset.cancel,b.dataset.phase).finally(()=>{b.disabled=false})});
 function doScan(){return api("/api/scan",{method:"POST"}).then(()=>say("Scanning…")).catch(e=>say(e.message,1)).finally(refresh)}
 $("#bScan").onclick=doScan;
 function goTab(t){document.querySelector(`nav button[data-tab=${t}]`).click()}
 // first-run checklist: the card stays open while something is wrong, then shrinks to one line
-let setup=[],setupOpen=false,busy=false,lastFin,wantLog=null;
+let setup=[],setupOpen=false,lastFin,wantLog=null,lastS=null;
 const setupFails=()=>setup.filter(c=>c.level==="fail");
 async function loadSetup(){try{setup=await api("/api/setup")}catch(e){return}renderSetup()}
-function syncRun(){const f=setupFails();$("#bRun").disabled=busy||f.length>0;
-  $("#runWhy").textContent=f.length?"Run is disabled until the FAIL items under Setup are fixed: "+f.map(c=>c.title).join(", "):""}
+// why a button can't be pressed, in words (also its tooltip), so a disabled button never leaves a person guessing
+function whyNot(s,what){const f=setupFails();
+  if(what==="stop")return!s.engine_running?"No run is active.":s.stop_mode==="now"?"Stopping now.":"";
+  if(s.engine_running)return"A run is active.";
+  if(s.scan&&s.scan.running)return"A scan is running.";
+  if(what==="run"&&f.length)return"Run is disabled until the FAIL items under Setup are fixed: "+f.map(c=>c.title).join(", ");
+  return""}
+function syncRun(){const s=lastS||{},r=whyNot(s,"run"),sc=whyNot(s,"scan"),st=whyNot(s,"stop");
+  $("#bRun").disabled=!!r;$("#bScan").disabled=!!sc;$("#bStop").disabled=!!st;
+  $("#bRun").title=r;$("#bScan").title=sc;$("#bStop").title=st;
+  $("#bStop").textContent=s.stop_mode==="after_current"?"Stopping after current…":s.stop_mode==="now"?"Stopping now…":"Stop…";
+  const why=s.engine_running?"Run now and Scan are off while a run is active.":s.scan&&s.scan.running?"Run now and Scan are off while a scan is running.":r;
+  $("#runWhy").textContent=why}
+// the schedule can be paused with one click (optionally until a time on the server's clock); the header says so
+const WD=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+function pauseLabel(p,now){if(!p)return"";if(p.until==null)return"paused";const a=srvAt(p.until),b=srvAt(now||Date.now()/1000),hm=`${p2(a.h)}:${p2(a.mi)}`;
+  if(a.y===b.y&&a.mo===b.mo&&a.d===b.d)return`paused until ${hm}`;
+  const days=(Date.UTC(a.y,a.mo,a.d)-Date.UTC(b.y,b.mo,b.d))/86400000;
+  return days>0&&days<7?`paused until ${WD[new Date(Date.UTC(a.y,a.mo,a.d)).getUTCDay()]} ${hm}`:`paused until ${a.d} ${MON[a.mo]} ${hm}`}
+function renderPause(s){const p=s.schedule_pause,on=s.schedule&&s.schedule.enabled,u=$("#pauseUntil").value;
+  $("#pauseBox").hidden=!(on||p);$("#pauseUntilLbl").hidden=!!p;
+  $("#bPause").textContent=p?"Resume schedule":u?"Pause until "+u.replace("T"," "):"Pause schedule";
+  $("#bPause").title=p?"The schedule starts runs again":"No run starts by itself until you resume"+(u?" or until "+u.replace("T"," "):"")}
+$("#pauseUntil").oninput=()=>{if(lastS)renderPause(lastS)};
+$("#bPause").onclick=async()=>{const paused=lastS&&lastS.schedule_pause;
+  try{if(paused)await api("/api/schedule/pause",{method:"DELETE"});else{const u=$("#pauseUntil").value;await api("/api/schedule/pause",{method:"POST",body:JSON.stringify({until:u||null})});$("#pauseUntil").value=""}
+    say(paused?"Schedule resumed":"Schedule paused")}catch(e){say(e.message,1)}finally{refresh()}};
 function renderSetup(){const el=$("#setupCard"),w=setup.filter(c=>c.level==="warn"),loud=setupFails().length>0||w.some(c=>!c.advisory);syncRun();
   if(!setup.length){el.innerHTML="";return}
   if(!loud&&!setupOpen){el.innerHTML=`<div class="card row small"><b class="lv-ok">Setup OK</b>${w.length?`<span class="muted">· ${w.length} note${w.length>1?"s":""}</span>`:""}<span class="muted" style="margin-left:auto"><a href="#" data-more>Details</a> · <a href="#" data-recheck>Re-check</a></span></div>`;return}
@@ -123,46 +202,51 @@ const srvAt=ts=>{const d=new Date((ts+srvOff)*1000);return{y:d.getUTCFullYear(),
 function clk(ts,now){if(!ts)return"—";const a=srvAt(ts),b=srvAt(now||Date.now()/1000),hm=`${p2(a.h)}:${p2(a.mi)}`;return a.y===b.y&&a.mo===b.mo&&a.d===b.d?hm:`${a.d} ${MON[a.mo]} ${hm}`}
 function dur(s){s=Math.max(0,Math.round(num(s)));if(s<90)return s+" s";const m=Math.round(s/60);if(m<60)return m+" min";const h=Math.floor(m/60),r=m%60;return r?`${h} h ${p2(r)} min`:`${h} h`}
 const mibs=r=>{const v=num(r)/2**20;return v.toFixed(v>=10?0:1)+" MiB/s"},games=n=>`${num(n)} game${num(n)===1?"":"s"}`;
-const countsText=r=>{const p=[];if(num(r.built))p.push(`${num(r.built)} built`);if(num(r.copied))p.push(`${num(r.copied)} copied`);if(num(r.failed))p.push(`${num(r.failed)} failed`);if(num(r.deferred))p.push(`${num(r.deferred)} waiting for space`);return p.join(", ")||"nothing to do"};
+const countsText=r=>{const p=[];if(num(r.built))p.push(`${num(r.built)} built`);if(num(r.copied))p.push(`${num(r.copied)} copied`);if(num(r.failed))p.push(`${num(r.failed)} failed`);if(num(r.deferred))p.push(`${num(r.deferred)} waiting for space`);if(num(r.cancelled))p.push(`${num(r.cancelled)} cancelled`);return p.join(", ")||"nothing to do"};
 const bar=pct=>`<div class="bar"><i style="width:${Math.max(0,Math.min(100,num(pct)))}%"></i></div>`;
 const jobName=x=>esc(String(x.name||x.title||x.title_id||"").replace(/\.pkg$/,""));
 // the run being shown: the engine is up and its status is of this run (the last run's finished status is not)
 const liveRun=s=>s.engine_running&&s.status&&s.status.run&&!s.status.finished?s.status.run:null;
 function headerText(s){const run=liveRun(s);let t;
-  if(s.engine_running){t=s.stop_requested?"Stopping after current":"Running";if(run&&run.phase!=="scanning")t+=` · ${num(run.done)} of ${num(run.total)} done${run.remaining!=null?` · about ${dur(run.remaining)} left`:""}`}
-  else if(s.scan.running)t="Scanning…";
-  else{t="Idle";if(s.next_run)t+=` · next run ${s.next_run.label}`;const lr=s.last_run;if(lr){const c=countsText(lr);t+=lr.interrupted?" · the last run did not finish":` · last run ${c==="nothing to do"?"had nothing to do":c}`}}
+  const paused=s.schedule_pause&&s.schedule&&s.schedule.enabled?` · schedule ${pauseLabel(s.schedule_pause,s.now)}`:"";
+  if(s.engine_running){t=s.stop_mode==="now"?"Stopping now":s.stop_requested?"Stopping after current":"Running";if(run&&run.phase!=="scanning")t+=` · ${num(run.done)} of ${num(run.total)} done${run.remaining!=null?` · about ${dur(run.remaining)} left`:""}`;t+=paused}
+  else if(s.scan.running)t="Scanning…"+paused;
+  else{t="Idle";if(paused)t+=paused;else if(s.next_run)t+=` · next run ${s.next_run.label}`;const lr=s.last_run;if(lr){const c=countsText(lr);t+=lr.interrupted?" · the last run did not finish":` · last run ${c==="nothing to do"?"had nothing to do":c}`}}
   return t+(s.clock?` · server time ${s.clock.time} ${s.clock.tz}`:"")}
 function renderRun(s){const run=liveRun(s),now=s.now;let line,sub="",pct=null;
   if(s.engine_running){
     if(!run){line="Starting…";sub="a run has just been started"}
     else if(run.phase==="scanning"){line="Running · scanning the library…";sub=`started ${clk(run.started,now)} (${esc(run.trigger||"manual")}) · what to build is worked out first`}
-    else{line=`${s.stop_requested?"Stopping after the current games":"Running"} · ${num(run.done)} of ${num(run.total)} done${num(run.failed)?` · <span class="err">${num(run.failed)} failed</span>`:""}`;pct=Math.round(num(run.progress)*100);
+    else{line=`${s.stop_mode==="now"?"Stopping now":s.stop_requested?"Stopping after the current games":"Running"} · ${num(run.done)} of ${num(run.total)} done${num(run.failed)?` · <span class="err">${num(run.failed)} failed</span>`:""}`;pct=Math.round(num(run.progress)*100);
       sub=`started ${clk(run.started,now)} (${esc(run.trigger||"manual")}) · ${run.remaining!=null?`about ${dur(run.remaining)} left`:"estimating the time left…"}`}}
   else if(s.scan.running){line="Scanning for new games…"}
   else{const lr=s.last_run;
     line=lr?(lr.interrupted?`Idle · the last run did not finish (${num(lr.done)} of ${num(lr.total)} done)`:`Idle · last run ${clk(lr.finished,now)}: ${games(lr.total)}, ${esc(countsText(lr))}`):"Idle · nothing has run yet";
-    sub=s.next_run?`Next run ${esc(s.next_run.label)}${lr&&lr.trigger?` · the last one was ${esc(lr.trigger)}`:""}`:"Not scheduled: press Run now, or set times under Settings."}
+    sub=s.schedule_pause&&s.schedule&&s.schedule.enabled?`Schedule ${esc(pauseLabel(s.schedule_pause,now))}: no run starts by itself. Press Resume schedule, or Run now.`
+      :s.next_run?`Next run ${esc(s.next_run.label)}${lr&&lr.trigger?` · the last one was ${esc(lr.trigger)}`:""}`:"Not scheduled: press Run now, or set times under Settings."}
   const r=$("#runLine");const html=line;if(r.innerHTML!==html)r.innerHTML=html;
   $("#runBar").hidden=pct==null;if(pct!=null){$("#runBar i").style.width=pct+"%";$("#runPct").textContent=pct+"%"}
   $("#runSub").innerHTML=sub}
-function buildRow(x,now){const stages=[1,3,5].includes(num(x.stage))&&x.part;
+const cancelBtn=(x,canc,phase,label)=>canc.has(x.title_id)?`<span class="muted small">${phase==="queue"?"Removing…":"Cancelling…"}</span>`
+  :`<button class="btn sm" data-cancel="${esc(x.title_id)}" data-name="${jobName(x)}" data-phase="${phase}">${label||"Cancel"}</button>`;
+function buildRow(x,now,canc=new Set()){const stages=[1,3,5].includes(num(x.stage))&&x.part;
   const what=x.phase==="building"?`<span title="${esc(x.stage_text?"UltraPack: "+x.stage_text:"")}">${esc(x.stage_name||"Building")}</span> (${num(x.stage)} of 5)${stages?` · ${num(x.stage_pct)}%`:""}`
     :`${esc(x.stage_name)}${x.total_bytes?` · ${gib(x.bytes)} of ${gib(x.total_bytes)} · ${num(x.stage_pct)}%`:""}`;
   const left=x.remaining!=null?`about ${dur(x.remaining)} left`:"estimating…";
-  return `<div class="job"><div class="row"><b>${jobName(x)}</b>${x.log?`<span class="small" style="margin-left:auto"><a href="#" data-log="pkg/${esc(x.log)}">log</a></span>`:""}</div>
+  return `<div class="job"><div class="row"><b>${jobName(x)}</b><span class="jobbtn small">${x.log?`<a href="#" data-log="pkg/${esc(x.log)}">log</a>`:""}${cancelBtn(x,canc,"building")}</span></div>
    <div class="small">${what} · ${dur(now-num(x.since))} elapsed · ${left}${x.rate?` · ${mibs(x.rate)}`:""}</div>${x.progress!=null?bar(num(x.progress)*100):""}</div>`}
-function prepRow(x,now){const known=num(x.size)>0;
-  return `<div class="job"><div class="row"><b>${jobName(x)}</b></div><div class="small">${x.ps4?"copying PS4 packages":"copying &amp; verifying"}${known?` · ${gib(x.bytes)} of ${gib(x.size)} · ${num(x.pct)}%`:` · ${gib(x.bytes)}`}${x.rate?` · ${mibs(x.rate)}`:""}${x.remaining!=null?` · about ${dur(x.remaining)} left`:""} · ${dur(now-num(x.since))} elapsed</div>${known?bar(num(x.pct)):""}</div>`}
-let resOpen=false,healthOpen=false;
-document.addEventListener("toggle",e=>{if(e.target.id==="resDetails")resOpen=e.target.open;if(e.target.id==="healthBox")healthOpen=e.target.open},true);
+function prepRow(x,now,canc=new Set()){const known=num(x.size)>0;
+  return `<div class="job"><div class="row"><b>${jobName(x)}</b><span class="jobbtn small">${cancelBtn(x,canc,"preparing")}</span></div><div class="small">${x.ps4?"copying PS4 packages":"copying &amp; verifying"}${known?` · ${gib(x.bytes)} of ${gib(x.size)} · ${num(x.pct)}%`:` · ${gib(x.bytes)}`}${x.rate?` · ${mibs(x.rate)}`:""}${x.remaining!=null?` · about ${dur(x.remaining)} left`:""} · ${dur(now-num(x.since))} elapsed</div>${known?bar(num(x.pct)):""}</div>`}
+let resOpen=false,healthOpen=false,qOpen=false;
+document.addEventListener("toggle",e=>{if(e.target.id==="resDetails")resOpen=e.target.open;if(e.target.id==="healthBox")healthOpen=e.target.open;if(e.target.id==="qMore")qOpen=e.target.open},true);
 function resultsTable(r,now){return `<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${cls(x.status)}">${esc(x.status==="deferred"?"waiting for space":x.status)}</span></td><td class="small muted" title="${esc(x.why_host||x.why||"")}">${esc(x.summary||x.why_host||x.why||x.validate||"")} ${x.build_min?`· build ${esc(x.build_min)} min`:""}${x.at?` · ${esc(clk(x.at,now))}`:""}</td></tr>`).join("")}</table>`}
 function renderLive(s){const run=liveRun(s),st=s.status||{},now=s.now,r=st.results||[];let h="";
   if(run&&run.phase!=="scanning"){
-    const B=st.builds||[],P=st.preparing||[],Q=st.queue||[];
-    if(B.length)h+=`<div class="card sec"><h2>Building (${B.length})</h2>${B.map(x=>buildRow(x,now)).join("")}</div>`;
-    if(P.length)h+=`<div class="card sec"><h2>Preparing (${P.length})</h2>${P.map(x=>prepRow(x,now)).join("")}</div>`;
-    if(Q.length)h+=`<div class="card sec"><h2>Up next (${Q.length})${num(run.queue_bytes)?` · ${gib(run.queue_bytes)}`:""}</h2>${Q.slice(0,6).map(x=>`<div class="small">${jobName(x)} <span class="muted">${x.size?gib(x.size):""}${x.ps4?" · PS4":""}</span></div>`).join("")}${Q.length>6?`<div class="small muted">and ${Q.length-6} more</div>`:""}</div>`;
+    const B=st.builds||[],P=st.preparing||[],Q=st.queue||[],canc=new Set(s.cancelling||[]);
+    const qRow=x=>`<div class="row small" style="padding:2px 0"><span>${jobName(x)} <span class="muted">${x.size?gib(x.size):""}${x.ps4?" · PS4":""}${x.ready?" · prepared, waiting for a free slot":""}</span></span><span class="jobbtn">${cancelBtn(x,canc,"queue","Remove from this run")}</span></div>`;
+    if(B.length)h+=`<div class="card sec"><h2>Building (${B.length})</h2>${B.map(x=>buildRow(x,now,canc)).join("")}</div>`;
+    if(P.length)h+=`<div class="card sec"><h2>Preparing (${P.length})</h2>${P.map(x=>prepRow(x,now,canc)).join("")}</div>`;
+    if(Q.length)h+=`<div class="card sec"><h2>Up next (${Q.length})${num(run.queue_bytes)?` · ${gib(run.queue_bytes)}`:""}</h2>${Q.slice(0,6).map(qRow).join("")}${Q.length>6?`<details id="qMore" ${qOpen?"open":""}><summary class="small muted">and ${Q.length-6} more</summary>${Q.slice(6).map(qRow).join("")}</details>`:""}</div>`;
     if(r.length)h+=`<details class="card sec" id="resDetails" ${resOpen?"open":""}><summary><b>Finished this run (${r.length})</b> <span class="muted small">${esc(countsText(run))}</span></summary>${resultsTable(r,now)}</details>`}
   else if(!s.engine_running&&r.length&&st.finished&&s.last_run)h=`<details class="card sec" id="resDetails" ${resOpen?"open":""}><summary><b>Last run (${r.length})</b> <span class="muted small">${esc(clk(s.last_run.finished,now))} · ${esc(countsText(s.last_run))}</span></summary>${resultsTable(r,now)}</details>`;
   const box=$("#liveBox");if(box.dataset.h!==h){box.dataset.h=h;box.innerHTML=h}}
@@ -184,11 +268,10 @@ function renderHealth(s){const c=s.plan_counts||{},d=s.disks||{},total=Object.va
   box.open=healthOpen}
 async function refresh(){
   const s=await poll();
-  $("#state").textContent=headerText(s);
-  busy=s.engine_running||s.scan.running;syncRun();failBox(s);
+  lastS=s;$("#state").textContent=headerText(s);
+  syncRun();renderPause(s);renderAskAgain();failBox(s);
   if(s.failures_rev!==lastFailRev){lastFailRev=s.failures_rev;loadFailures()}
   const fin=[s.scan.finished,s.run?.finished].join("|");if(fin!==lastFin){const first=lastFin===undefined;lastFin=fin;if(!first)loadSetup()}   // a scan changes what the biggest game is
-  $("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
   renderRun(s);renderLive(s);renderFolders(s);renderHealth(s);
   const c=s.plan_counts;
   $("#kpis").innerHTML=[["To build",c.build],...(c.copy?[["PS4 to copy",c.copy]]:[]),["Built",c.done],["Failed",c.failed,c.failed>0],["Last scan",s.plan_time?ago(s.plan_time):"never"]].map(([k,v,bad])=>`<div class="kpi${bad?" bad":""}"><b>${esc(v??"—")}</b><span>${esc(k)}</span></div>`).join("");
@@ -293,8 +376,8 @@ async function afterReplan(tid,prev){for(let i=0;i<30;i++){await new Promise(r=>
 function buildEstimate(p){const pace=libData.status.pace||{},gibs=num(p.size)/2**30;
   if(!pace.build_per_gib||!gibs)return"no estimate yet: no build has finished on this machine";
   return "about "+dur((pace.build_per_gib+(pace.prep_per_gib||0))*gibs)+", from the builds this machine has done"}
-async function buildOne(t){const p=libData.plan.find(x=>x.title_id===t)||{};
-  if(!confirm(`Build ${p.title||t} now?\n\n${num(p.size)?gib(p.size)+" to read, ":""}${buildEstimate(p)}.\nIt runs in the background; Stop after current ends it after the games in progress.`))return;
+async function buildOne(t){const p=libData.plan.find(x=>x.title_id===t)||{},free=libData.status.disks&&libData.status.disks.temp?libData.status.disks.temp.free:null;
+  if(!(await askConfirm({title:`Build ${p.title||t} now?`,html:`<p>${num(p.size)?esc(gib(p.size))+" to read, ":""}${esc(buildEstimate(p))}.</p><p class="small muted">${free!=null?`Free on the work drive: ${esc(bytesText(free))}. `:""}It runs in the background; Stop on the Dashboard ends it.</p>`,ok:"Build it"})))return;
   try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
 function alertBox(m){say(m,1)}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-do]");if(!b)return;e.preventDefault();
@@ -440,14 +523,14 @@ async function impRun(dry){const out=$("#impOut");
   $("#bImpApply").disabled=true;impText=null;out.innerHTML=`<b>Imported: ${esc(r.data.summary)}.</b>${r.data.backup?` The previous settings were saved as <code>${esc(r.data.backup)}</code>.`:""}`;loadSet("Imported.")}
 document.addEventListener("click",async e=>{const bk=e.target.closest("[data-bk]");if(!bk)return;const name=bk.dataset.bk,out=$("#bkOut");
   if(e.target.closest("[data-bkpreview]")){const r=await postJson(`/api/backups/${encodeURIComponent(name)}/restore?dry_run=1`,"{}");out.innerHTML=r.ok?diffHtml(r.data)+(r.data.problems?.length?`<div class="muted">The backup has values that are not valid now: ${r.data.problems.map(esc).join("; ")}</div>`:""):`<span class="err">${esc(r.data.detail||"failed")}</span>`}
-  else if(e.target.closest("[data-bkrestore]")){if(!confirm(`Make the backup ${name} the current settings? The current file is backed up first.`))return;const r=await postJson(`/api/backups/${encodeURIComponent(name)}/restore`,"{}");
+  else if(e.target.closest("[data-bkrestore]")){if(!(await askConfirm({title:"Restore this backup?",html:`<p>Make the backup <code>${esc(name)}</code> the current settings? The current file is backed up first.</p>`,ok:"Restore it"})))return;const r=await postJson(`/api/backups/${encodeURIComponent(name)}/restore`,"{}");
     if(r.ok){toast(`Restored. ${r.data.backup?"The replaced settings were saved as "+r.data.backup+".":""}`);loadSet("Restored from "+name)}else out.innerHTML=`<span class="err">${esc(r.data.detail||"failed")}</span>`}});
 function renderOverrides(){const o=storage.overrides;
   $("#ovrCard").innerHTML=`<h2>Per-game overrides</h2>${o.length?`<table><thead><tr><th>Game</th><th>What is overridden</th><th>Note</th><th></th></tr></thead><tbody>${o.map(x=>`<tr><td><b>${esc(x.title||x.title_id)}</b><div class="small muted">${esc(x.title_id)}${x.in_library?"":` <span class="tag t-waiting">not in library</span>`}</div></td>
      <td class="small">${esc(x.what.join(" · ")||"(empty)")}${x.patch?`<div>${pathHtml(x.patch_host,x.patch)}</div>`:""}</td><td class="small">${esc(x.note)}</td>
      <td><button class="btn sm" data-ovr-remove="${esc(x.title_id)}">Remove</button></td></tr>`).join("")}</tbody></table>`:`<div class="muted small">No game has options of its own. Set them from a game's Options on the Library page.</div>`}`}
 $("#ovrCard").addEventListener("click",async e=>{const b=e.target.closest("[data-ovr-remove]");if(!b)return;const t=b.dataset.ovrRemove;
-  if(!confirm(`Remove the override for ${t}? Only this entry is deleted.`))return;
+  if(!(await askConfirm({title:"Remove this override?",html:`<p>Remove the override for ${esc(t)}? Only this entry is deleted.</p>`,ok:"Remove it",danger:true})))return;
   try{await api("/api/overrides/"+encodeURIComponent(t),{method:"DELETE"});toast("Removed the override for "+t);loadStorage()}catch(err){toast(err.message,1)}});
 async function loadLogs(){const l=await api("/api/logs");const cur=wantLog||$("#logSel").value;wantLog=null;if(cur&&!l.some(x=>x.name===cur))l.unshift({name:cur});$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
 async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600"+($("#logHost").checked?"&host=1":""));const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
