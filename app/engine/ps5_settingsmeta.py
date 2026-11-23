@@ -69,9 +69,21 @@ FIELDS = [
          help="Start a run at the times below, on this server's clock."),
     dict(key="schedule.times", group="schedule", kind="times", label="Run at", example="03:00",
          help="24-hour times as HH:MM, like 03:00 or 14:30."),
-    dict(key="notify_url", group="notifications", kind="text", label="Notification URL (optional)", example="https://ntfy.sh/my-private-topic",
-         help="A web address that gets a short message when a game is built, copied or fails (an ntfy topic works). It must start with "
-              "http:// or https://; leave it empty for no notifications."),
+    dict(key="notify_url", group="notifications", kind="text", label="Send notifications to", example="https://ntfy.sh/my-private-topic",
+         help="An ntfy topic, or the address of a service that takes a webhook. It must start with http:// or https://; leave it empty for no "
+              "notifications. The address is never written to the log or shown in an error."),
+    dict(key="notify_type", group="notifications", kind="choice", label="What it is",
+         choices=[("ntfy", "ntfy (or anything that takes a plain POST)"), ("webhook", "Webhook: JSON (Home Assistant, Discord-compatible relays, ...)")],
+         help="ntfy gets the message as text with a title, a priority and tags. A webhook gets one JSON document per message (README: Notifications)."),
+    dict(key="notify_summary", group="notifications", kind="bool", label="When a run finishes",
+         help="One message: how many were built, copied, failed or cancelled, how long it took and how much room is left. A run with nothing to do says nothing."),
+    dict(key="notify_attention", group="notifications", kind="bool", label="When something needs attention",
+         help="A game that failed for a new reason, a game waiting for room, a folder nearly full, a scheduled run that could not start or was skipped, "
+              "a settings file that can't be read. These are sent with a high priority."),
+    dict(key="notify_each_game", group="notifications", kind="bool", label="For every finished game",
+         help="A message each time a game is built or copied. A night run of ten games is ten messages: the summary is usually enough."),
+    dict(key="notify_link", group="notifications", kind="text", label="Link back (optional)", example="http://nas.local:8765",
+         help="Where this page is. Added to ntfy messages so a tap opens it, and sent as `url` to a webhook."),
 ]
 BY_KEY = {f["key"]: f for f in FIELDS}
 LABEL = {**{k: f["label"] for k, f in BY_KEY.items()},
@@ -159,8 +171,10 @@ def friendly(key, value, tech):
         return [_err("host_paths", text[0].upper() + text[1:] + ("" if text.endswith(".") else "."))]
     if key == "console_fw":
         return [_err(key, "Enter the firmware like 13.20 (digits, a dot, two digits), or leave it empty if you don't know it.")]
-    if key == "notify_url":
+    if key in ("notify_url", "notify_link"):
         return [_err(key, "Enter a web address that starts with http:// or https://, or leave it empty.")]
+    if key == "notify_type":
+        return [_err(key, "Choose ntfy or webhook.")]
     if key == "ps4_mode":
         return [_err(key, "Choose copy or skip.")]
     if key == "keep_replaced":

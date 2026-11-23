@@ -80,6 +80,51 @@ the oldest are removed while they take more than *N* GB (both 0 by default: noth
 the engine's current log and the last scan are never removed, and nothing written to in the last hour. The Logs page shows how much room
 the logs take and has a "Remove old logs now" button that says what it will remove first.
 
+### Notifications
+
+Settings > Notifications sends messages to an [ntfy](https://ntfy.sh) topic or to anything that takes a webhook. **Send test** posts a
+test message with what is on the form now (saved or not) and shows the answer beside the field: "Delivered (HTTP 200)", or what went wrong
+("HTTP 403 Forbidden", "Connection refused", "timed out").
+
+| Setting | Default | Sends |
+|---|---|---|
+| When a run finishes | on | one summary: `Run finished: 4 built, 1 failed (Example Game: ...), 2 cancelled. 3 h 12 min. 1.3 TiB free in the output folder.` A run with nothing to do says nothing. |
+| When something needs attention | on | a game that **failed for a reason it had not failed for before** (an unchanged failure that is tried again is not announced again), a game **waiting for room**, an **output folder or work drive nearly full** (said once, and again only after it has been fixed and is low again), a run that **could not start** (library not mounted, a failing setup check, another run holding the lock), a scheduled run **skipped** because another was active, a scheduled run that **ended badly**, a **settings file that can't be read**. High priority. |
+| For every finished game | off | a message each time a game is built or copied. An install that already had an address before these settings existed keeps this on. |
+
+The failure texts are the explanations of the Dashboard's failure rows. A **Link back** address (where this page is) is added to ntfy
+messages so a tap opens the Dashboard, and sent as `url` to a webhook.
+
+**ntfy** (the default) is a plain POST: the body is the message (UTF-8), the headers are `Title`, `Priority` (`high` for attention and
+failures), `Tags` and, with a link back, `Click`. A title outside ASCII is sent as RFC 2047 (`=?UTF-8?B?...?=`), which ntfy decodes.
+
+**Webhook** posts `Content-Type: application/json; charset=utf-8`, the same document for every event:
+
+```json
+{
+  "schema": 1,
+  "event": "summary",
+  "title": "PS5 pkg: run finished",
+  "message": "Run finished: 4 built, 1 failed (Example Game: ...). 3 h 12 min. 1.3 TiB free in the output folder.",
+  "priority": "default",
+  "url": "http://nas.local:8765",
+  "time": "2026-11-22T06:12:44+0000",
+  "games": [{"title_id": "PPSA01234", "title": "Example Game", "name": "Example Game [PPSA01234] [v01.004.000] [fw9.60].pkg",
+             "status": "built", "output": "/output/Example Game ... .pkg", "bytes": 44250112000, "seconds": 3630}],
+  "run": {"trigger": "scheduled", "seconds": 11520, "counts": {"built": 4, "copied": 0, "failed": 1, "cancelled": 0, "deferred": 0}, "free_bytes": 1428000000000}
+}
+```
+
+`event` is one of `summary`, `built`, `copied`, `failed`, `attention`, `test`. `url` is `null` without a link back. `games` lists the
+games the message is about (a game that failed, was built, ...; for a summary all of the run's) with `status` one of `built`, `copied`,
+`failed`, `cancelled`, `deferred`, and, where they apply, `reason` (a failure in words), `output`, `bytes`, `seconds`. `run` is only in a
+summary. Fields may be added in later versions; `schema` changes only if one is removed or changes meaning.
+
+What became of the last message is kept (`state/notify_last.json`) and shown under the address ("Last delivery: ok, 2 min ago" / "failed:
+HTTP 403 Forbidden"), every delivery is a line in `pkg_sync.log`, and a destination that does not work is a row in **Needs attention**. The
+address is never written to the log, to an error message or to the status (it may hold a private topic or a token: errors are scrubbed of
+it and of anything that looks like one), and "Export settings" can leave it out as before.
+
 ### Controlling a run
 
 - **Run now** first shows what it would do: "Build 5 games (1.2 TiB of sources, about 6 h)", and how much room the work drive

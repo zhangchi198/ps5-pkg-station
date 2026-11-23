@@ -36,6 +36,7 @@ import ps5_progress as PG  # noqa: E402  (what earlier builds say about how long
 import ps5_settingsmeta as M  # noqa: E402  (what the Settings page shows and checks)
 import ps5_runctl as RC  # noqa: E402  (stop, cancel and pause requests: the files the engine and the scheduler read)
 import ps5_history as PH  # noqa: E402  (what runs did: history.jsonl, ledger entries of every version, logs, replaced packages)
+import ps5_notify as PN  # noqa: E402  (what is sent where, and what became of it)
 import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
 import ps5_settingsio as IO  # noqa: E402  (export / import of the settings)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
@@ -442,6 +443,23 @@ def record_exit(rec, rc, logname):
                log_tail=[] if rc == 0 else tail_lines(LOGS / logname))
 
 
+def server_log(msg):
+    try:
+        LOGS.mkdir(parents=True, exist_ok=True)
+        with open(LOGS / "pkg_sync.log", "a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except OSError:
+        pass
+
+
+def server_notify(event, title, message):
+    """A message from the web server's side: a scheduled run that was skipped or stopped, a settings file that can't be read. Never raises."""
+    try:
+        return PN.send(load_cfg(), event, title, message, state=STATE, log=server_log)
+    except Exception:
+        return None
+
+
 class EngineStartError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -469,6 +487,10 @@ def start_engine(*args, trigger="manual"):
             rc = proc.wait()
             if _run["pid"] == proc.pid:
                 record_exit(_run, rc, logname)
+            # a scheduled run nobody is watching that ends badly is told to a person. The engine says it itself when it can (a folder not
+            # mounted, a failing setup check, another run holding the lock); what it can't (a settings file it can't read, a crash) is said here
+            if trigger == "scheduled" and rc != 0 and rc not in (E.EXIT_NOT_MOUNTED, E.EXIT_SETUP, E.EXIT_LOCKED):
+                server_notify("attention", "PS5 pkg: scheduled run did not finish", explain_exit(rc))
         threading.Thread(target=watch, daemon=True).start()
         for _ in range(50):                   # wait for the lock so the UI shows "running" at once
             if engine_pid() or proc.poll() is not None:
@@ -524,8 +546,11 @@ def scheduler_tick(fired, now=None):
         try:
             if RC.pause_read(STATE, time.mktime(now)):             # a run that comes due while paused is skipped, not made up later
                 msg = "skipped (the schedule is paused)"
+            elif start_engine(trigger="scheduled"):
+                msg = "started"
             else:
-                msg = "started" if start_engine(trigger="scheduled") else "skipped (a run or scan is active)"
+                msg = "skipped (a run or scan is active)"
+                server_notify("attention", "PS5 pkg: scheduled run skipped", f"The run planned for {hm} did not start: a run or scan was still active.")
         except EngineStartError as ex:
             msg = f"did not start: {ex}"
         with open(LOGS / "pkg_sync.log", "a", encoding="utf-8") as fh:
@@ -552,6 +577,17 @@ def replan_tick():
         run_scan()
 
 
+def config_tick():
+    """A settings file that can't be read is told once (and again if it breaks again after it was fixed): the scheduled runs go on with the
+    last settings that worked, so nobody would otherwise notice."""
+    info = E.load_cfg_info()
+    if info.error:
+        if PN.once(STATE, "config_error", True):
+            server_notify("attention", "PS5 pkg: settings file can't be read", f"{info.error.describe()} The last settings that worked are used until it is fixed.")
+    else:
+        PN.once(STATE, "config_error", False)
+
+
 def scheduler():
     fired = set()
     while True:
@@ -559,6 +595,7 @@ def scheduler():
         try:
             scheduler_tick(fired)
             replan_tick()
+            config_tick()
         except Exception:
             pass
 
@@ -654,6 +691,7 @@ def status(request: Request):
                 status=st if pid else dict(st, live=False), next_run=None if pause else next_run(cfg.get("schedule")), last_run=last_run(st, bool(pid)), space=space,
                 pace=build_pace(cfg), rescan=rescan_info(cfg), todo=run_preview(cfg, plan), schedule_pause=pause,
                 stop_mode=RC.stop_mode(STATE), cancelling=pending_cancels_in(st, bool(pid)),
+                notify_last=PN.read_last(STATE) if PN.url_of(cfg) else None,
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "copy", "failed", "done", "skip", "error")},
@@ -842,7 +880,27 @@ def get_config():
     return {**{k: info.cfg.get(k) for k in SETTINGS}, "config_rev": info.rev, "in_docker": E.IN_DOCKER,
             "folders": folders_info(info.cfg)[0], "schema": M.schema(), "groups": M.GROUPS, "machine": machine,
             "warnings": M.warnings(info.cfg, machine), "problems": M.cross_errors(info.cfg), "rescan_note": M.RESCAN_NOTE, "rescan_keys": list(E.RESCAN_KEYS),
-            "run_active": run_active(), "labels": M.LABEL}
+            "run_active": run_active(), "labels": M.LABEL, "notify_last": PN.read_last(STATE) if PN.url_of(info.cfg) else None}
+
+
+@app.post("/api/notify/test")
+async def notify_test(req: Request):
+    """Send a test message with the values on the Settings form (not what is saved) and say what came of it. Nothing is stored: a test to an
+    address that is not saved must not make the saved one look broken. The answer never has the address in it."""
+    body = await req.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+    cfg = dict(load_cfg())
+    sent = {k: body[k] for k in ("notify_url", "notify_type", "notify_link") if k in body}
+    clean, errors, _ = M.check(cfg, sent)
+    if not errors and not str(clean.get("notify_url", cfg.get("notify_url")) or "").strip():
+        errors = [dict(field="notify_url", message="Enter the address to send to first.")]
+    if errors:
+        return invalid(errors)
+    cfg.update(clean)
+    res = PN.send(cfg, "test", "PS5 pkg: test", "This is a test from PS5 PKG Station. If you can read it, notifications work.", record=False)
+    server_log(f"notification test ({cfg.get('notify_type') or 'ntfy'}): " + ("delivered" + (f" (HTTP {res['status']})" if res["status"] else "") if res["ok"] else f"NOT delivered: {res['error']}"))
+    return {"ok": res["ok"], "status": res["status"], "error": res["error"], "type": res["type"]}
 
 
 def check_config(body):

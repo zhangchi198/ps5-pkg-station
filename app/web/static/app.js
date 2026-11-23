@@ -147,10 +147,15 @@ function failureBody(f){return `${f.detail?.length?`<ul class="small">${f.detail
   +((f.history||[]).length>1?`<div class="small muted">${num(f.history.length)} attempts, last: ${f.history.slice(-3).map(h=>esc(new Date(h.at*1000).toLocaleString())+" "+esc(h.code)).join(" · ")}</div>`:"")
   +(f.excerpt?.length?`<pre class="small">${esc((f.excerpt_host||f.excerpt).join("\n"))}</pre>`:"")
   +`<div class="small muted">Raw message: ${esc(f.message)}</div>`}
-function renderAttention(){const f=failures.filter(x=>!x.dismissed);
-  $("#attention").innerHTML=f.length?`<div class="card"><h2>Needs attention</h2>${f.map(x=>`<div class="att"><b>${esc(x.name||x.title||x.title_id)}</b> ${failTag(x)} <span class="muted small">${esc(x.at_text||"")} · attempt ${esc(x.attempts||1)}</span>
+let notifyBad=null;          // the last delivery, when it failed (from the status)
+const notifyRow=()=>notifyBad?`<div class="att"><b>Notifications can't be delivered</b> <span class="tag t-failed">failed</span> <span class="muted small">${esc(whenText(notifyBad.at))}</span>
+  <div>${esc(notifyBad.error||(notifyBad.status?`HTTP ${num(notifyBad.status)}`:"There was no answer from the notification address."))}</div>
+  <div class="small muted">The last ${esc(notifyBad.event||"")} message did not arrive. Check the address and use Send test under Settings.</div><div class="btnrow"><button class="btn sm" data-fa="goto" data-field="notify_url">Open the setting</button></div></div>`:"";
+function renderAttention(){const f=failures.filter(x=>!x.dismissed),nb=notifyRow();
+  const html=f.length||nb?`<div class="card"><h2>Needs attention</h2>${nb}${f.map(x=>`<div class="att"><b>${esc(x.name||x.title||x.title_id)}</b> ${failTag(x)} <span class="muted small">${esc(x.at_text||"")} · attempt ${esc(x.attempts||1)}</span>
     <div>${esc(x.summary)}</div><div class="small muted">${esc(x.next||"")}</div>${failureButtons(x,true)}
-    <details><summary class="small">Details and the log of this attempt</summary>${failureBody(x)}</details></div>`).join("")}</div>`:""}
+    <details><summary class="small">Details and the log of this attempt</summary>${failureBody(x)}</details></div>`).join("")}</div>`:"";
+  const el=$("#attention");if(el.dataset.h!==html){el.dataset.h=html;el.innerHTML=html}}
 async function loadFailures(){try{failures=await api("/api/failures")}catch(e){return}renderAttention()}
 document.addEventListener("click",async e=>{const b=e.target.closest("[data-fa]");if(!b)return;e.preventDefault();const a=b.dataset.fa,tid=b.dataset.tid;
   if(a==="log"){wantLog=b.dataset.log;goTab("logs");return}
@@ -193,6 +198,7 @@ async function poll(){const t0=performance.now(),s=await api("/api/status");bann
   if(tab==="set"&&!s.config_error&&cfgRev!==undefined&&t0>cfgLoadedAt&&s.config_rev!==cfgRev){
     if(settingsDirty())$("#cfgChanged").hidden=false;else loadSet("Settings file changed on disk: reloaded.")}
   renderRescan(s);
+  {const nl=$("#notifyLast");if(nl)nl.textContent=notifyLastText(s.notify_last)}
   if(s.clock&&$("#nextNote"))$("#nextNote").textContent=`Server time now ${s.clock.time} (${s.clock.tz}, UTC${s.clock.utc_offset}); times use this clock.${s.next_run?` Next run: ${s.next_run.label}.`:""}`;
   return s}
 // ---- the Dashboard: the run first (state, how far, how long), then what it is doing, then the library and the folders
@@ -270,7 +276,8 @@ async function refresh(){
   const s=await poll();
   lastS=s;$("#state").textContent=headerText(s);
   syncRun();renderPause(s);renderAskAgain();failBox(s);
-  if(s.failures_rev!==lastFailRev){lastFailRev=s.failures_rev;loadFailures()}
+  notifyBad=s.notify_last&&s.notify_last.ok===false?s.notify_last:null;
+  if(s.failures_rev!==lastFailRev){lastFailRev=s.failures_rev;loadFailures()}else renderAttention();
   const fin=[s.scan.finished,s.run?.finished].join("|");if(fin!==lastFin){const first=lastFin===undefined;lastFin=fin;if(!first)loadSetup()}   // a scan changes what the biggest game is
   renderRun(s);renderLive(s);renderFolders(s);renderHealth(s);
   const c=s.plan_counts;
@@ -474,7 +481,7 @@ function fieldHtml(f){const v=valueOf(cfg,f.key),id="f_"+f.key.replace(/\W/g,"_"
   else if(f.kind==="times")ctl=`<div class="times" id="${id}" data-c="${esc(k)}" data-t="times">${(v||[]).map(timeRow).join("")}</div><button type="button" class="btn sm" data-addtime>Add a time</button> <span class="small muted" id="nextNote"></span>`;
   else ctl=`<input type="text" id="${id}" data-c="${esc(k)}" data-t="s" value="${esc(v)}" placeholder="${esc(f.example||"")}">`;
   const def=f.kind==="lines"||f.kind==="regex"?(f.default||[]).join(", ")||"none":f.kind==="times"?(f.default||[]).join(", ")||"none":f.kind==="choice"||f.kind==="nice"?((f.choices||[]).find(c=>String(c[0])===String(f.default))||[0,String(f.default)])[1]:f.kind==="bool"?(f.default?"on":"off"):f.default===""?"empty":String(f.default);
-  return `<div class="fld" data-f="${esc(k)}"><label class="t" for="${id}">${esc(f.label)}</label>${ctl}<div class="small muted help">${esc(f.help)}${f.kind==="nice"?" "+NICE_NOTE:""}</div>
+  return `<div class="fld" data-f="${esc(k)}"><label class="t" for="${id}">${esc(f.label)}</label>${ctl}${f.key==="notify_url"?`<div class="row" style="margin-top:6px"><button type="button" class="btn sm" data-notify-test>Send test</button><span class="small" data-test-out></span></div><div class="small muted" id="notifyLast">${esc(notifyLastText(cfg.notify_last))}</div>`:""}<div class="small muted help">${esc(f.help)}${f.kind==="nice"?" "+NICE_NOTE:""}</div>
     <div class="small"><span class="muted def">Default: ${esc(def)}</span><a href="#" data-reset="${esc(k)}" hidden>Reset to default</a></div><div class="small err" data-err="${esc(k)}"></div><div class="small warn" data-warn="${esc(k)}"></div></div>`}
 const timeRow=t=>`<div class="row"><input type="text" inputmode="numeric" placeholder="03:00" maxlength="5" value="${esc(t)}" data-time> <button type="button" class="btn sm" data-rmtime title="Remove this time">Remove</button></div>`;
 function renderGroups(){const sc=cfg.schema||[],threads=cfg.machine&&cfg.machine.cpus;
@@ -511,7 +518,18 @@ function showFieldMessages(errors,warnings){setErrors=errors||[];
 function validateSoon(){clearTimeout(valTimer);valTimer=setTimeout(async()=>{try{const r=await api("/api/config/validate",{method:"POST",body:JSON.stringify(collectForm())});showFieldMessages(r.errors,r.warnings);showSetBar()}catch(e){}},350)}
 $("#set").addEventListener("input",e=>{if(!e.target.closest("#setGroups,#fFolders"))return;perfContext();showSetBar();validateSoon()});
 $("#set").addEventListener("change",e=>{if(!e.target.closest("#setGroups,#fFolders"))return;showSetBar();validateSoon()});
+function notifyLastText(n){if(!n)return"No message has been sent yet.";
+  return n.ok?`Last delivery: ok, ${ago(n.at)} ago (${n.event||"message"}).`:`Last delivery: failed${n.error?`: ${n.error}`:n.status?`, HTTP ${n.status}`:""}, ${whenText(n.at)}.`}
+// "Send test" posts a test message with what is on the form now (saved or not) and says what came of it, next to the field
+async function testNotify(){const out=document.querySelector("#set [data-test-out]"),slot=document.querySelector('#set [data-err="notify_url"]');
+  out.className="small muted";out.textContent="Sending…";
+  const v=k=>{const e=document.querySelector(`#set [data-c="${k}"]`);return e?readCtl(e):undefined};
+  try{const r=await api("/api/notify/test",{method:"POST",body:JSON.stringify({notify_url:v("notify_url"),notify_type:v("notify_type"),notify_link:v("notify_link")})});
+    slot.textContent="";out.className="small "+(r.ok?"lv-ok":"err");
+    out.textContent=r.ok?`Delivered${r.status?` (HTTP ${r.status})`:""}: it should be on your phone now.`:`Not delivered: ${r.error||"no answer"}`}
+  catch(e){out.textContent="";slot.textContent=(e.errors&&e.errors[0]&&e.errors[0].message)||e.message}}
 $("#setGroups").addEventListener("click",e=>{
+  if(e.target.closest("[data-notify-test]")){testNotify();return}
   const r=e.target.closest("[data-reset]");if(r){e.preventDefault();const f=cfg.schema.find(x=>x.key===r.dataset.reset),el=document.querySelector(`#set [data-c="${CSS.escape(f.key)}"]`),d=f.default;
     if(el.dataset.t==="b")el.checked=!!d;else if(el.dataset.t==="lines")el.value=(d||[]).join("\n");else if(el.dataset.t==="times")el.innerHTML=(d||[]).map(timeRow).join("");else el.value=d;
     el.dispatchEvent(new Event("input",{bubbles:true}));return}

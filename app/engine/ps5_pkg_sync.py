@@ -55,6 +55,7 @@ import ps5_hostpaths  # noqa: E402  (where the container's folders are on the ho
 import ps5_setup  # noqa: E402  (first-run setup checks, shared with the web server)
 import ps5_runctl as RC  # noqa: E402  (stop, cancel, pause: the files and flags that control a run)
 import ps5_history as PH  # noqa: E402  (what runs did: history.jsonl, old ledger entries, logs, replaced packages)
+import ps5_notify as PN  # noqa: E402  (what is sent where, and what became of it)
 from ps5_runctl import Cancelled  # noqa: E402
 
 ROOT = HERE.parent
@@ -74,6 +75,11 @@ DEFAULT_CFG = {
     "build_on_ssd": False,
     "console_fw": "",
     "notify_url": "",
+    "notify_type": "ntfy",         # what the notification URL is: "ntfy" (a plain POST with ntfy's headers) or "webhook" (JSON)
+    "notify_summary": True,        # one message when a run finishes
+    "notify_each_game": False,     # a message for every finished game (a config from before these settings that has a URL keeps it on)
+    "notify_attention": True,      # a message when something needs a person: a failure, a run that can't start, no room
+    "notify_link": "",             # where the Dashboard is, so a tap on a message opens it (optional)
     "schedule": {"enabled": False, "times": ["03:00"]},
     "cpu_count": 8,
     "nice": 10,
@@ -134,7 +140,8 @@ SETTINGS = {  # key: (type, min, max) - everything the Settings page may change
     "library": (str,), "downloads": (str,), "output": (str,), "temp": (str,),
     "compression_level": (int, 1, 9), "cpu_count": (int, 1, 64), "nice": (int, 0, 19),
     "max_compress": (int, 1, 4), "max_builds": (int, 1, 6), "ssd_reserve_gb": (int, 0, 10000),
-    "build_on_ssd": (bool,), "console_fw": (str,), "notify_url": (str,),
+    "build_on_ssd": (bool,), "console_fw": (str,), "notify_url": (str,), "notify_type": (str,), "notify_link": (str,),
+    "notify_summary": (bool,), "notify_each_game": (bool,), "notify_attention": (bool,),
     "skip_download_prefixes": (list,), "junk_file_patterns": (list,), "junk_title_patterns": (list,),
     "schedule": (dict,), "host_paths": (dict,), "ps4_mode": (str,), "keep_replaced": (str,),
     "keep_logs_days": (int, 0, 3650), "keep_logs_gb": (int, 0, 1000),
@@ -217,6 +224,12 @@ def validate_setting(key, v):
                     raise ValueError(f"{key}: bad pattern {x!r}: {ex}")
     if key == "ps4_mode" and v not in PS4_MODES:
         raise ValueError(f"ps4_mode must be {' or '.join(PS4_MODES)}")
+    if key == "notify_type" and v not in PN.TYPES:
+        raise ValueError(f"notify_type must be {' or '.join(PN.TYPES)}")
+    if key == "notify_link":
+        v = v.strip()
+        if v and not NOTIFY_URL_RE.match(v):
+            raise ValueError("notify_link must start with http:// or https:// (where the Dashboard is)")
     if key == "keep_replaced" and v not in PH.KEEP_REPLACED:
         raise ValueError(f"keep_replaced must be {', '.join(PH.KEEP_REPLACED)}")
     if key == "host_paths":
@@ -269,9 +282,12 @@ def validate_cfg(raw):
             try:
                 cfg[k] = validate_setting(k, v)
             except ValueError as ex:
-                problems.append(f"{ex} (found {_short(v)}); using the default {_short(DEFAULT_CFG[k])}")
+                found = "an address that is not valid" if k == "notify_url" else _short(v)          # an address may hold a private topic or a token: never quoted
+                problems.append(f"{ex} (found {found}); using the default {_short(DEFAULT_CFG[k])}")
         else:
             cfg[k] = v
+    if "notify_each_game" not in raw and cfg.get("notify_url"):        # a config from before the toggles: its messages per game go on
+        cfg["notify_each_game"] = True
     return cfg, problems
 
 
@@ -1562,17 +1578,64 @@ def notification_text(cfg, name, status, why=None, output=None):
     return text
 
 
-def notify(cfg, title, msg):
-    url = (cfg.get("notify_url") or "").strip()
-    if not url or not NOTIFY_URL_RE.match(url):
+_NOTIFY = threading.local()          # the game the message in hand is about (the webhook lists it)
+_notify_log = None                   # the engine's log, for the lines about deliveries (main() sets it)
+
+
+def _nlog(msg):
+    """A line about a delivery, in the engine's log (never with the notification URL: ps5_notify scrubs what it says)."""
+    if _notify_log:
+        _notify_log(msg)
         return
     try:
-        import urllib.request
-        req = urllib.request.Request(url, data=msg.encode("utf-8"), method="POST",
-                                     headers={"Title": title.encode("ascii", "replace").decode()})
-        urllib.request.urlopen(req, timeout=10).read()
-    except Exception:
+        with open(LOGS / "pkg_sync.log", "a", encoding="utf-8") as fh:
+            fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except OSError:
         pass
+
+
+def notify(cfg, title, msg):
+    """A message about one game ("PS5 pkg: built" / "PS4: copied" / "PS5 pkg: failed"), if the settings want that kind and there is a URL.
+    A failed delivery is logged and remembered (state/notify_last.json), not raised: a run goes on."""
+    game = getattr(_NOTIFY, "game", None)
+    PN.send(cfg, PN.EVENT_OF_TITLE.get(title, "built"), title, msg, state=STATE, log=_nlog, games=[game] if game else None)
+
+
+def notify_game(cfg, title, msg, res=None):
+    """notify() for the result `res` of a game, so a webhook gets the game as data too."""
+    _NOTIFY.game = PN.game_row(res) if res else None
+    try:
+        notify(cfg, title, msg)
+    finally:
+        _NOTIFY.game = None
+
+
+def notify_attention(cfg, title, message, games=None):
+    """Something needs a person: a run that could not start, a game waiting for room, a folder nearly full."""
+    PN.send(cfg, "attention", title, message, state=STATE, log=_nlog, games=games)
+
+
+def notify_run_end(cfg, results, started, plan, trigger):
+    """What a run that has ended says: one summary (nothing, when the run had nothing to do), and a word when a folder is nearly full."""
+    try:
+        out = Path(cfg["output"])
+        free = shutil.disk_usage(out).free
+    except OSError:
+        free = None
+    if results:
+        text, rows, counts = PN.summary_text(results, time.time() - started, free)
+        PN.send(cfg, "summary", "PS5 pkg: run finished", text, state=STATE, log=_nlog, games=rows,
+                run=dict(trigger=trigger, seconds=round(time.time() - started), counts=counts, free_bytes=free))
+    done = {r.get("title_id") for r in results if r.get("status") in ("built", "copied")}
+    biggest = max([int(p.get("size") or 0) for p in plan if p.get("action") in ("build", "copy") and p.get("title_id") not in done] or [0])
+    try:
+        work = shutil.disk_usage(cfg["temp"]).free
+    except OSError:
+        work = None
+    low = PN.space_findings(cfg, free, work, biggest)
+    for key, title in (("output", "PS5 pkg: output folder nearly full"), ("work", "PS5 pkg: work drive nearly full")):
+        if PN.once(STATE, "low_" + key, bool(low[key])):                     # said once, and again after it has been fixed and is low again
+            notify_attention(cfg, title, low[key])
 
 
 RESULT_KEYS = ("title_id", "name", "title", "status", "why", "validate", "prep_min", "build_min", "gib", "code", "phase", "data", "size", "at", "backport")
@@ -2010,7 +2073,7 @@ def _finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
                 failure_store().clear(job["title_id"])
             except Exception:
                 pass
-            notify(cfg, "PS5 pkg: built", notification_text(cfg, job["name"], "built", None, res.get("output")))
+            notify_game(cfg, "PS5 pkg: built", notification_text(cfg, job["name"], "built", None, res.get("output")), res)
         elif res.get("status") == "cancelled":
             pass                                              # not a failure: nothing remembered, nobody notified, tried again on the next run
         else:
@@ -2019,8 +2082,8 @@ def _finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             res.setdefault("data", {})
             if record_failure(cfg, job, log, phase=res["phase"], code=res["code"], message=res.get("why", ""),
                               data=res["data"], logf=logf):       # one notification per distinct failure, not per retry
-                notify(cfg, "PS5 pkg: failed", notification_text(
-                    cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=res["code"], data=res["data"], message=res.get("why", "")))))
+                notify_game(cfg, "PS5 pkg: failed", notification_text(
+                    cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=res["code"], data=res["data"], message=res.get("why", "")))), res)
 
 
 def copy_ps4(cfg, job, log):
@@ -2526,7 +2589,7 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger, rs=None):
                 failure_store().clear(tid)
             except Exception:
                 pass
-            notify(cfg, "PS4: copied", notification_text(cfg, job["name"], "copied", None, res["output"]))
+            notify_game(cfg, "PS4: copied", notification_text(cfg, job["name"], "copied", None, res["output"]), res)
         except Exception as ex:
             code, phase, data = ps5_failures.classify(ex)
             if isinstance(ex, Cancelled) or RC.cancel_requested(tid):
@@ -2535,13 +2598,14 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger, rs=None):
             elif code == "output_no_space":                    # not a failure: it is copied when there is room
                 res.update(status="deferred", why=str(ex), code=code, phase="copy", data=data)
                 log(f"  -> deferred: {ex}")
-                record_failure(cfg, job, log, phase="copy", code=code, message=str(ex), data=data, state=ps5_failures.WAITING)
+                if record_failure(cfg, job, log, phase="copy", code=code, message=str(ex), data=data, state=ps5_failures.WAITING):
+                    notify_attention(cfg, "PS5 pkg: waiting for room", notification_text(cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))), games=[PN.game_row(res)])
             else:
                 res.update(status="failed", why=f"{type(ex).__name__}: {ex}", code=code, phase="copy", data=data)
                 job_log(log, tid)(f"  -> {job['name']}: failed: {type(ex).__name__}: {ex}")
                 if record_failure(cfg, job, log, phase="copy", code=code, message=f"{type(ex).__name__}: {ex}", data=data):
-                    notify(cfg, "PS5 pkg: failed", notification_text(
-                        cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))))
+                    notify_game(cfg, "PS5 pkg: failed", notification_text(
+                        cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))), res)
         res["at"] = time.time()
         results.append(res)
         if rs:
@@ -2736,8 +2800,11 @@ def _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs):
             if code == "no_space":            # not a failure: it will be tried again when there is room
                 results.append(dict(job, status="deferred", why=str(ex), code=code, phase="prepare", data=data, at=time.time()))
                 jlog(f"  -> deferred: {ex}")
-                record_failure(cfg, job, log, phase="prepare", code=code, message=str(ex), data=data,
-                               state=ps5_failures.WAITING)
+                if record_failure(cfg, job, log, phase="prepare", code=code, message=str(ex), data=data,
+                                  state=ps5_failures.WAITING):                         # new, or in a different state: said once, not every night
+                    notify_attention(cfg, "PS5 pkg: waiting for room", notification_text(
+                        cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))),
+                        games=[PN.game_row(results[-1])])
                 continue
             jd = jobdir_of(cfg, job)
             if jd.exists():
@@ -2745,8 +2812,8 @@ def _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs):
             results.append(dict(job, status="failed", why=f"prepare: {type(ex).__name__}: {ex}", code=code, phase="prepare", data=data, at=time.time()))
             jlog(f"  -> {job['title']}: failed while preparing: {type(ex).__name__}: {ex}")
             if record_failure(cfg, job, log, phase="prepare", code=code, message=f"{type(ex).__name__}: {ex}", data=data):
-                notify(cfg, "PS5 pkg: failed", notification_text(
-                    cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))))
+                notify_game(cfg, "PS5 pkg: failed", notification_text(
+                    cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))), results[-1])
             continue
         try:                                  # it fits now: the wait for space is over
             failure_store().clear(job["title_id"], only_state=ps5_failures.WAITING)
@@ -2793,6 +2860,8 @@ def main():
     LOGS.mkdir(parents=True, exist_ok=True)
     rotated = PH.rotate(LOGS / "pkg_sync.log", LOG_ROTATE_BYTES)
     log = log_to(open(LOGS / "pkg_sync.log", "a", encoding="utf-8"))
+    global _notify_log
+    _notify_log = log
     if rotated:
         log(f"=== the log had grown past {LOG_ROTATE_BYTES >> 20} MiB: the earlier part is in {rotated}")
     info = load_cfg_info()
@@ -2806,11 +2875,15 @@ def main():
     p = cfg["library"]          # the downloads folder is optional: discover() skips it when it isn't there
     if not os.path.isdir(p):
         log(f"not mounted: {p}" + (f"  (mounted: {', '.join(os.listdir('/Volumes'))})" if os.path.isdir("/Volumes") else ""))
+        if a.mode == "run":
+            notify_attention(cfg, "PS5 pkg: run did not start", f"The game library folder is not available ({p}): is the share mounted? Nothing was built.")
         sys.exit(EXIT_NOT_MOUNTED)
     try:
         os.listdir(p)
     except OSError as ex:
         log(f"can't read {p}: {ex.strerror or ex}")
+        if a.mode == "run":
+            notify_attention(cfg, "PS5 pkg: run did not start", f"The game library folder can't be read ({p}: {ex.strerror or ex}). Nothing was built.")
         sys.exit(EXIT_NOT_MOUNTED)
     lock = STATE / "run.lock"
     rs = None
@@ -2819,9 +2892,11 @@ def main():
         for row in failing:
             log(f"setup problem: {row['title']}: {row['message']}. {row['fix']}")
         if failing:
+            notify_attention(cfg, "PS5 pkg: run did not start", "A setup check failed, so nothing was built: " + "; ".join(f"{r['title']}: {r['message']}" for r in failing) + ".")
             sys.exit(EXIT_SETUP)
         if lock.exists():
             log(f"another run holds {lock}; exiting")
+            notify_attention(cfg, "PS5 pkg: run did not start", "Another run is already active, so this one did not start.")
             sys.exit(EXIT_LOCKED)
         lock.write_text(str(os.getpid()))
         RC.clear_requests(STATE)
@@ -2882,6 +2957,7 @@ def main():
         results = run_queue(cfg, todo, log, ledger_p, ledger, preset=run_ps4(cfg, copies, log, ledger_p, ledger, rs=rs), rs=rs)
         log("=== summary: " + ", ".join(f"{s} {sum(1 for r in results if r['status'] == s)}"
                                         for s in ("built", "copied", "failed", "deferred", "cancelled")))
+        notify_run_end(cfg, results, rs.started, plan, a.trigger)
     finally:
         if rs is not None and not rs.finished:          # the run did not get to its end: say so instead of leaving it "running"
             try:

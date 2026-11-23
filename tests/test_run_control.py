@@ -22,6 +22,7 @@ from support import ENGINE_DIR, E, StateCase, make_env
 
 import ps5_failures as F  # noqa: E402
 import ps5_history as PH  # noqa: E402
+import ps5_notify as PN  # noqa: E402
 import ps5_runctl as RC  # noqa: E402
 import test_engine_failures as TEF  # noqa: E402
 
@@ -522,6 +523,9 @@ if "--fpkg-validate" in args:
 stage = Path(args[1])
 stage.mkdir(parents=True, exist_ok=True)
 (stage / "partial.bin").write_bytes(b"x" * 1000)
+if os.environ.get("FAKE_FAIL"):
+    print("[ERROR] the stand-in UltraPack was told to fail", flush=True)
+    sys.exit(1)
 pids = os.environ.get("FAKE_PIDS")
 if pids:
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
@@ -541,11 +545,13 @@ GAMES = (("PPSA01234", "Alpha Game", 100), ("PPSA05678", "Bravo Game", 200), ("P
 
 
 class Hook(http.server.BaseHTTPRequestHandler):
-    seen = []
+    seen = []                    # the Title of every message
+    msgs = []                    # and all of it: title, priority, content type, body
 
     def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         Hook.seen.append(self.headers.get("Title"))
+        Hook.msgs.append(dict(title=self.headers.get("Title"), priority=self.headers.get("Priority"), ctype=self.headers.get("Content-Type"), body=body.decode("utf-8")))
         self.send_response(200)
         self.end_headers()
 
@@ -572,7 +578,7 @@ class WholeEngine(StateCase):
         self.out, self.temp = Path(self.env["output"]), Path(self.env["temp"])
         self.pids = self.dir / "pids"
         self.pids.mkdir()
-        Hook.seen = []
+        Hook.seen, Hook.msgs = [], []
         self.hook = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hook)
         threading.Thread(target=self.hook.serve_forever, daemon=True).start()
         self.addCleanup(self.hook.shutdown)
@@ -631,7 +637,7 @@ class WholeEngine(StateCase):
             self.assertFalse((self.temp / tid / ".building").exists())
 
     def test_cancelling_one_build_ends_only_that_build_and_the_others_finish(self):
-        self.config()
+        self.config(notify_each_game=True)
         existing = self.out / "Earlier Game [PPSA00001] [v01.00] [fw9.00].pkg"
         existing.write_bytes(b"finished long ago")
         os.utime(existing, (1_000_000_000, 1_000_000_000))
@@ -654,7 +660,7 @@ class WholeEngine(StateCase):
         ledger = json.loads((self.state / "ledger.json").read_text())
         self.assertEqual(sorted(ledger), ["PPSA01234", "PPSA09999"])
         self.assertFalse((self.state / "failures.json").exists() and json.loads((self.state / "failures.json").read_text()))
-        self.assertEqual(sorted(Hook.seen), ["PS5 pkg: built", "PS5 pkg: built"])  # nobody was told about a failure, or about the cancel
+        self.assertEqual(sorted(Hook.seen), ["PS5 pkg: built", "PS5 pkg: built", "PS5 pkg: run finished"])  # a message per game that was built, one summary; nobody was told of a failure
         pkgs = sorted(p.name for p in self.out.iterdir())
         self.assertEqual(len(pkgs), 3, pkgs)
         self.assertEqual((existing.read_bytes(), existing.stat().st_mtime), (b"finished long ago", 1_000_000_000))
@@ -697,7 +703,7 @@ class WholeEngine(StateCase):
         self.assertEqual([p.name for p in self.out.iterdir()], [existing.name])
         self.assertEqual((existing.read_bytes(), existing.stat().st_mtime), (b"finished long ago", 1_000_000_000))
         self.assertFalse((self.state / "failures.json").exists() and json.loads((self.state / "failures.json").read_text()))
-        self.assertEqual(Hook.seen, [])
+        self.assertEqual(Hook.seen, ["PS5 pkg: run finished"])                                # a run that was stopped says so once: no failure, no per-game message
         self.assertFalse((self.state / "stop.request").exists())
         self.assertIn("stop now requested", self.log)
         # nothing could be adopted as a live build by the next run
@@ -783,6 +789,101 @@ class WholeEngine(StateCase):
         self.assertIn("the log had grown past", now)
         self.assertIn("old logs removed (1 files", now)
         self.assertNotIn("earlier line", now)
+
+    def engine(self, *args, **env):
+        """The engine run to its end, as a process: (returncode, its output)."""
+        e = dict(os.environ, PS5PKG_STATUS_INTERVAL="0.2", FAKE_SECS="1", **env)
+        r = subprocess.run([sys.executable, "-I", "-u", str(ENGINE_DIR / "ps5_pkg_sync.py"), "run", *args], env=e, capture_output=True, text=True, timeout=180)
+        return r.returncode, r.stdout + r.stderr
+
+    def test_with_only_the_summary_on_a_run_of_three_games_sends_exactly_one_message(self):
+        self.config()                                                                       # the defaults of a new install: summary and attention on, per game off
+        rc, out = self.engine()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(Hook.seen, ["PS5 pkg: run finished"])
+        msg = Hook.msgs[0]
+        self.assertEqual(msg["priority"], "default")
+        self.assertTrue(msg["body"].startswith("Run finished: 3 built. "), msg["body"])
+        self.assertRegex(msg["body"], r"\d+ (GiB|TiB) free in the output folder\.$")
+        self.assertEqual(sorted(json.loads((self.state / "ledger.json").read_text())), ["PPSA01234", "PPSA05678", "PPSA09999"])
+        last = PN.read_last(self.state)
+        self.assertEqual((last["ok"], last["event"], last["status"]), (True, "summary", 200))
+
+    def test_a_run_with_nothing_to_do_says_nothing(self):
+        self.config()
+        self.assertEqual(self.engine()[0], 0)
+        Hook.seen[:], Hook.msgs[:] = [], []
+        rc, out = self.engine()                                                              # everything is built: nothing to do, and nothing to say
+        self.assertEqual((rc, Hook.seen), (0, []), out)
+
+    def test_every_game_is_a_message_too_when_asked(self):
+        self.config(notify_each_game=True)
+        self.assertEqual(self.engine()[0], 0)
+        self.assertEqual(sorted(Hook.seen), ["PS5 pkg: built"] * 3 + ["PS5 pkg: run finished"])
+
+    def test_a_webhook_gets_json_with_the_games(self):
+        self.config(notify_type="webhook", notify_link="http://nas.local:8765")
+        self.assertEqual(self.engine("--trigger", "scheduled")[0], 0)
+        (msg,) = Hook.msgs
+        self.assertEqual(msg["ctype"], "application/json; charset=utf-8")
+        doc = json.loads(msg["body"])
+        self.assertEqual((doc["schema"], doc["event"], doc["url"], doc["run"]["trigger"], doc["run"]["counts"]["built"]), (1, "summary", "http://nas.local:8765", "scheduled", 3))
+        self.assertEqual(sorted(g["title_id"] for g in doc["games"]), ["PPSA01234", "PPSA05678", "PPSA09999"])
+        self.assertTrue(all(g["status"] == "built" and g["bytes"] > 0 for g in doc["games"]))
+
+    def test_a_run_that_could_not_start_tells_a_person(self):
+        self.config(library=str(self.dir / "not-mounted"))
+        rc, out = self.engine()
+        self.assertEqual(rc, E.EXIT_NOT_MOUNTED, out)
+        (msg,) = Hook.msgs
+        self.assertEqual((msg["title"], msg["priority"]), ("PS5 pkg: run did not start", "high"))
+        self.assertIn("is the share mounted", msg["body"])
+        self.assertIn("not-mounted", msg["body"])
+        Hook.seen[:], Hook.msgs[:] = [], []
+        self.config(library=str(self.dir / "not-mounted"), notify_attention=False)          # the toggle is off: nothing
+        self.assertEqual(self.engine()[0], E.EXIT_NOT_MOUNTED)
+        self.assertEqual(Hook.seen, [])
+
+    def test_a_failing_setup_check_and_a_lock_held_by_another_run_tell_a_person_too(self):
+        self.config()
+        (Path(self.env["ultrapack_src"]) / "backend" / "cli.py").unlink()
+        rc, out = self.engine()
+        self.assertEqual(rc, E.EXIT_SETUP, out)
+        self.assertEqual(Hook.seen, ["PS5 pkg: run did not start"])
+        self.assertIn("A setup check failed, so nothing was built", Hook.msgs[0]["body"])
+        (Path(self.env["ultrapack_src"]) / "backend" / "cli.py").write_text(FAKE)
+        Hook.seen[:], Hook.msgs[:] = [], []
+        (self.state / "run.lock").write_text("1")
+        rc, out = self.engine()
+        self.assertEqual(rc, E.EXIT_LOCKED, out)
+        self.assertEqual((Hook.seen, "Another run is already active" in Hook.msgs[0]["body"]), (["PS5 pkg: run did not start"], True))
+
+    def test_a_game_that_failed_for_a_new_reason_is_told_and_the_same_failure_again_is_not(self):
+        self.config()
+        rc, out = self.engine(FAKE_FAIL="1")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(sorted(Hook.seen), ["PS5 pkg: failed"] * 3 + ["PS5 pkg: run finished"])
+        failed = [m for m in Hook.msgs if m["title"] == "PS5 pkg: failed"]
+        self.assertTrue(all(m["priority"] == "high" for m in failed))
+        summary = next(m for m in Hook.msgs if m["title"] == "PS5 pkg: run finished")
+        self.assertTrue(summary["body"].startswith("Run finished: 3 failed ("), summary["body"])
+        Hook.seen[:], Hook.msgs[:] = [], []
+        rc, out = self.engine("--only", "PPSA01234", "PPSA05678", "PPSA09999", FAKE_FAIL="1")      # Retry: the same failure, unchanged
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(Hook.seen, ["PS5 pkg: run finished"])                               # the failures are not announced again
+
+    def test_a_destination_that_does_not_answer_is_in_the_log_and_remembered_and_the_run_goes_on(self):
+        self.config(notify_url="http://127.0.0.1:1/private-topic-token-123")
+        rc, out = self.engine()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(json.loads((self.state / "ledger.json").read_text())), 3)       # the games were built all the same
+        last = PN.read_last(self.state)
+        self.assertEqual((last["ok"], last["event"]), (False, "summary"))
+        log = (self.logs / "pkg_sync.log").read_text()
+        self.assertRegex(log, r"notification summary \(ntfy\): NOT delivered: ")
+        for text in (log, out, (self.state / "notify_last.json").read_text()):
+            self.assertNotIn("private-topic-token-123", text)
+            self.assertNotIn("127.0.0.1:1", text)
 
     def test_requests_left_over_from_before_do_not_affect_the_next_run(self):
         self.config()

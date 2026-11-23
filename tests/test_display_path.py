@@ -208,7 +208,7 @@ class NotificationText(StateCase):
         srv = http.server.HTTPServer(("127.0.0.1", 0), H_)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.shutdown)
-        cfg = {**self.cfg, "notify_url": f"http://127.0.0.1:{srv.server_address[1]}/topic"}
+        cfg = {**self.cfg, "notify_url": f"http://127.0.0.1:{srv.server_address[1]}/topic", "notify_each_game": True}
         out = str(Path(cfg["output"]) / "Example Game.pkg")
         E.notify(cfg, "PS5 pkg: built", E.notification_text(cfg, "Example Game.pkg", "built", None, out))
         self.assertEqual(got, {"title": "PS5 pkg: built", "body": "Example Game.pkg\nSaved in /srv/games/ps5/pkg"})
