@@ -182,6 +182,48 @@ Keys you leave out use their defaults, and keys this version doesn't know are ke
   once with the defaults if it doesn't exist yet). A save rewrites the whole file (indented JSON), through a
   lock, in one step. `config.json.lock` next to it is that lock; leave it.
 
+## Backing up
+
+Everything lives in the config volume (`./config` in the example compose file). Under Settings, the **Storage &
+backup** card says where each file is (the folder on your NAS when it's configured, with a copy button), lists
+every per-game override (also for games that are no longer in the library) with a Remove button, and shows the
+version of the app and of the bundled UltraPack.
+
+**What to copy** (`config/state/`):
+
+| File | What it is | If you lose it |
+|---|---|---|
+| `config.json` | your settings and the per-game overrides | back to the defaults; firmware, schedule and every per-game decision are gone |
+| `ledger.json` | what was built (the build history) | the app thinks nothing was built and builds the whole library again |
+| `failures.json` | games that failed or wait for space, and why | they're tried once more |
+| `../patches/` | the patch folders your overrides point to (if you use any) | the overlay files are gone |
+
+`ledger.json` and `failures.json` are **state**, not settings: an export doesn't contain them.
+
+**What is safe to delete:** `ident_cache.json` and `listing_cache/` (they are rebuilt by the next scan, which is
+then slower), `plan.json`, `status.json`, `last_run.json`, the `logs` folder, and `backups/` (the automatic
+backups, below).
+
+On the Settings page:
+
+- **Export settings** saves the settings and overrides as one JSON file (`{format, app_version, exported_at,
+  settings, overrides}`). It holds only what can be imported again: not the paths of UltraPack's files, not keys
+  this version doesn't know. The notification URL may be a private topic, so there is a box to leave it out.
+- **Import** checks the file with the same rules as the Settings form (a key it doesn't know, a wrong type or an
+  out-of-range value is rejected, naming the key, and nothing is written), previews what would change ("3 settings
+  change, 2 overrides added, 1 replaced"), and only then applies it, writing atomically. You choose settings,
+  overrides or both. It only sets what the file says: settings and overrides that aren't in it, keys the app
+  doesn't know and unknown fields of an override all stay. The folders inside the container (library, output, ...)
+  are flagged in the preview: import them only if both installs mount the same folders.
+- **Download full backup (.zip)** has `config.json` exactly as it is, `ledger.json`, the list of patch folders
+  (names only, not their files) and a note on restoring; the failed-game records only if you tick the box. To restore it, stop the
+  container, copy the files back into `config/state/` and start it again.
+- **Automatic backups**: before the settings file is changed (a save, an import, a restore, removing an override),
+  its previous content is copied to `config/state/backups/config-YYYYmmdd-HHMMSS.json`, and the newest 10 are kept.
+  Reading the Dashboard or saving without changing anything never makes one. **Restore…** previews what a backup
+  would change, then makes it current, after backing up the file it replaces. It also works when the current file
+  can't be read.
+
 ## When a game fails
 
 A failed game doesn't just vanish from "This run". It is remembered in `/config/state/failures.json` (so it

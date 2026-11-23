@@ -77,12 +77,15 @@ a{color:var(--acc)}
   <div class="card"><h2>Conversion</h2><div id="fConv"></div></div>
   <div class="card"><h2>Schedule &amp; notifications</h2><div id="fSched"></div><div class="small muted" id="clockNote"></div></div>
   <div class="row"><button class="btn pri" id="bSave">Save settings</button><button class="btn" id="bSetupSet">Check setup</button><span id="setMsg" class="small"></span></div>
+  <div class="card" id="ovrCard" style="margin-top:14px"></div>
+  <div class="card" id="storageCard"></div>
 </section>
 <section id="logs"><div class="card"><div class="row"><select id="logSel"></select><button class="btn" id="bLog">Refresh</button>
   <label class="small"><input type="checkbox" id="logFollow" checked> follow</label>
   <label class="small" title="Shows /library/... as the folder is on your NAS. The log files themselves are not changed."><input type="checkbox" id="logHost" checked> show NAS paths</label></div></div>
   <div class="card"><pre id="logTxt"></pre></div></section>
 </main>
+<footer class="small muted" id="ver" style="text-align:center;padding:14px"></footer>
 <script>
 const $=s=>document.querySelector(s), esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const gib=b=>b==null?"—":(b/2**30).toFixed(b>2**40?0:1)+" GiB", ago=t=>{if(!t)return"—";const s=Date.now()/1000-t;return s<90?Math.round(s)+" s":s<5400?Math.round(s/60)+" min":(s/3600).toFixed(1)+" h"};
@@ -170,8 +173,9 @@ function banners(s){const e=s.config_error,p=s.config_problems||[];let h="";
   if(p.length)h+=`<div class="banner warn"><b>Some settings in the settings file are not valid.</b> The defaults are used for them; the file itself is unchanged.<ul>${p.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
   if(s.host_problems?.length)h+=`<div class="banner warn"><b>Folder locations in the compose file are not valid.</b> They are ignored until fixed.<ul>${s.host_problems.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
   if(h!==bannerHtml){bannerHtml=h;$("#cfgBanner").innerHTML=h}}
+const verText=v=>`PS5 PKG Station ${v.app} · ${v.ultrapack?"UltraPack "+v.ultrapack:"UltraPack version not known"}`;
 function syncDeleteButtons(){document.querySelectorAll('[data-act="delete_staged"]').forEach(b=>{const blocked=engineBusy||b.dataset.blocked==="1";b.disabled=blocked;if(engineBusy)b.title="A run is active and may be using it"})}
-async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);engineBusy=!!s.engine_running;syncDeleteButtons();
+async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);if(s.version)$("#ver").textContent=verText(s.version);engineBusy=!!s.engine_running;syncDeleteButtons();
   // config.json was edited since the form was loaded (a poll that started before the last load says nothing new)
   if(tab==="set"&&!s.config_error&&cfgRev!==undefined&&t0>cfgLoadedAt&&s.config_rev!==cfgRev){
     if(setDirty)$("#cfgChanged").hidden=false;else loadSet("Settings file changed on disk: reloaded.")}
@@ -250,14 +254,65 @@ function foldersForm(){const F=cfg.folders||{},hp=cfg.host_paths||{};
     return `<label class="f"><span>${esc(FOLDER_LABEL[k])} is shown as<div class="small">in the container: ${esc(f.container)}</div></span>${val}</label>`}).join("");
   const adv=cfg.in_docker?"":`<details><summary class="small">Advanced: folder paths as the app uses them</summary>${["library","downloads","output","temp"].map(k=>`<label class="f"><span>${esc(FOLDER_LABEL[k])}</span><input type="text" data-c="${k}" data-t="s" value="${esc(cfg[k])}"></label>`).join("")}</details>`;
   $("#fFolders").innerHTML=`<p class="small muted" style="margin-top:0">${intro}</p>${rows}${adv}`}
-async function loadSet(note){cfgLoadedAt=performance.now();cfg=await api("/api/config");cfgRev=cfg.config_rev;setDirty=false;$("#cfgChanged").hidden=true;
+async function loadSet(note){loadStorage();cfgLoadedAt=performance.now();cfg=await api("/api/config");cfgRev=cfg.config_rev;setDirty=false;$("#cfgChanged").hidden=true;
   if(typeof note==="string"){$("#setMsg").textContent=note;$("#setMsg").className="small muted"}
   foldersForm();
   for(const [box,fs] of Object.entries(FIELDS)){$("#"+box).innerHTML=fs.map(([k,l,t])=>{const v=k.split(".").reduce((o,x)=>o?.[x],cfg);
   return `<label class="f"><span>${esc(l)}</span>${t==="b"?`<input type="checkbox" data-c="${k}" data-t="b" ${v?"checked":""}>`:`<input type="${t==="n"?"number":"text"}" data-c="${k}" data-t="${t||"s"}" value="${esc(Array.isArray(v)?v.join(", "):v)}">`}</label>`}).join("")}}
 $("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]").forEach(e=>{let v=e.dataset.t==="b"?e.checked:e.dataset.t==="n"?Number(e.value):e.dataset.t==="l"?e.value.split(",").map(x=>x.trim()).filter(Boolean):e.value.trim();
   const [a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});
-  try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved";$("#setMsg").className="small muted";loadSet();loadSetup()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};
+  try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved to "+(storage?(storage.settings.host||storage.settings.path):"the settings file");$("#setMsg").className="small muted";loadSet();loadSetup()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};
+// ---- Storage & backup, per-game overrides (see /api/storage)
+let storage=null,impText=null;
+const when=t=>t?new Date(t*1000).toLocaleString():"never";
+const short=v=>{const t=JSON.stringify(v);return t===undefined?"(not set)":t.length>60?t.slice(0,57)+"…":t};
+async function loadStorage(){try{storage=await api("/api/storage")}catch(e){return}renderStorage();renderOverrides()}
+function fileRow(label,f,extra){return `<tr><td>${label}</td><td>${pathHtml(f.host,f.path)}<div class="small muted">${f.host?`in the container: ${esc(f.path)} · `:""}${f.exists?`last changed ${when(f.changed)}`:"not there yet"}${extra||""}</div></td></tr>`}
+function renderStorage(){const s=storage,b=s.backups;
+  $("#storageCard").innerHTML=`<h2>Storage &amp; backup</h2>
+   <table>${fileRow("Settings file",s.settings)}${fileRow("Build history",s.history,` · ${s.history.packages} package${s.history.packages===1?"":"s"}`)}${fileRow("Failed games",s.failures,` · ${s.failures.count} stored`)}</table>
+   ${s.settings.error?`<div class="small err">The settings file can't be read right now: ${esc(s.settings.error.message)}.</div>`:""}
+   <p class="small muted">You can edit the settings file by hand; changes are picked up automatically. ${esc(s.state_note)}</p>
+   <div class="row"><a class="btn" id="bExport" href="/api/export?notify_url=1" download>Export settings</a>
+     <label class="small"><input type="checkbox" id="expNotify" checked> include the notification URL (it may be a private topic: anyone with the file can post to it)</label></div>
+   <div class="row" style="margin-top:8px"><a class="btn" id="bFull" href="/api/backup.zip" download>Download full backup (.zip)</a>
+     <label class="small"><input type="checkbox" id="fullFailures"> also the failed-game records</label><span class="small muted">settings + build history + the list of patch folders (not their files)</span></div>
+   <div style="margin-top:12px"><b class="small">Import</b>
+     <div class="row"><input type="file" id="impFile" accept=".json,application/json">
+       <label class="small"><input type="checkbox" id="impSettings" checked> settings</label><label class="small"><input type="checkbox" id="impOvr" checked> per-game overrides</label>
+       <button class="btn" id="bImpPreview">Preview</button><button class="btn pri" id="bImpApply" disabled>Import</button></div>
+     <div id="impOut" class="small"></div></div>
+   <div style="margin-top:12px"><b class="small">Automatic backups</b>
+     <div class="small muted">${b.count?`${b.count} of ${b.keep} kept · last ${when(b.last)}`:"None yet: one is made each time the settings file is changed."} <a href="#" id="bkToggle">${b.count?"Restore…":""}</a>${b.error?` <span class="err">${esc(b.error)}</span>`:""}</div>
+     <div id="bkList" hidden>${b.items.map(i=>`<div class="row small" data-bk="${esc(i.name)}"><span>${when(i.at)}</span><span class="muted">${esc(i.name)} · ${i.size} bytes</span><button class="btn sm" data-bkpreview>Preview</button><button class="btn sm" data-bkrestore>Restore</button></div>`).join("")}<div id="bkOut" class="small"></div></div></div>
+   <p class="small muted" style="margin-bottom:0">${esc(verText(s.versions))}</p>`;
+  $("#expNotify").onchange=$("#fullFailures").onchange=()=>{$("#bExport").href="/api/export?notify_url="+($("#expNotify").checked?1:0);$("#bFull").href="/api/backup.zip"+($("#fullFailures").checked?"?failures=1":"")};
+  $("#bImpPreview").onclick=()=>impRun(true);$("#bImpApply").onclick=()=>impRun(false);$("#impFile").onchange=()=>{impText=null;$("#bImpApply").disabled=true;$("#impOut").textContent=""};
+  $("#bkToggle").onclick=e=>{e.preventDefault();$("#bkList").hidden=!$("#bkList").hidden}}
+const parts=()=>[$("#impSettings").checked?"settings":"",$("#impOvr").checked?"overrides":""].filter(Boolean).join(",");
+async function postJson(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body});let d={};try{d=await r.json()}catch(e){}return{ok:r.ok,data:d}}
+function diffHtml(d){const row=(k,t)=>`<li><code>${esc(k)}</code> ${t}</li>`;
+  return `<b>${esc(d.summary)}</b><ul>${(d.settings?.changed||[]).map(c=>row(c.key,`${esc(short(c.from))} → ${esc(short(c.to))}${c.note?` <span class="muted">(${esc(c.note)})</span>`:""}`)).join("")}`
+   +(d.overrides?.added||[]).map(c=>row(c.title_id,`override added: ${esc(short(c.to))}`)).join("")+(d.overrides?.replaced||[]).map(c=>row(c.title_id,`override replaced: ${esc(short(c.from))} → ${esc(short(c.to))}`)).join("")
+   +(d.overrides?.removed||[]).map(c=>row(c.title_id,`override removed (${esc(short(c.from))})`)).join("")+`</ul>`}
+async function impRun(dry){const out=$("#impOut");
+  if(dry){const f=$("#impFile").files[0];if(!f){out.innerHTML=`<span class="err">Choose a file first.</span>`;return}impText=await f.text()}
+  if(!impText)return;if(!parts()){out.innerHTML=`<span class="err">Choose settings, overrides or both.</span>`;return}
+  const r=await postJson(`/api/import?parts=${parts()}${dry?"&dry_run=1":""}`,impText);
+  if(!r.ok){$("#bImpApply").disabled=true;out.innerHTML=`<span class="err"><b>${esc(r.data.detail||"Not imported")}</b></span>${(r.data.problems||[]).length>1?`<ul>${r.data.problems.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}<div class="muted">Nothing was changed.</div>`;return}
+  if(dry){out.innerHTML=diffHtml(r.data)+(r.data.changes?`<div class="muted">Nothing is written until you press Import.</div>`:"");$("#bImpApply").disabled=!r.data.changes;return}
+  $("#bImpApply").disabled=true;impText=null;out.innerHTML=`<b>Imported: ${esc(r.data.summary)}.</b>${r.data.backup?` The previous settings were saved as <code>${esc(r.data.backup)}</code>.`:""}`;loadSet("Imported.")}
+document.addEventListener("click",async e=>{const bk=e.target.closest("[data-bk]");if(!bk)return;const name=bk.dataset.bk,out=$("#bkOut");
+  if(e.target.closest("[data-bkpreview]")){const r=await postJson(`/api/backups/${encodeURIComponent(name)}/restore?dry_run=1`,"{}");out.innerHTML=r.ok?diffHtml(r.data)+(r.data.problems?.length?`<div class="muted">The backup has values that are not valid now: ${r.data.problems.map(esc).join("; ")}</div>`:""):`<span class="err">${esc(r.data.detail||"failed")}</span>`}
+  else if(e.target.closest("[data-bkrestore]")){if(!confirm(`Make the backup ${name} the current settings? The current file is backed up first.`))return;const r=await postJson(`/api/backups/${encodeURIComponent(name)}/restore`,"{}");
+    if(r.ok){toast(`Restored. ${r.data.backup?"The replaced settings were saved as "+r.data.backup+".":""}`);loadSet("Restored from "+name)}else out.innerHTML=`<span class="err">${esc(r.data.detail||"failed")}</span>`}});
+function renderOverrides(){const o=storage.overrides;
+  $("#ovrCard").innerHTML=`<h2>Per-game overrides</h2>${o.length?`<table><thead><tr><th>Game</th><th>What is overridden</th><th>Note</th><th></th></tr></thead><tbody>${o.map(x=>`<tr><td><b>${esc(x.title||x.title_id)}</b><div class="small muted">${esc(x.title_id)}${x.in_library?"":` <span class="tag t-waiting">not in library</span>`}</div></td>
+     <td class="small">${esc(x.what.join(" · ")||"(empty)")}${x.patch?`<div>${pathHtml(x.patch_host,x.patch)}</div>`:""}</td><td class="small">${esc(x.note)}</td>
+     <td><button class="btn sm" data-ovr-remove="${esc(x.title_id)}">Remove</button></td></tr>`).join("")}</tbody></table>`:`<div class="muted small">No game has options of its own. Set them from a game's Options on the Library page.</div>`}`}
+$("#ovrCard").addEventListener("click",async e=>{const b=e.target.closest("[data-ovr-remove]");if(!b)return;const t=b.dataset.ovrRemove;
+  if(!confirm(`Remove the override for ${t}? Only this entry is deleted.`))return;
+  try{await api("/api/overrides/"+encodeURIComponent(t),{method:"DELETE"});toast("Removed the override for "+t);loadStorage()}catch(err){toast(err.message,1)}});
 async function loadLogs(){const l=await api("/api/logs");const cur=wantLog||$("#logSel").value;wantLog=null;if(cur&&!l.some(x=>x.name===cur))l.unshift({name:cur});$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
 async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600"+($("#logHost").checked?"&host=1":""));const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
 $("#logSel").onchange=showLog;$("#logHost").onchange=()=>{try{localStorage.setItem("ps5pkg.logHost",$("#logHost").checked?"1":"0")}catch(e){}showLog().catch(()=>{})};

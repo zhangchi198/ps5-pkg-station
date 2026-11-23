@@ -273,12 +273,16 @@ def _read_raw():
 def write_json_atomic(path, obj):
     """Pretty JSON into a temp file next to `path`, then one rename over it: a reader sees the old file or the
     new one, never half of it. Keeps the permission bits the file already had."""
+    write_text_atomic(path, json.dumps(obj, indent=2, ensure_ascii=False) + "\n")
+
+
+def write_text_atomic(path, text):
     path = Path(path)
     tmp = path.with_name(path.name + ".part")
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(obj, indent=2, ensure_ascii=False) + "\n")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
         try:
@@ -320,6 +324,66 @@ class _cfg_write_lock:
         if self.fd is not None:
             os.close(self.fd)                    # closing the descriptor releases the lock
         _cfg_thread_lock.release()
+
+
+# ------------------------------------------------------------------ automatic backups
+# Before config.json is changed, its previous content is copied to state/backups/config-YYYYmmdd-HHMMSS.json and
+# only the newest BACKUP_KEEP stay. Only a real change (a save, an import, a restore) makes one: reading, polling
+# and a save that changes nothing never write anything.
+BACKUP_KEEP = 10
+BACKUP_RE = re.compile(r"^config-(\d{8}-\d{6})(?:-(\d+))?\.json$")
+backup_status = {"error": None}          # why the last backup could not be made, for the storage card
+
+
+def backups_dir():
+    return STATE / "backups"
+
+
+def _backup_order(name):
+    m = BACKUP_RE.match(name)
+    return (m.group(1), int(m.group(2) or 1)) if m else ("", 0)
+
+
+def list_backups():
+    """[{name, at, size}], newest first."""
+    out = []
+    try:
+        for p in backups_dir().iterdir():
+            if BACKUP_RE.match(p.name) and p.is_file():
+                st = p.stat()
+                out.append(dict(name=p.name, at=st.st_mtime, size=st.st_size))
+    except OSError:
+        return []
+    return sorted(out, key=lambda b: _backup_order(b["name"]), reverse=True)
+
+
+def _backup_current():
+    """Copy config.json as it is now into the backups folder (call with the write lock held); prune. Returns the
+    name, or None when there was nothing to copy or it could not be done (a settings save must not fail over
+    its backup: the reason is in backup_status)."""
+    try:
+        data = CFG_PATH.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as ex:
+        backup_status["error"] = f"can't read {CFG_PATH.name}: {ex.strerror or ex}"
+        return None
+    try:
+        d = backups_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        stamp, n = time.strftime("%Y%m%d-%H%M%S"), 1
+        name = f"config-{stamp}.json"
+        while (d / name).exists():
+            n += 1
+            name = f"config-{stamp}-{n}.json"
+        (d / name).write_bytes(data)
+        for old in list_backups()[BACKUP_KEEP:]:
+            (d / old["name"]).unlink(missing_ok=True)
+        backup_status["error"] = None
+        return name
+    except OSError as ex:
+        backup_status["error"] = f"can't write the backup: {ex.strerror or ex}"
+        return None
 
 
 def _remember_good(cfg, problems):
@@ -366,11 +430,38 @@ def update_cfg(mutate):
     when the file can't be parsed: a hand edit is never overwritten."""
     with _cfg_write_lock():
         raw = _read_raw()
+        existed = raw is not None
         if raw is None:
             raw = copy.deepcopy(DEFAULT_CFG)
+        before = copy.deepcopy(raw)
         mutate(raw)
-        write_json_atomic(CFG_PATH, raw)
+        if raw != before or not existed:          # a save that changes nothing leaves the file and the backups alone
+            if existed:
+                _backup_current()
+            write_json_atomic(CFG_PATH, raw)
     cfg, problems = validate_cfg(raw)
+    _remember_good(cfg, problems)
+    return cfg
+
+
+def restore_backup(name):
+    """Make a backup the current config.json. The file it replaces is backed up first, like any change. Raises
+    ValueError for a name that isn't one of ours or a backup that isn't a JSON object, FileNotFoundError when
+    it is gone."""
+    if not BACKUP_RE.match(name):
+        raise ValueError("not a backup name")
+    text = (backups_dir() / name).read_text(encoding="utf-8")       # FileNotFoundError when it is gone
+    try:
+        data = json.loads(text.lstrip("\ufeff"))
+    except json.JSONDecodeError as ex:
+        raise ValueError(f"that backup is not valid JSON (line {ex.lineno}: {ex.msg})")
+    if not isinstance(data, dict):
+        raise ValueError("that backup is not a JSON object")
+    with _cfg_write_lock():
+        if CFG_PATH.exists():
+            _backup_current()
+        write_text_atomic(CFG_PATH, text)
+    cfg, problems = validate_cfg(data)
     _remember_good(cfg, problems)
     return cfg
 

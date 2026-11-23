@@ -90,8 +90,8 @@ class StateCase(unittest.TestCase):
         return self.cfg_path.read_bytes(), st.st_mtime_ns
 
     def stray_files(self):
-        """Anything in state/ other than the settings file and its lock (leftover temp files would show here)."""
-        return sorted(p.name for p in self.state.iterdir() if p.name not in ("config.json", "config.json.lock"))
+        """Anything in state/ other than the settings file, its lock and its backups (leftover temp files would show here)."""
+        return sorted(p.name for p in self.state.iterdir() if p.name not in ("config.json", "config.json.lock", "backups"))
 
 
 GAME_PARAM = {"titleId": "PPSA01234", "contentVersion": "01.002.003", "requiredSystemSoftwareVersion": "0x0900000000000000",

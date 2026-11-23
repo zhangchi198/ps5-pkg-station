@@ -4,6 +4,7 @@ The engine does all the work in its own process (detached, so a UI restart never
 this server only reads its state files, edits config.json, and starts / stops runs."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -12,10 +13,11 @@ import subprocess
 import sys
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 
 HERE = Path(__file__).resolve().parent
 ENGINE = HERE.parent / "engine" / "ps5_pkg_sync.py"
@@ -27,6 +29,7 @@ sys.path.insert(0, str(ENGINE.parent))
 import ps5_pkg_sync as E  # noqa: E402  (same defaults/validation as the engine)
 import ps5_failures as FL  # noqa: E402  (games that failed: why, and when another try can help)
 import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
+import ps5_settingsio as IO  # noqa: E402  (export / import of the settings)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
 
 MOUNTINFO = "/proc/self/mountinfo"      # the hint for "where is /library on the host" (see ps5_hostpaths)
@@ -90,6 +93,11 @@ def text_twin(obj, key, mapping):
     else:
         return obj
     return dict(obj, **{key + "_host": host}) if host != val else obj
+
+
+def versions():
+    """What is running: the app's own version and the UltraPack release it was built with (the image sets it)."""
+    return dict(app=FL.app_version(), ultrapack=os.environ.get("PS5PKG_ULTRAPACK_VERSION") or None)
 
 
 def failure_store():
@@ -393,7 +401,7 @@ def status():
     plan = plan_with_failures(entries, cfg, mapping)
     by_id = {p.get("title_id"): p for p in entries}
     attention = [failure_view(r, by_id.get(t), cfg, mapping) for t, r in failure_store().load().items() if not r.get("dismissed")]
-    return dict(engine_running=bool(pid), engine_pid=pid, clock=S.clock_info(), failures_rev=failures_rev(),
+    return dict(engine_running=bool(pid), engine_pid=pid, clock=S.clock_info(), failures_rev=failures_rev(), version=versions(),
                 attention=[dict(title_id=a["title_id"], name=a.get("name"), state=a["state"], code=a["code"], summary=a["summary"],
                                 at_text=a.get("at_text"), will_retry=a["will_retry"]) for a in attention],
                 scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
@@ -499,6 +507,192 @@ def overrides_with_hosts(ovs, mapping):
     if not isinstance(ovs, dict):
         return ovs
     return {tid: host_twins(ov, mapping, ("source", "patch")) for tid, ov in ovs.items()}
+
+
+def describe_override(ov):
+    """What a per-game override changes, in a few words."""
+    bits = []
+    if ov.get("source"):
+        bits.append("source: " + re.split(r"[\\/]", str(ov["source"]).rstrip("/\\"))[-1])
+    if ov.get("modified_exec") == "image":
+        bits.append("keep the backport")
+    elif ov.get("modified_exec") == "original":
+        bits.append("use the original")
+    if ov.get("patch"):
+        bits.append("patch folder")
+    if ov.get("skip"):
+        bits.append("skipped")
+    if ov.get("skip_verify"):
+        bits.append("no archive check")
+    other = [k for k in ov if k not in IO.KNOWN_OVERRIDE_FIELDS]
+    if other:
+        bits.append("other: " + ", ".join(sorted(other)))
+    return bits
+
+
+def overrides_table(cfg, mapping):
+    """Every override in config.json, also those of titles that are not in the library (any more)."""
+    in_plan = {p.get("title_id"): p for p in plan_entries(cfg)}
+    rows = []
+    for tid, ov in sorted((cfg.get("overrides") or {}).items()):
+        if isinstance(ov, dict):
+            rows.append(host_twins(dict(title_id=tid, title=(in_plan.get(tid) or {}).get("title") or "", in_library=tid in in_plan,
+                                        what=describe_override(ov), note=ov.get("note") or "", source=ov.get("source"),
+                                        patch=ov.get("patch"), override=ov), mapping, ("source", "patch")))
+    return rows
+
+
+def file_info(path, mapping):
+    p = Path(path)
+    try:
+        st = p.stat()
+        changed, size = st.st_mtime, st.st_size
+    except OSError:
+        changed = size = None
+    return dict(path=str(p), host=H.display_path(str(p), mapping), exists=changed is not None, changed=changed, size=size)
+
+
+@app.get("/api/storage")
+def storage():
+    """Where the settings live, what else is stored beside them, the automatic backups, the versions and the
+    per-game overrides: the Settings page's "Storage & backup" card."""
+    info = E.load_cfg_info()
+    mapping = host_view(info.cfg)["mapping"]
+    ledger_ = read_json(STATE / "ledger.json", {})
+    failed = read_json(STATE / "failures.json", {})
+    backups = E.list_backups()
+    return dict(
+        settings=dict(file_info(E.CFG_PATH, mapping), error=info.error.as_dict() if info.error else None),
+        history=dict(file_info(STATE / "ledger.json", mapping), packages=sum(1 for v in ledger_.values() if isinstance(v, dict)) if isinstance(ledger_, dict) else 0),
+        failures=dict(file_info(STATE / "failures.json", mapping), count=len(failed) if isinstance(failed, dict) else 0),
+        state_note=("The build history (ledger.json) and the failed-game records (failures.json) are state, not settings: "
+                    "they are not in an export, and not in a full backup unless you ask for the failed-game records."),
+        backups=dict(keep=E.BACKUP_KEEP, count=len(backups), last=backups[0]["at"] if backups else None, items=backups,
+                     folder=file_info(E.backups_dir(), mapping), error=E.backup_status["error"]),
+        versions=versions(), overrides=overrides_table(info.cfg, mapping))
+
+
+@app.get("/api/export")
+def export_settings(notify_url: int = 1):
+    """The settings and the per-game overrides as one JSON file (see ps5_settingsio). The notification URL can
+    be left out (?notify_url=0): it may be a private topic."""
+    info = E.load_cfg_info()
+    if info.error:
+        raise HTTPException(409, f"The settings file could not be read ({info.error.describe()}), so there is nothing reliable "
+                                 f"to export. Fix the file first.")
+    doc = IO.export_doc(info.cfg, include_notify_url=bool(notify_url), app_version=FL.app_version())
+    return Response(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="ps5-pkg-station-settings-{time.strftime("%Y%m%d")}.json"'})
+
+
+@app.get("/api/backup.zip")
+def full_backup(failures: int = 0):
+    """A zip with config.json exactly as it is, the build history (ledger.json), the list of patch folders (not their
+    contents) and a note on restoring. The failed-game records (failures.json) only with ?failures=1."""
+    cfg = load_cfg()
+    mapping = host_view(cfg)["mapping"]
+    patches = [dict(title_id=t, patch=ov.get("patch"), host=H.display_path(ov.get("patch"), mapping))
+               for t, ov in sorted((cfg.get("overrides") or {}).items()) if isinstance(ov, dict) and ov.get("patch")]
+    patch_root = Path(H.config_root(STATE, LOGS)) / "patches"
+    try:
+        existing = sorted(p.name for p in patch_root.iterdir() if p.is_dir())
+    except OSError:
+        existing = []
+    files = [("config.json", E.CFG_PATH), ("ledger.json", STATE / "ledger.json")] + ([("failures.json", STATE / "failures.json")] if failures else [])
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, p in files:
+            if p.is_file():
+                z.write(p, name)
+        z.writestr("patch-folders.json", json.dumps(dict(referenced_by_overrides=patches, folders_in_patches_dir=existing,
+                                                         note="Only the names are listed. Copy the folders themselves to keep their files."),
+                                                    indent=2, ensure_ascii=False) + "\n")
+        z.writestr("manifest.json", json.dumps(dict(app_version=FL.app_version(), created_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                                                    contains=[n for n, p in files if p.is_file()]), indent=2) + "\n")
+        z.writestr("README.txt", "PS5 PKG Station backup.\n\nTo restore, stop the container, copy config.json (and ledger.json, failures.json) back into "
+                                 "the config folder's state/ folder, and start it again. The Settings page can also import the "
+                                 "settings from an export file.\n")
+    return Response(buf.getvalue(), media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="ps5-pkg-station-backup-{time.strftime("%Y%m%d-%H%M%S")}.zip"'})
+
+
+def _problems(status, ex):
+    return JSONResponse(status_code=status, content={"detail": str(ex), "problems": getattr(ex, "problems", [str(ex)])})
+
+
+@app.post("/api/import")
+async def import_settings(req: Request, dry_run: int = 0, parts: str = ""):
+    """Import an export. dry_run=1 only says what would change. Everything is checked first (the same rules as the
+    Settings page); a problem names its key and nothing is written. parts=settings,overrides (default both)."""
+    try:
+        doc = await req.json()
+    except Exception:
+        return _problems(400, ValueError("The file is not valid JSON."))
+    try:
+        want = IO.parse_parts(parts)
+        settings, overrides = IO.parse_import(doc)
+    except ValueError as ex:                        # ImportProblem is one
+        return _problems(400, ex)
+    info = E.load_cfg_info()
+    if info.error:
+        raise HTTPException(409, f"The settings file could not be read ({info.error.describe()}). Nothing was imported: fix the file first.")
+    d = IO.diff(info.cfg, settings, overrides, want)
+    if dry_run:
+        return dict(d, ok=True, dry_run=True)
+    before = {b["name"] for b in E.list_backups()}
+    cfg = update_cfg(lambda raw: IO.apply_import(raw, settings, overrides, want))
+    made = [b["name"] for b in E.list_backups() if b["name"] not in before]
+    return dict(d, ok=True, dry_run=False, backup=made[0] if made else None,
+                config={k: cfg.get(k) for k in SETTINGS}, overrides=cfg.get("overrides", {}))
+
+
+@app.get("/api/backups")
+def backups():
+    return dict(keep=E.BACKUP_KEEP, items=E.list_backups(), error=E.backup_status["error"])
+
+
+@app.post("/api/backups/{name}/restore")
+def restore_backup(name: str, dry_run: int = 0):
+    """Make an automatic backup the current settings file (dry_run=1: only say what would change). The file it
+    replaces is backed up first."""
+    if not E.BACKUP_RE.match(name):
+        raise HTTPException(400, "not a backup name")
+    try:
+        data = json.loads((E.backups_dir() / name).read_text(encoding="utf-8").lstrip("\ufeff"))
+    except FileNotFoundError:
+        raise HTTPException(404, "no such backup")
+    except (OSError, ValueError) as ex:
+        raise HTTPException(400, f"that backup can't be read: {ex}")
+    if not isinstance(data, dict):
+        raise HTTPException(400, "that backup is not a JSON object")
+    cfg_b, problems = E.validate_cfg(data)
+    info = E.load_cfg_info()
+    d = IO.diff(info.cfg, {k: cfg_b[k] for k in SETTINGS}, cfg_b["overrides"], IO.PARTS, replace_all=True)
+    d.update(ok=True, dry_run=bool(dry_run), problems=problems, replaces_unreadable_file=bool(info.error))
+    if dry_run:
+        return d
+    before = {b["name"] for b in E.list_backups()}
+    try:
+        E.restore_backup(name)
+    except ValueError as ex:
+        raise HTTPException(400, str(ex))
+    made = [b["name"] for b in E.list_backups() if b["name"] not in before]
+    return dict(d, backup=made[0] if made else None)
+
+
+@app.delete("/api/overrides/{tid}")
+def delete_override(tid: str):
+    """Remove one per-game override (and nothing else)."""
+    gone = []
+
+    def apply(raw):
+        ovs = raw.get("overrides")
+        if isinstance(ovs, dict) and tid in ovs:
+            gone.append(ovs.pop(tid))
+    update_cfg(apply)
+    if not gone:
+        raise HTTPException(404, "there is no override for that title")
+    return {"ok": True, "removed": tid}
 
 
 @app.get("/api/overrides")
