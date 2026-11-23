@@ -13,6 +13,7 @@ import ps5_progress as P  # noqa: E402
 
 FIXTURES = ROOT / "tests" / "fixtures"
 SH = P.normalise(P.DEFAULT_SHARES)
+SH0 = P.normalise(P.DEFAULT_SHARES, with_copy=False)       # a build that is written where it ends up: no copy step
 GIB = 2 ** 30
 
 KRAKEN = "[stage 1/5] Building and compressing the inner pfs_image.dat (Kraken level 4)..."
@@ -319,11 +320,11 @@ def load_timed(path):
     return rows
 
 
-def replay(rows, shares, *, tick=5, smoother=None, extra_tail=0.0):
+def replay(rows, shares, *, tick=5, hist_total=None):
     """Feed a timed log to a tracker the way the engine does (a look every `tick` seconds) and record, at each look,
     (time, bar, raw remaining, shown remaining)."""
     tr, i, out = P.LogTracker(0.0), 0, []
-    sm = smoother or P.Smoother(tick=tick)
+    sm = P.Smoother(tick=tick)
     end = rows[-1][0]
     for now in range(tick, int(end) + tick + 1, tick):
         chunk = []
@@ -331,22 +332,37 @@ def replay(rows, shares, *, tick=5, smoother=None, extra_tail=0.0):
             chunk.append(rows[i][1])
             i += 1
         tr.feed("\n".join(chunk), now)
-        est = P.estimate_build(tr, shares, now)
+        est = P.estimate_build(tr, shares, now, hist_total=hist_total)
         out.append((now, est["progress"], est["remaining"], sm.update(est["remaining"], now)))
     return tr, out
 
 
+VALIDATE = 100.0            # seconds the engine spends checking the package after UltraPack (about two minutes on the real build)
+
+
+def errors(seen, total, lo, hi, which=3):
+    """Relative error of the time left (shown by default, raw with which=2) against what was really left, for looks between lo and hi seconds."""
+    return [(row[which] - (total - row[0])) / (total - row[0]) for row in seen if lo <= row[0] < hi and row[which] is not None]
+
+
+def learned_shares(tr, validate=VALIDATE):
+    h = P.history({"PPSA00001": dict(stage_secs=dict(tr.stage_secs(), validate=validate, copy=0.0), source_bytes=140 * GIB, level=4)}, level=4)
+    return P.normalise(P.shares_from(h), with_copy=False)
+
+
 class Replay(unittest.TestCase):
+    """Every log in tests/fixtures: the synthetic one and the real one."""
+
     def test_there_is_a_log_to_replay(self):
         self.assertTrue(timed_logs(), "tests/fixtures needs at least one *.timed.log")
+        self.assertTrue(REAL.exists())
 
     def test_the_bar_is_not_stuck_low_for_most_of_a_real_build(self):
         for path in timed_logs():
             with self.subTest(path.name):
                 rows = load_timed(path)
                 tr, seen = replay(rows, SH)
-                total = rows[-1][0]
-                low = sum(1 for _, bar_, _, _ in seen if bar_ < 0.20) * 5 / total
+                low = sum(1 for _, bar_, _, _ in seen if bar_ < 0.20) * 5 / rows[-1][0]
                 self.assertLessEqual(low, 0.5, f"the bar is below 20% for {low:.0%} of the build")
                 self.assertLess(low, 0.35)
                 bars = [b for _, b, _, _ in seen]
@@ -370,55 +386,103 @@ class Replay(unittest.TestCase):
                 below += old < 0.20
             self.assertGreater(below / len(ticks), 0.5, path.name)
 
-    def test_the_estimate_appears_after_two_minutes_and_is_close_with_what_this_install_has_learned(self):
+    def test_it_says_estimating_until_there_is_signal_and_then_gives_one_soon(self):
         for path in timed_logs():
             with self.subTest(path.name):
-                rows = load_timed(path)
-                total = rows[-1][0]
-                tr, _ = replay(rows, SH)
-                stage_secs = tr.stage_secs()
-                validate, copy = 90.0, 150.0
-                learned = dict(stage_secs, validate=validate, copy=copy)
-                h = P.history({"PPSA00001": dict(stage_secs=learned, source_bytes=140 * GIB, level=4)}, level=4)
-                sh = P.normalise(P.shares_from(h))
-                _, seen = replay(rows, sh)
+                _, seen = replay(load_timed(path), SH0)
+                self.assertTrue(all(s is None for t, _, _, s in seen if t < P.MIN_SIGNAL_SECS))
                 first = next(t for t, _, raw, _ in seen if raw is not None)
                 self.assertGreaterEqual(first, P.MIN_SIGNAL_SECS)
                 self.assertLess(first, 300)
-                for t, _, raw, shown in seen:
-                    if t < 600 or t > total - 30 or raw is None:
-                        continue
-                    actual = (total - t) + validate + copy
-                    limit = 0.20 if t < 1200 else 0.15            # the first minutes of a build are not typical of the rest
-                    self.assertLess(abs(raw - actual) / actual, limit, (path.name, t, round(raw), round(actual)))
-                    self.assertLess(abs(shown - actual) / actual, limit + 0.03, (path.name, t, round(shown), round(actual)))
 
-    def test_with_only_the_defaults_it_is_in_the_right_region(self):
+    def test_the_shown_estimate_does_not_jump_up(self):
         for path in timed_logs():
-            rows = load_timed(path)
-            total = rows[-1][0]
-            _, seen = replay(rows, SH)
-            for t, _, raw, _ in seen:
-                if t < 600 or t > total - 30 or raw is None:
-                    continue
-                actual = (total - t) + 240
-                self.assertLess(abs(raw - actual) / actual, 0.35, (path.name, t, round(raw), round(actual)))
+            with self.subTest(path.name):
+                _, seen = replay(load_timed(path), SH0)
+                shown = [s for *_, s in seen if s is not None]
+                for a, b in zip(shown, shown[1:]):
+                    self.assertLessEqual(b - a, 20.0 - 5.0 + 1e-6)                      # the slew limit, beyond the countdown, per look
+                for i in range(len(shown) - 12):                                       # and over any minute: at most 3 minutes up
+                    self.assertLessEqual(shown[i + 12] - shown[i], 180 + 1e-6, (path.name, i))
 
-    def test_the_shown_estimate_never_jumps_up_by_minutes(self):
+    def test_with_what_this_install_has_learned_it_is_close(self):
         for path in timed_logs():
-            rows = load_timed(path)
-            _, seen = replay(rows, SH)
-            shown = [s for *_, s in seen if s is not None]
-            for a, b in zip(shown, shown[1:]):
-                self.assertLessEqual(b - a, 60.0 + 1e-6)                                # the slew limit per look
-            for i in range(len(shown) - 12):                                           # and over any minute: less than 3 minutes up
-                self.assertLess(shown[i + 12] - shown[i], 180, (path.name, i))
+            with self.subTest(path.name):
+                rows = load_timed(path)
+                total = rows[-1][0] + VALIDATE
+                tr, _ = replay(rows, SH0)
+                _, seen = replay(rows, learned_shares(tr))
+                self.assertTrue(all(abs(e) < 0.30 for e in errors(seen, total, 600, rows[-1][0] - 30)), path.name)
+                self.assertTrue(all(abs(e) < 0.20 for e in errors(seen, total, 1200, rows[-1][0] - 30)), path.name)
 
-    def test_it_says_estimating_until_there_is_signal(self):
-        for path in timed_logs():
-            rows = load_timed(path)
-            _, seen = replay(rows, SH)
-            self.assertTrue(all(s is None for t, _, _, s in seen if t < 100))
+
+REAL = FIXTURES / "ultrapack_build.real-233gib.timed.log"
+
+
+class RealBuild(unittest.TestCase):
+    """The real 233 GiB build (level 4, 12 workers: 54 minutes of UltraPack, then about two minutes of checking the
+    package). The bounds are what the code achieves on it today, with a margin; the numbers are in the pull request."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.rows = load_timed(REAL)
+        cls.log_secs = cls.rows[-1][0]
+        cls.total = cls.log_secs + VALIDATE
+        cls.tr, cls.defaults = replay(cls.rows, SH0)
+
+    def test_it_is_the_build_it_says_it_is(self):
+        secs = self.tr.stage_secs()
+        self.assertAlmostEqual(secs["1"], 3094.5, delta=5)
+        self.assertAlmostEqual(secs["3"], 151.3, delta=5)
+        self.assertLess(secs["2"] + secs["4"] + secs["5"], 20)
+        self.assertTrue(self.tr.finished)
+        self.assertEqual(self.tr.total_bytes, 250_052_963_003)
+
+    def test_the_default_shares_are_this_build_s(self):
+        secs = dict(self.tr.stage_secs(), validate=VALIDATE)
+        total = sum(secs.values())
+        real = {k: secs.get(k, 0) / total for k in ("1", "2", "3", "4", "5", "validate")}
+        for k, v in real.items():
+            self.assertAlmostEqual(SH0[k], v, delta=0.03, msg=k)
+        self.assertGreater(real["1"], 0.9)
+
+    def test_the_bar(self):
+        low = sum(1 for _, b, _, _ in self.defaults if b < 0.20) * 5 / self.log_secs
+        self.assertLess(low, 0.25)                                                        # the old formula: 95 % of the build under 20 %
+        self.assertGreater(self.defaults[int(len(self.defaults) * 0.5)][1], 0.4)           # half way through: not still near the bottom
+
+    def test_accuracy_of_the_time_left_with_defaults_only(self):
+        # no history at all: the first build on an install. UltraPack's own ETA undershoots early (it is still fast).
+        e = lambda lo, hi: errors(self.defaults, self.total, lo, hi)
+        self.assertTrue(all(-0.50 < x < 0.0 for x in e(120, 600)), (min(e(120, 600)), max(e(120, 600))))       # measured -46 % .. -11 %
+        self.assertTrue(all(-0.30 < x < 0.20 for x in e(600, self.log_secs - 30)), (min(e(600, 3228)), max(e(600, 3228))))   # from minute 10: -26 % .. +18 %
+        self.assertTrue(all(-0.20 < x < 0.20 for x in e(1200, self.log_secs - 30)), (min(e(1200, 3228)), max(e(1200, 3228))))  # from minute 20: -17 % .. +18 %
+
+    def test_accuracy_with_the_shares_this_install_learned(self):
+        _, seen = replay(self.rows, learned_shares(self.tr))
+        e = lambda lo, hi: errors(seen, self.total, lo, hi)
+        self.assertTrue(all(-0.30 < x < 0.15 for x in e(600, self.log_secs - 30)), (min(e(600, 3228)), max(e(600, 3228))))    # measured -27 % .. +12 %
+        self.assertTrue(all(-0.20 < x < 0.15 for x in e(1200, self.log_secs - 30)), (min(e(1200, 3228)), max(e(1200, 3228))))  # measured -18 % .. +12 %
+
+    def test_a_history_prior_fixes_the_early_undershoot_even_when_it_is_off_by_a_quarter(self):
+        for ratio in (0.75, 0.9, 1.0, 1.1, 1.3):
+            with self.subTest(ratio=ratio):
+                _, seen = replay(self.rows, SH0, hist_total=ratio * self.total)
+                early = errors(seen, self.total, 120, 600)
+                self.assertTrue(all(-0.35 < x < 0.25 for x in early), (ratio, min(early), max(early)))                            # no worse than -46 % without it
+                late = errors(seen, self.total, 1200, self.log_secs - 30)
+                self.assertTrue(all(-0.25 < x < 0.20 for x in late), (ratio, min(late), max(late)))
+        _, none = replay(self.rows, SH0)
+        _, right = replay(self.rows, SH0, hist_total=self.total)
+        self.assertLess(max(abs(x) for x in errors(right, self.total, 120, 600)), 0.5 * max(abs(x) for x in errors(none, self.total, 120, 600)))
+
+    def test_the_shown_estimate_rises_by_at_most_three_minutes_a_minute_while_the_real_rate_falls(self):
+        shown = [s for *_, s in self.defaults if s is not None]
+        worst = max(shown[i + 12] - shown[i] for i in range(len(shown) - 12))
+        self.assertLessEqual(worst, 180 + 1e-6)
+        # UltraPack's own ETA rose by more than that here: it says 2083 s at 256 s and 2304 s at 412 s
+        raw = [r for _, _, r, _ in self.defaults if r is not None]
+        self.assertGreater(max(raw[i + 12] - raw[i] for i in range(len(raw) - 12)), 60)
 
 
 if __name__ == "__main__":

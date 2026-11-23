@@ -1,0 +1,484 @@
+0.000	[INFO] CHAIN: app (folder) → no changes → pkg
+0.000	[INFO] fPKG identity: XX0000-PPSA01234_00-MAINGAME00000000  title id PPSA01234  version 01.001.001  title 'Example Game'   (from param.json)
+0.000	[INFO] fPKG build (kraken, builtin, level 4; retail-normalize on, HDR flag auto, PlayGo auto, fake-sign on): /work/tmp/PPSA01234/src/app -> /output/.staging/PPSA01234   [temp: /work/tmp/PPSA01234/t/_ultrapack_temp]
+0.000	[PHASE] Scanning Files
+0.000	[INFO] Building in the unpacked copy itself: each file is removed as soon as the package holds it. A build that fails is unpacked again on Retry.
+0.000	  [playgo] source declares 21 chunk(s); using that as the generation count too (was default 1)
+0.000	  [keystone] source keystone preserved (save-data key; saves stay compatible with the original dump)
+0.000	  [stage] staged in place: /work/tmp/PPSA01234/src/app (the caller's working copy; nothing copied; its files go as the image takes them in)
+0.000	[PHASE] Reading Game
+0.000	[#-------------------] 5% staged in place
+0.000	  [self-hdr] set retail bit (byte 0x0B: 0x10) on 0 eboot.bin/*.prx; left 63 untouched
+0.000	  [retail] source declares HDR support (attribute bit 29) — kept
+0.000	  [retail] param.json attribute 0x20000000 unchanged; added kernel{cpuPageTable=64Mi, flex=260Mi, gpuPageTable=64Mi}
+0.000	  [retail] dropped placeholder license.dat/info; installed DebugLicenseProvider (CNT entries 0x0400/0x0401); drm_type=16 via patched LibProsperoPkg.dll
+0.000	  [ampr] rebuilt ampr_emu.index over the packed files (105 file(s))
+0.000	  [playgo] prepared set does not match the packed files (12 packed file(s) missing from its hash table, 0 listed file(s) not packed); discarded so LibProsperoPkg regenerates a consistent 21-chunk set
+0.000	[info] build  /work/tmp/PPSA01234/src/app -> /output/.staging/PPSA01234/_ultrapack_temp/tmpXXXXXXXX  (inner=Kraken, backend=BuiltIn, level=4, workers=12, temp=/work/tmp/PPSA01234/t/_ultrapack_temp/tmpXXXXXXXX, chunks=21, fake-sign=True, retail-normalize=True)
+0.035	  [+00:00:00.035] Build configuration: mode=Application, output=DebugImage, image=PlaintextNoAuth, PlayGo chunks=21, Kraken level=4, Kraken workers=12, Kraken block=256 KiB, PFS compression=Version2, shuffle=None, input check=enabled, deterministic=False.
+0.063	  [+00:00:00.063] SHA3-256 backend: System.Security.Cryptography SHA3-256.
+0.070	  [+00:00:00.070] Physical layout: coalescing=True, alignment=True, minimum savings=1,048,576 bytes and 0.100%.
+0.071	  [+00:00:00.071] Source: /work/tmp/PPSA01234/src/app
+0.071	  [+00:00:00.071] Source mode: automatic GP5 discovery.
+0.071	  [+00:00:00.071] Output directory: /output/.staging/PPSA01234/_ultrapack_temp/tmpXXXXXXXX
+0.071	  [+00:00:00.071] Temporary directory: /work/tmp/PPSA01234/t/_ultrapack_temp/tmpXXXXXXXX
+0.071	  [+00:00:00.071] Content ID: XX0000-PPSA01234_00-MAINGAME00000000; title ID: PPSA01234; version: 01.001.001.
+0.073	  [+00:00:00.073] PS5 public RSA profile loaded (passcode[7] + mount-image + token).
+0.073	  [+00:00:00.073] Using existing sce_sys/param.json.
+0.073	  [+00:00:00.073] Source scan: deferred to inner-tree preparation (single-pass mode).
+0.076	  [+00:00:00.076] PlayGo: 21 chunks / 1 scenarios; every scenario requires every chunk; generic scenario presentation is generated.
+0.082	  [+00:00:00.082] NAPS outer-block CMAC is disabled: Publishing Tools 2.79 debug/AC leaves the eight-byte tags zero unless a keyed profile is explicitly selected.
+0.082	  [+00:00:00.082] PLAINTEXT_NOAUTH: outer PFS AES-XTS and keyed NAPS outer-block authentication are disabled; ordinary PFS SHA3 hashes remain enabled.
+0.082	  [+00:00:00.082] Building the PS5 package...
+0.087	  [+00:00:00.087] Preparing PS5 inner PFS (superblock version 2)...
+0.088	  [+00:00:00.088] Source tree scan: started.
+0.090	  [+00:00:00.090] Source tree scan: complete. 106 files, 250,124,325,861 bytes.
+0.144	  [+00:00:00.144] Preparing PLAINTEXT_NOAUTH publisher PPR-PFS and NAPS image...
+0.145	  [+00:00:00.145] PFSv2 compression profile: extended options are disabled; API/GP5/JSON region hints, shuffle patterns, predictive aliases and the input-check override are ignored.
+0.145	  [+00:00:00.145] PFS compression format: v2; target SDK=4.00; shuffle features=disabled, shuffle analysis=disabled, input check=enabled.
+0.145	  [+00:00:00.145] [stage 1/5] Building and compressing the inner pfs_image.dat...
+0.148	  [+00:00:00.148]  [inner] Preparing 91 inner files (250,052,963,003 bytes)...
+0.148	[##########----------] 50% inner files prepared
+0.422	  [+00:00:00.422]  [inner]   read 5/91 (  5%): /SHA256SUMS (5,844 bytes)
+0.423	  [+00:00:00.423]  [inner]   read 10/91 ( 10%): /fakelib/libSceAmpr.sprx (255,126 bytes)
+0.423	  [+00:00:00.423]  [inner]   read 14/91 ( 15%): /prx/akaudioinput.prx (10,765 bytes)
+0.424	  [+00:00:00.424]  [inner]   read 19/91 ( 20%): /prx/akflanger.prx (30,749 bytes)
+0.424	  [+00:00:00.424]  [inner]   read 23/91 ( 25%): /prx/akmatrixreverb.prx (53,117 bytes)
+0.425	  [+00:00:00.425]  [inner]   read 28/91 ( 30%): /prx/akrecorder.prx (34,525 bytes)
+0.425	  [+00:00:00.425]  [inner]   read 32/91 ( 35%): /prx/aksinetone.prx (10,013 bytes)
+0.426	  [+00:00:00.426]  [inner]   read 37/91 ( 40%): /prx/aktonegen.prx (30,701 bytes)
+0.429	  [+00:00:00.429]  [inner]   read 41/91 ( 45%): /prx/bnsprismatonmusicupmixer.prx (24,173 bytes)
+0.457	  [+00:00:00.457]  [inner]   read 46/91 ( 50%): /prx/izotope.prx (487,341 bytes)
+0.507	  [+00:00:00.507]  [inner]   read 51/91 ( 56%): /prx/lfesynth.prx (53,053 bytes)
+0.508	  [+00:00:00.508]  [inner]   read 55/91 ( 60%): /prx/mcdsp.prx (153,725 bytes)
+0.508	  [+00:00:00.508]  [inner]   read 60/91 ( 65%): /prx/prismatonobjectrotator.prx (7,917 bytes)
+0.508	  [+00:00:00.508]  [inner]   read 64/91 ( 70%): /prx/vibrationsynthmetadata.prx (6,381 bytes)
+0.522	  [+00:00:00.522]  [inner]   read 69/91 ( 75%): /sce_module/libScePfs.prx (1,341,247 bytes)
+0.522	  [+00:00:00.522]  [inner]   read 73/91 ( 80%): /sce_sys/pfs-version.dat (10 bytes)
+0.522	  [+00:00:00.522]  [inner]   read 78/91 ( 85%): /live/content/paks/global.utoc (923 bytes)
+0.522	  [+00:00:00.522]  [inner]   read 82/91 ( 90%): /live/content/paks/pakchunk10-ps5.pak (11,242,211,027 bytes)
+0.522	  [+00:00:00.522]  [inner]   read 87/91 ( 95%): /live/content/paks/pakchunk20-ps5.utoc (11,024,453 bytes)
+0.522	  [+00:00:00.522]  [inner]   read 91/91 (100%): /sce_sys/about/right.sprx (12,512 bytes)
+0.523	  [+00:00:00.523]  [inner] Prepared inner tree: 91 files, 16 directories.
+0.523	[####################] 100% inner files prepared
+0.529	  [+00:00:00.529]  [inner] Inner size planning: started.
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 10% (10/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 20% (19/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 30% (28/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 40% (37/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 50% (46/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 60% (55/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 70% (64/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 80% (73/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 90% (82/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: 100% (91/91 files).
+0.530	  [+00:00:00.530]  [inner] Inner size planning: complete.
+0.530	  [+00:00:00.530]  [inner] Planning nwonly inner image: 91 files, 250,052,963,003 uncompressed bytes.
+0.530	  [+00:00:00.530]  [inner] Using the built-in managed Kraken compressor; libScePubTools.dll is not required.
+0.530	  [+00:00:00.530]  [inner] Inode and AFID planning: started.
+0.531	  [+00:00:00.531]  [inner] Inode and AFID planning: 5% (10/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 10% (20/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 15% (30/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 20% (39/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 25% (49/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 30% (59/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 35% (69/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 40% (78/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 45% (88/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 50% (98/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 55% (107/107 namespace entries).
+0.532	  [+00:00:00.532]  [inner] Inode and AFID planning: 60% (17/17 directory inodes).
+0.533	  [+00:00:00.533]  [inner] Inode and AFID planning: 65% (46/91 file inodes).
+0.533	  [+00:00:00.533]  [inner] Inode and AFID planning: 70% (91/91 file inodes).
+0.543	  [+00:00:00.543]  [inner] Inode and AFID planning: 75% (38/91 AFID candidates).
+0.543	  [+00:00:00.543]  [inner] Inode and AFID planning: 80% (76/91 AFID candidates).
+0.543	  [+00:00:00.543]  [inner] Inode and AFID planning: 85% (16/91 AFIDs assigned).
+0.543	  [+00:00:00.543]  [inner] Inode and AFID planning: 90% (41/91 AFIDs assigned).
+0.543	  [+00:00:00.543]  [inner] Inode and AFID planning: 95% (66/91 AFIDs assigned).
+0.543	  [+00:00:00.543]  [inner] Inode and AFID planning: 100% (91/91 AFIDs assigned).
+0.544	  [+00:00:00.544]  [inner] Inode and AFID planning: complete.
+0.544	  [+00:00:00.544]  [inner] AFID layout: 91 data files, 0 empty files, 0 sparse slots.
+0.546	  [+00:00:00.546]  [inner] Inner data compression and write: started.
+0.546	  [+00:00:00.546]  [inner] Compressing and writing AFID-ordered inner data with 12 built-in Kraken worker(s)...
+0.546	[PHASE] Creating Temp PFS
+0.546	[--------------------] 0% inner image (Kraken)
+0.602	  [+00:00:00.602]  [inner]   processing large file: /eboot.bin (259,129,024 bytes)
+1.489	  [+00:00:01.489]  [inner]   data   0% (12/91): /eboot.bin -> 259,129,024 bytes (stored, ratio 100.0 %)
+1.489	[--------------------] 0% inner image (Kraken) @ 274.6 MB/s ETA 910s
+1.489	  [consume] freed 0.2 GB so far (1 file(s) the image already holds)
+1.579	  [+00:00:01.579]  [inner]   processing large file: /live/content/movies/onlinemode/m00000001.mp4 (208,829,284 bytes)
+3.211	  [+00:00:03.211]  [inner]   data   0% (19/91): /live/content/movies/onlinemode/m00000001.mp4 -> 208,637,815 bytes (Kraken, ratio 99.9 %)
+3.211	[--------------------] 0% inner image (Kraken) @ 175.6 MB/s ETA 1422s
+3.211	  [consume] freed 0.4 GB so far (2 file(s) the image already holds)
+3.221	  [+00:00:03.221]  [inner]   processing large file: /live/content/movies/onlinemode/m00000002.mp4 (239,418,930 bytes)
+4.646	  [+00:00:04.646]  [inner]   data   0% (20/91): /live/content/movies/onlinemode/m00000002.mp4 -> 239,241,108 bytes (Kraken, ratio 99.9 %)
+4.646	[--------------------] 0% inner image (Kraken) @ 172.5 MB/s ETA 1445s
+4.646	  [consume] freed 0.7 GB so far (3 file(s) the image already holds)
+4.658	  [+00:00:04.658]  [inner]   processing large file: /live/content/movies/onlinemode/m00000003.mp4 (127,636,440 bytes)
+5.391	  [+00:00:05.391]  [inner]   data   0% (21/91): /live/content/movies/onlinemode/m00000003.mp4 -> 127,503,721 bytes (Kraken, ratio 99.9 %)
+5.391	[--------------------] 0% inner image (Kraken) @ 172.3 MB/s ETA 1446s
+5.391	  [consume] freed 0.8 GB so far (4 file(s) the image already holds)
+5.481	  [+00:00:05.481]  [inner]   processing large file: /live/content/paks/pakchunk0-ps5.pak (10,746,429,811 bytes)
+13.790	  [+00:00:13.790]  [inner]     Kraken level 4:  10% of /live/content/paks/pakchunk0-ps5.pak
+13.790	[--------------------] 0% inner image (Kraken) @ 144.2 MB/s ETA 1721s
+22.561	  [+00:00:22.561]  [inner]     Kraken level 4:  20% of /live/content/paks/pakchunk0-ps5.pak
+22.561	[--------------------] 1% inner image (Kraken) @ 135.6 MB/s ETA 1823s
+33.259	  [+00:00:33.259]  [inner]     Kraken level 4:  30% of /live/content/paks/pakchunk0-ps5.pak
+33.259	[--------------------] 1% inner image (Kraken) @ 124.1 MB/s ETA 1983s
+40.882	  [+00:00:40.882]  [inner]     Kraken level 4:  40% of /live/content/paks/pakchunk0-ps5.pak
+40.882	[--------------------] 2% inner image (Kraken) @ 127.3 MB/s ETA 1924s
+48.138	  [+00:00:48.138]  [inner]     Kraken level 4:  50% of /live/content/paks/pakchunk0-ps5.pak
+48.138	[--------------------] 2% inner image (Kraken) @ 130.4 MB/s ETA 1869s
+54.531	  [+00:00:54.531]  [inner]     Kraken level 4:  60% of /live/content/paks/pakchunk0-ps5.pak
+54.531	[--------------------] 2% inner image (Kraken) @ 134.9 MB/s ETA 1800s
+61.083	  [+00:01:01.083]  [inner]     Kraken level 4:  70% of /live/content/paks/pakchunk0-ps5.pak
+61.083	[--------------------] 3% inner image (Kraken) @ 138.1 MB/s ETA 1751s
+67.480	  [+00:01:07.480]  [inner]     Kraken level 4:  80% of /live/content/paks/pakchunk0-ps5.pak
+67.480	[--------------------] 3% inner image (Kraken) @ 140.9 MB/s ETA 1708s
+73.786	  [+00:01:13.786]  [inner]     Kraken level 4:  90% of /live/content/paks/pakchunk0-ps5.pak
+73.786	[--------------------] 4% inner image (Kraken) @ 143.5 MB/s ETA 1670s
+80.347	  [+00:01:20.347]  [inner]     Kraken level 4: 100% of /live/content/paks/pakchunk0-ps5.pak
+80.347	[--------------------] 4% inner image (Kraken) @ 145.1 MB/s ETA 1643s
+80.349	  [+00:01:20.349]  [inner]   data   4% (24/91): /live/content/paks/pakchunk0-ps5.pak -> 10,152,359,105 bytes (Kraken, ratio 94.5 %)
+80.349	[--------------------] 4% inner image (Kraken) @ 145.1 MB/s ETA 1643s
+80.349	  [consume] freed 10.8 GB so far (5 file(s) the image already holds)
+80.742	  [+00:01:20.742]  [inner]   processing large file: /live/content/paks/pakchunk0-ps5.ucas (52,658,169,968 bytes)
+146.755	  [+00:02:26.755]  [inner]     Kraken level 4:  10% of /live/content/paks/pakchunk0-ps5.ucas
+146.755	[#-------------------] 6% inner image (Kraken) @ 115.2 MB/s ETA 2024s
+209.373	  [+00:03:29.373]  [inner]     Kraken level 4:  20% of /live/content/paks/pakchunk0-ps5.ucas
+209.373	[#-------------------] 8% inner image (Kraken) @ 105.9 MB/s ETA 2153s
+256.659	  [+00:04:16.659]  [inner]     Kraken level 4:  30% of /live/content/paks/pakchunk0-ps5.ucas
+256.659	[##------------------] 10% inner image (Kraken) @ 106.9 MB/s ETA 2083s
+336.024	  [+00:05:36.024]  [inner]     Kraken level 4:  40% of /live/content/paks/pakchunk0-ps5.ucas
+336.024	[##------------------] 13% inner image (Kraken) @ 97.3 MB/s ETA 2234s
+412.193	  [+00:06:52.193]  [inner]     Kraken level 4:  50% of /live/content/paks/pakchunk0-ps5.ucas
+412.193	[###-----------------] 15% inner image (Kraken) @ 92.1 MB/s ETA 2304s
+471.743	  [+00:07:51.743]  [inner]     Kraken level 4:  60% of /live/content/paks/pakchunk0-ps5.ucas
+471.743	[###-----------------] 17% inner image (Kraken) @ 91.6 MB/s ETA 2258s
+541.955	  [+00:09:01.955]  [inner]     Kraken level 4:  70% of /live/content/paks/pakchunk0-ps5.ucas
+541.955	[###-----------------] 19% inner image (Kraken) @ 89.5 MB/s ETA 2253s
+606.249	  [+00:10:06.249]  [inner]     Kraken level 4:  80% of /live/content/paks/pakchunk0-ps5.ucas
+606.249	[####----------------] 21% inner image (Kraken) @ 88.7 MB/s ETA 2214s
+652.887	  [+00:10:52.887]  [inner]     Kraken level 4:  90% of /live/content/paks/pakchunk0-ps5.ucas
+652.887	[####----------------] 23% inner image (Kraken) @ 90.4 MB/s ETA 2114s
+684.414	  [+00:11:24.414]  [inner]     Kraken level 4: 100% of /live/content/paks/pakchunk0-ps5.ucas
+684.414	[#####---------------] 25% inner image (Kraken) @ 93.9 MB/s ETA 1978s
+684.417	  [+00:11:24.417]  [inner]   data  25% (25/91): /live/content/paks/pakchunk0-ps5.ucas -> 20,145,322,976 bytes (Kraken, ratio 38.3 %)
+684.417	[#####---------------] 25% inner image (Kraken) @ 93.9 MB/s ETA 1978s
+684.417	  [consume] freed 59.8 GB so far (6 file(s) the image already holds)
+685.917	  [+00:11:25.917]  [inner]   processing large file: /live/content/paks/pakchunk10-ps5.pak (11,242,211,027 bytes)
+692.721	  [+00:11:32.721]  [inner]     Kraken level 4:  10% of /live/content/paks/pakchunk10-ps5.pak
+692.721	[#####---------------] 26% inner image (Kraken) @ 94.4 MB/s ETA 1956s
+699.206	  [+00:11:39.206]  [inner]     Kraken level 4:  20% of /live/content/paks/pakchunk10-ps5.pak
+699.206	[#####---------------] 26% inner image (Kraken) @ 95.2 MB/s ETA 1929s
+705.880	  [+00:11:45.880]  [inner]     Kraken level 4:  30% of /live/content/paks/pakchunk10-ps5.pak
+705.880	[#####---------------] 27% inner image (Kraken) @ 95.9 MB/s ETA 1903s
+712.405	  [+00:11:52.405]  [inner]     Kraken level 4:  40% of /live/content/paks/pakchunk10-ps5.pak
+712.405	[#####---------------] 27% inner image (Kraken) @ 96.6 MB/s ETA 1878s
+718.828	  [+00:11:58.828]  [inner]     Kraken level 4:  50% of /live/content/paks/pakchunk10-ps5.pak
+718.828	[#####---------------] 27% inner image (Kraken) @ 97.3 MB/s ETA 1853s
+725.230	  [+00:12:05.230]  [inner]     Kraken level 4:  60% of /live/content/paks/pakchunk10-ps5.pak
+725.230	[#####---------------] 28% inner image (Kraken) @ 98.0 MB/s ETA 1828s
+731.816	  [+00:12:11.816]  [inner]     Kraken level 4:  70% of /live/content/paks/pakchunk10-ps5.pak
+731.816	[#####---------------] 28% inner image (Kraken) @ 98.6 MB/s ETA 1805s
+738.144	  [+00:12:18.144]  [inner]     Kraken level 4:  80% of /live/content/paks/pakchunk10-ps5.pak
+738.144	[#####---------------] 29% inner image (Kraken) @ 99.3 MB/s ETA 1781s
+744.794	  [+00:12:24.794]  [inner]     Kraken level 4:  90% of /live/content/paks/pakchunk10-ps5.pak
+744.794	[#####---------------] 29% inner image (Kraken) @ 99.9 MB/s ETA 1759s
+751.369	  [+00:12:31.369]  [inner]     Kraken level 4: 100% of /live/content/paks/pakchunk10-ps5.pak
+751.369	[######--------------] 30% inner image (Kraken) @ 100.5 MB/s ETA 1736s
+751.369	  [+00:12:31.369]  [inner]   data  30% (27/91): /live/content/paks/pakchunk10-ps5.pak -> 11,232,124,804 bytes (Kraken, ratio 99.9 %)
+751.369	[######--------------] 30% inner image (Kraken) @ 100.5 MB/s ETA 1736s
+751.369	  [consume] freed 70.3 GB so far (7 file(s) the image already holds)
+751.739	  [+00:12:31.739]  [inner]   processing large file: /live/content/paks/pakchunk10-ps5.ucas (113,658,564,480 bytes)
+899.808	  [+00:14:59.808]  [inner]     Kraken level 4:  10% of /live/content/paks/pakchunk10-ps5.ucas
+899.808	[######--------------] 34% inner image (Kraken) @ 96.6 MB/s ETA 1690s
+1073.657	  [+00:17:53.657]  [inner]     Kraken level 4:  20% of /live/content/paks/pakchunk10-ps5.ucas
+1073.657	[#######-------------] 39% inner image (Kraken) @ 91.5 MB/s ETA 1659s
+1223.385	  [+00:20:23.385]  [inner]     Kraken level 4:  30% of /live/content/paks/pakchunk10-ps5.ucas
+1223.385	[########------------] 43% inner image (Kraken) @ 89.6 MB/s ETA 1568s
+1392.364	  [+00:23:12.364]  [inner]     Kraken level 4:  40% of /live/content/paks/pakchunk10-ps5.ucas
+1392.364	[#########-----------] 48% inner image (Kraken) @ 86.9 MB/s ETA 1486s
+1583.083	  [+00:26:23.083]  [inner]     Kraken level 4:  50% of /live/content/paks/pakchunk10-ps5.ucas
+1583.083	[##########----------] 52% inner image (Kraken) @ 83.6 MB/s ETA 1408s
+1752.999	  [+00:29:12.999]  [inner]     Kraken level 4:  60% of /live/content/paks/pakchunk10-ps5.ucas
+1752.999	[###########---------] 57% inner image (Kraken) @ 82.0 MB/s ETA 1297s
+1912.594	  [+00:31:52.594]  [inner]     Kraken level 4:  70% of /live/content/paks/pakchunk10-ps5.ucas
+1912.594	[############--------] 62% inner image (Kraken) @ 81.1 MB/s ETA 1172s
+2079.655	  [+00:34:39.655]  [inner]     Kraken level 4:  80% of /live/content/paks/pakchunk10-ps5.ucas
+2079.655	[#############-------] 66% inner image (Kraken) @ 80.0 MB/s ETA 1045s
+2254.191	  [+00:37:34.191]  [inner]     Kraken level 4:  90% of /live/content/paks/pakchunk10-ps5.ucas
+2254.191	[##############------] 71% inner image (Kraken) @ 78.9 MB/s ETA 916s
+2426.757	  [+00:40:26.757]  [inner]     Kraken level 4: 100% of /live/content/paks/pakchunk10-ps5.ucas
+2426.757	[###############-----] 75% inner image (Kraken) @ 78.0 MB/s ETA 781s
+2426.759	  [+00:40:26.759]  [inner]   data  75% (28/91): /live/content/paks/pakchunk10-ps5.ucas -> 38,304,010,276 bytes (Kraken, ratio 33.7 %)
+2426.759	[###############-----] 75% inner image (Kraken) @ 78.0 MB/s ETA 781s
+2426.759	  [consume] freed 176.2 GB so far (8 file(s) the image already holds)
+2428.832	  [+00:40:28.832]  [inner]   processing large file: /live/content/paks/pakchunk20-ps5.pak (22,387,185,600 bytes)
+2443.666	  [+00:40:43.666]  [inner]     Kraken level 4:  10% of /live/content/paks/pakchunk20-ps5.pak
+2443.666	[###############-----] 76% inner image (Kraken) @ 78.3 MB/s ETA 749s
+2457.690	  [+00:40:57.690]  [inner]     Kraken level 4:  20% of /live/content/paks/pakchunk20-ps5.pak
+2457.690	[###############-----] 77% inner image (Kraken) @ 78.8 MB/s ETA 716s
+2471.709	  [+00:41:11.709]  [inner]     Kraken level 4:  30% of /live/content/paks/pakchunk20-ps5.pak
+2471.709	[###############-----] 78% inner image (Kraken) @ 79.3 MB/s ETA 684s
+2485.621	  [+00:41:25.621]  [inner]     Kraken level 4:  40% of /live/content/paks/pakchunk20-ps5.pak
+2485.621	[###############-----] 79% inner image (Kraken) @ 79.7 MB/s ETA 652s
+2499.276	  [+00:41:39.276]  [inner]     Kraken level 4:  50% of /live/content/paks/pakchunk20-ps5.pak
+2499.276	[################----] 80% inner image (Kraken) @ 80.2 MB/s ETA 620s
+2512.349	  [+00:41:52.349]  [inner]     Kraken level 4:  60% of /live/content/paks/pakchunk20-ps5.pak
+2512.349	[################----] 81% inner image (Kraken) @ 80.6 MB/s ETA 589s
+2524.739	  [+00:42:04.739]  [inner]     Kraken level 4:  70% of /live/content/paks/pakchunk20-ps5.pak
+2524.739	[################----] 81% inner image (Kraken) @ 81.1 MB/s ETA 558s
+2537.577	  [+00:42:17.577]  [inner]     Kraken level 4:  80% of /live/content/paks/pakchunk20-ps5.pak
+2537.577	[################----] 82% inner image (Kraken) @ 81.6 MB/s ETA 527s
+2550.337	  [+00:42:30.337]  [inner]     Kraken level 4:  90% of /live/content/paks/pakchunk20-ps5.pak
+2550.337	[################----] 83% inner image (Kraken) @ 82.1 MB/s ETA 497s
+2563.663	  [+00:42:43.663]  [inner]     Kraken level 4: 100% of /live/content/paks/pakchunk20-ps5.pak
+2563.663	[################----] 84% inner image (Kraken) @ 82.5 MB/s ETA 467s
+2563.664	  [+00:42:43.664]  [inner]   data  84% (30/91): /live/content/paks/pakchunk20-ps5.pak -> 21,837,837,571 bytes (Kraken, ratio 97.5 %)
+2563.664	[################----] 84% inner image (Kraken) @ 82.5 MB/s ETA 467s
+2563.664	  [consume] freed 197.0 GB so far (9 file(s) the image already holds)
+2563.961	  [+00:42:43.961]  [inner]   processing large file: /live/content/paks/pakchunk20-ps5.ucas (38,376,278,336 bytes)
+2622.058	  [+00:43:42.058]  [inner]     Kraken level 4:  10% of /live/content/paks/pakchunk20-ps5.ucas
+2622.058	[#################---] 86% inner image (Kraken) @ 82.2 MB/s ETA 422s
+2665.692	  [+00:44:25.692]  [inner]     Kraken level 4:  20% of /live/content/paks/pakchunk20-ps5.ucas
+2665.692	[#################---] 87% inner image (Kraken) @ 82.2 MB/s ETA 375s
+2710.113	  [+00:45:10.113]  [inner]     Kraken level 4:  30% of /live/content/paks/pakchunk20-ps5.ucas
+2710.113	[#################---] 89% inner image (Kraken) @ 82.3 MB/s ETA 328s
+2765.404	  [+00:46:05.404]  [inner]     Kraken level 4:  40% of /live/content/paks/pakchunk20-ps5.ucas
+2765.404	[##################--] 90% inner image (Kraken) @ 82.1 MB/s ETA 282s
+2814.567	  [+00:46:54.567]  [inner]     Kraken level 4:  50% of /live/content/paks/pakchunk20-ps5.ucas
+2814.567	[##################--] 92% inner image (Kraken) @ 82.0 MB/s ETA 236s
+2870.210	  [+00:47:50.210]  [inner]     Kraken level 4:  60% of /live/content/paks/pakchunk20-ps5.ucas
+2870.210	[##################--] 93% inner image (Kraken) @ 81.7 MB/s ETA 190s
+2928.684	  [+00:48:48.684]  [inner]     Kraken level 4:  70% of /live/content/paks/pakchunk20-ps5.ucas
+2928.684	[###################-] 95% inner image (Kraken) @ 81.4 MB/s ETA 143s
+2982.930	  [+00:49:42.930]  [inner]     Kraken level 4:  80% of /live/content/paks/pakchunk20-ps5.ucas
+2982.930	[###################-] 96% inner image (Kraken) @ 81.2 MB/s ETA 96s
+3038.172	  [+00:50:38.172]  [inner]     Kraken level 4:  90% of /live/content/paks/pakchunk20-ps5.ucas
+3038.172	[###################-] 98% inner image (Kraken) @ 81.0 MB/s ETA 49s
+3092.796	  [+00:51:32.796]  [inner]     Kraken level 4: 100% of /live/content/paks/pakchunk20-ps5.ucas
+3092.796	[###################-] 99% inner image (Kraken) @ 80.8 MB/s ETA 2s
+3092.796	  [+00:51:32.796]  [inner]   data  99% (31/91): /live/content/paks/pakchunk20-ps5.ucas -> 10,599,424,849 bytes (Kraken, ratio 27.6 %)
+3092.796	[###################-] 99% inner image (Kraken) @ 80.8 MB/s ETA 2s
+3092.796	  [consume] freed 232.7 GB so far (10 file(s) the image already holds)
+3093.708	  [+00:51:33.708]  [inner]   data 100% (91/91): /uecommandline.txt -> 38 bytes (stored, ratio 100.0 %)
+3093.708	[####################] 100% inner image (Kraken) @ 80.8 MB/s ETA 0s
+3093.708	  [consume] freed 232.7 GB so far (11 file(s) the image already holds)
+3093.717	  [+00:51:33.717]  [inner] Large combined writes: 933,913 logical writes -> 27,322 physical writes (113,176,707,355 buffered bytes, 4 MiB batches).
+3093.718	  [+00:51:33.718]  [inner] Inner compression cache: 19,975 reused block(s), 932,577 miss(es), 812,882 eviction(s), 0 bypass(es); peak budget 64.0 MiB / 64.0 MiB.
+3093.721	  [+00:51:33.721]  [inner] Inner layout planning: 0% (collecting physical extents).
+3094.032	  [+00:51:34.032]  [inner] Inner layout candidates: skipped; maximum possible savings 2,621,440 bytes, minimum 113,179,296 bytes.
+3094.032	  [+00:51:34.032]  [inner] Inner layout planning: 20% (calculating coalescing and alignment candidates).
+3094.032	  [+00:51:34.032]  [inner] Inner layout planning: 50% (validating NAPS/U2C capacity).
+3094.032	  [+00:51:34.032]  [inner] Inner layout validation: started (original).
+3094.499	  [+00:51:34.499]  [inner] Inner layout validation: 100% (original; valid).
+3094.500	  [+00:51:34.500]  [inner] Inner layout planning: 100% (selected original; 113,179,295,782->113,179,295,782 bytes; 69 copy ranges; 0 moved bytes).
+3094.577	  [+00:51:34.577]  [inner] Inner data compression and write: complete.
+3094.583	  [+00:51:34.583]  [inner] Metadata tables prepared: 17 directories, 91 file inodes, 21 payloads.
+3094.614	  [+00:51:34.614]  [inner] Inner layout write: skipped (original placement retained).
+3094.614	  [+00:51:34.614]  [inner] Inner block deduplication: reused 20,030 blocks, omitted 31,043,538 physical bytes.
+3094.614	  [+00:51:34.614]  [inner] Inner image assembled: 113,179,492,352 bytes, Ndblock=3,815,592, metadata=1,572,864->6,258 bytes.
+3094.615	  [+00:51:34.615] [stage 1/5] Inner image complete: 113,179,492,352 bytes in 00:51:34.470.
+3094.615	[####################] 100% inner image (Kraken)
+3094.615	  [+00:51:34.615] [stage 2/5] Generating NAPS file, block and integrity tables...
+3094.615	[PHASE] Compressing
+3094.615	[--------------------] 0% NAPS tables
+3095.341	  [+00:51:35.341] [stage 2/5] NAPS layout complete: 24,372,256 bytes in 00:00:00.725.
+3095.341	[####################] 100% NAPS tables
+3095.660	  [+00:51:35.660] [stage 3/5] Building plaintext/no-auth outer PFS...
+3095.660	[--------------------] 0% outer PFS
+3096.017	  [+00:51:36.017] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): started (105.43 GiB total).
+3096.017	[--------------------] 0% outer PFS
+3106.018	  [+00:51:46.018] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 6% (6.83 GiB / 105.43 GiB; 699.8 MiB/s).
+3106.018	[#-------------------] 6% outer PFS @ 733.8 MB/s ETA 144s
+3116.020	  [+00:51:56.020] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 12% (13.66 GiB / 105.43 GiB; 699.2 MiB/s).
+3116.020	[##------------------] 12% outer PFS @ 733.2 MB/s ETA 134s
+3126.021	  [+00:52:06.021] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 19% (20.59 GiB / 105.43 GiB; 702.7 MiB/s).
+3126.021	[###-----------------] 19% outer PFS @ 736.8 MB/s ETA 124s
+3136.023	  [+00:52:16.023] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 26% (27.45 GiB / 105.43 GiB; 702.6 MiB/s).
+3136.023	[#####---------------] 26% outer PFS @ 736.7 MB/s ETA 114s
+3146.026	  [+00:52:26.026] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 32% (34.41 GiB / 105.43 GiB; 704.6 MiB/s).
+3146.026	[######--------------] 32% outer PFS @ 738.8 MB/s ETA 103s
+3156.026	  [+00:52:36.026] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 39% (41.54 GiB / 105.43 GiB; 708.9 MiB/s).
+3156.026	[#######-------------] 39% outer PFS @ 743.3 MB/s ETA 92s
+3166.028	  [+00:52:46.028] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 45% (48.42 GiB / 105.43 GiB; 708.2 MiB/s).
+3166.028	[#########-----------] 45% outer PFS @ 742.6 MB/s ETA 82s
+3176.028	  [+00:52:56.028] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 52% (55.40 GiB / 105.43 GiB; 709.0 MiB/s).
+3176.028	[##########----------] 52% outer PFS @ 743.4 MB/s ETA 72s
+3186.028	  [+00:53:06.028] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 58% (62.18 GiB / 105.43 GiB; 707.4 MiB/s).
+3186.028	[###########---------] 58% outer PFS @ 741.8 MB/s ETA 63s
+3196.030	  [+00:53:16.030] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 65% (69.12 GiB / 105.43 GiB; 707.7 MiB/s).
+3196.030	[#############-------] 65% outer PFS @ 742.1 MB/s ETA 53s
+3206.034	  [+00:53:26.034] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 72% (76.55 GiB / 105.43 GiB; 712.5 MiB/s).
+3206.034	[##############------] 72% outer PFS @ 747.1 MB/s ETA 42s
+3216.039	  [+00:53:36.039] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 79% (83.87 GiB / 105.43 GiB; 715.5 MiB/s).
+3216.039	[###############-----] 79% outer PFS @ 750.3 MB/s ETA 31s
+3226.041	  [+00:53:46.041] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 86% (91.03 GiB / 105.43 GiB; 716.9 MiB/s).
+3226.041	[#################---] 86% outer PFS @ 751.7 MB/s ETA 21s
+3236.043	  [+00:53:56.043] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 92% (97.98 GiB / 105.43 GiB; 716.5 MiB/s).
+3236.043	[##################--] 92% outer PFS @ 751.3 MB/s ETA 11s
+3246.045	  [+00:54:06.045] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 99% (105.20 GiB / 105.43 GiB; 718.0 MiB/s).
+3246.045	[###################-] 99% outer PFS @ 752.9 MB/s ETA 0s
+3246.377	  [+00:54:06.377] [stage 3/5] Writing and hashing outer-PFS data (12 worker(s)): 100% (105.43 GiB / 105.43 GiB; 718.0 MiB/s).
+3246.377	[####################] 100% outer PFS @ 752.9 MB/s ETA 0s
+3246.823	  [+00:54:06.823] [stage 3/5] Outer PFS complete: 113,266,524,160 bytes, 1,728,310 digest blocks in 00:02:31.163.
+3246.823	[####################] 100% outer PFS
+3246.946	  [+00:54:06.946] PlayGo: regenerating 21 chunks / 1 scenarios; every scenario requires all chunks; 20 generated language chunk(s) have non-zero extents; generic scenario presentation is generated.
+3246.985	  [+00:54:06.985] [stage 4/5] Writing CNT bodies and outer image (28 entries)...
+3246.985	[PHASE] Writing Final Image
+3246.985	[--------------------] 0% CNT image
+3246.986	  [+00:54:06.986] [stage 4/5] Compact intermediate CNT: 126,746,624 metadata bytes; 113,266,524,160-byte external PFS range is not allocated.
+3246.986	[--------------------] 0% CNT image
+3246.986	  [+00:54:06.986] [stage 4/5] Outer PFS already occupies its final FIH range (113,266,524,160 bytes at 0x10000); no staging copy is required.
+3246.986	[--------------------] 0% CNT image
+3246.987	  [+00:54:06.987] Calculating PFS image digests (SHA3-256)...
+3248.063	  [+00:54:08.063] [stage 4/5] CNT image complete: 126,746,624 bytes in 00:00:01.078.
+3248.063	[########------------] 40% CNT image
+3248.070	  [+00:54:08.070] [stage 5/5] Finalization inputs ready: 92 content records, PlayGo=21 chunk(s), SI will be generated from the final mount image.
+3248.070	[##########----------] 50% finalize
+3248.070	  [+00:54:08.070] Done: ..XX0000-PPSA01234_00-MAINGAME00000000-A0101-V0101.pkg.c1a4d96a52164eeeb79d2a6c1e3c0656.build.tmp.e9d289c8da1d4481b691c688957d399a.cnt.tmp (126,746,624 bytes).
+3248.071	  [+00:54:08.071] Validated intermediate container: Meta PS5 CNT (metadata only).
+3248.071	  [+00:54:08.071] Finalizing the CNT into a debug (FIH) image...
+3248.137	  [+00:54:08.137] Writing finalized debug (FIH) image: image=0x1A5F360000 @0x10000, CNT @0x1A5F370000.
+3248.139	  [+00:54:08.139] Reused prepositioned PFS image at 0x10000; no outer-image copy was required.
+3248.201	  [+00:54:08.201] Flushing finalized FIH image to disk: started.
+3248.201	  [+00:54:08.201] Flushing finalized FIH image to disk: complete.
+3248.201	  [+00:54:08.201] PlayGo CRC table accumulated during FIH copy: 1,730,245 blocks; no image reread required.
+3248.694	  [+00:54:08.694] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): started (953,965 blocks total).
+3248.714	  [+00:54:08.714] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 10% (95,397 / 953,965 blocks).
+3248.714	[###########---------] 55% finalize (FIH digests)
+3248.727	  [+00:54:08.727] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 20% (190,793 / 953,965 blocks).
+3248.727	[############--------] 60% finalize (FIH digests)
+3248.744	  [+00:54:08.744] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 30% (286,190 / 953,965 blocks).
+3248.744	[#############-------] 65% finalize (FIH digests)
+3248.752	  [+00:54:08.752] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 40% (381,586 / 953,965 blocks).
+3248.752	[##############------] 70% finalize (FIH digests)
+3248.760	  [+00:54:08.760] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 50% (476,983 / 953,965 blocks).
+3248.760	[###############-----] 75% finalize (FIH digests)
+3248.786	  [+00:54:08.786] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 60% (572,379 / 953,965 blocks).
+3248.786	[################----] 80% finalize (FIH digests)
+3248.794	  [+00:54:08.794] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 70% (667,776 / 953,965 blocks).
+3248.794	[#################---] 85% finalize (FIH digests)
+3248.802	  [+00:54:08.802] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 80% (763,172 / 953,965 blocks).
+3248.802	[##################--] 90% finalize (FIH digests)
+3248.810	  [+00:54:08.810] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 90% (858,569 / 953,965 blocks).
+3248.810	[###################-] 95% finalize (FIH digests)
+3248.837	  [+00:54:08.837] [finalize] NAPS plaintext integrity tables (SHA3/ihsh/rhsh): 100% (953,965 / 953,965 blocks).
+3248.837	[####################] 100% finalize (FIH digests)
+3257.506	  [+00:54:17.506] Appended SI segment: 0xA99E402 bytes after the embedded CNT.
+3257.506	  [+00:54:17.506] INFO: FIH/CNT structural SHA3 digests and per-entry digest table were populated; the nested NAPS layout digest was recorded. Target: debug-mode console.
+3257.506	  [+00:54:17.506] Done (FIH).
+3257.507	  [+00:54:17.507] Validated output container: FullDebug PS5 FIH image.
+3258.918	  [+00:54:18.918] Done (debug FIH).
+3258.918	  [+00:54:18.918] Build finished in 00:54:18.918; output 113,571,193,858 bytes (105.77 GiB), warnings=0.
+3258.918	[####################] 100% finalized .pkg written
+3258.918	OK — wrote /output/.staging/PPSA01234/_ultrapack_temp/tmpXXXXXXXX/XX0000-PPSA01234_00-MAINGAME00000000-A0101-V0101.pkg (113,571,193,858 B)
+3258.918	[INFO] Auto-validating: XX0000-PPSA01234_00-MAINGAME00000000-A0101-V0101.pkg
+3258.918	[PHASE] Verifying Output
+3258.918	[validate] file
+3258.918	[#-------------------] 5% validate checklist
+3258.918	[validate] header
+3258.918	[###-----------------] 15% validate checklist
+3258.918	[validate] cnt
+3258.918	[######--------------] 30% validate checklist
+3258.918	[validate] entries
+3258.918	[###########---------] 55% validate checklist
+3258.918	[validate] inner
+3258.918	[##############------] 70% validate checklist
+3258.918	[validate] report
+3258.918	[###################-] 95% validate checklist
+3258.918	  [ok  ]  file                      113,571,193,858 bytes on disk
+3258.918	  [ok  ]  magic                     ߿IH (finalized image, installable)
+3258.918	  [ok  ]  header                    content_id=XX0000-PPSA01234_00-MAINGAME00000000 entries=28 sc_entries=6 drm=0x10 content_type=0x20
+3258.918	  [ok  ]  content_id                matches XX0000-XXXX00000_00-XXXXXXXXXXXXXXXX
+3258.918	  [ok  ]  fih.signed_byte           0x00 (debug image, installable on debug consoles)
+3258.918	  [ok  ]  fih.pfs_bounds            pfs @0x10000..0x1A5F370000 inside file
+3258.918	  [ok  ]  fih.cnt_bounds            embedded CNT @0x1A5F370000
+3258.918	  [ok  ]  fih.naps_layout           24,372,256 bytes
+3258.918	  [ok  ]  cnt.wrap                  RSA-3072 public wrap verifies
+3258.918	  [ok  ]  cnt.param.json            2,744 bytes present
+3258.918	  [ok  ]  cnt.icon0.png             380,335 bytes present
+3258.918	  [ok  ]  cnt.playgo-chunk.dat      1,680 bytes, on-wire format OK
+3258.918	  [ok  ]  cnt.playgo-hash-table.dat  784 bytes, on-wire format OK
+3258.918	  [ok  ]  cnt.playgo-ficm.dat       198 bytes, on-wire format OK
+3258.918	  [ok  ]  cnt.playgo-scenario.json  2,293 bytes, valid scenario metadata
+3258.918	  [ok  ]  cnt.playgo-layout         21 chunk(s), 1 scenario(s), 22 extent(s) covering 0x1A5F370000 = the image before the CNT, 91 file(s)
+3258.918	  [ok  ]  param.contentId           matches CNT header
+3258.918	  [ok  ]  param.titleId             PPSA01234 matches the content id
+3258.918	  [ok  ]  param.applicationDrmType  standard (header drm_type=0x10)
+3258.918	  [ok  ]  image.icon0.png           512x512 8-bit RGB
+3258.918	  [ok  ]  image.icon0.dds           DX10 BC7, same size as the PNG
+3258.918	  [ok  ]  image.pic0.png            3840x2160 8-bit RGB
+3258.918	  [ok  ]  image.pic0.dds            DX10 BC7, same size as the PNG
+3258.918	  [ok  ]  image.pic1.png            3840x2160 8-bit RGB
+3258.918	  [ok  ]  image.pic1.dds            DX10 BC7, same size as the PNG
+3258.918	  [ok  ]  image.pic2.png            3840x2160 8-bit RGBA
+3258.918	  [ok  ]  image.pic2.dds            DX10 BC7, same size as the PNG
+3258.918	  [ok  ]  license.license.dat       1,024 bytes, for XX0000-PPSA01234_00-MAINGAME00000000
+3258.918	  [ok  ]  license.license.info      512 bytes, for XX0000-PPSA01234_00-MAINGAME00000000
+3258.918	  [ok  ]  np.nptitle.dat            id PPSA01234_00
+3258.918	  [ok  ]  np.trophy2/npbind.dat     id NPWR00000_00
+3258.918	  [ok  ]  np.uds/npbind.dat         id NPWR00000_00
+3258.918	  [ok  ]  sound.snd0.at9            RIFF/WAVE, 48 kHz
+3258.918	  [ok  ]  param.title               en-US: Example Game
+3258.918	  [ok  ]  param.contentVersion      01.001.001
+3258.918	  [ok  ]  param.firmware            requires system software 4.03 (SDK 4.03)
+3258.918	  [ok  ]  inner.pfs                 91 file(s) in the inner PFS
+3258.918	  [ok  ]  inner.junk                no OS junk files (._*, .DS_Store, Thumbs.db, ...)
+3258.918	  [ok  ]  inner.decode              eboot.bin read through the PFS (259,129,024 bytes)
+3258.918	  [ok  ]  eboot.magic               SCE fake-self (0xEEF51454) — good
+3258.918	summary: 40 passed, 0 warned, 0 failed
+3258.918	[####################] 100% validate checklist
+3258.918	[SUCCESS] fPKG built.
+3258.918	[OK] fPKG complete: /output/.staging/PPSA01234/XX0000-PPSA01234_00-MAINGAME00000000-A0101-V0101.pkg
+3258.918	==== --fpkg-validate ====
+3258.918	[INFO] fPKG validate: /output/.staging/PPSA01234/XX0000-PPSA01234_00-MAINGAME00000000-A0101-V0101.pkg
+3258.918	[validate] file
+3258.918	[validate] header
+3258.918	[validate] cnt
+3258.918	[validate] entries
+3258.918	[validate] inner
+3258.918	[validate] report
+3258.918	  [ok  ]  file                      113,571,193,858 bytes on disk
+3258.918	  [ok  ]  magic                     ߿IH (finalized image, installable)
+3258.918	  [ok  ]  header                    content_id=XX0000-PPSA01234_00-MAINGAME00000000 entries=28 sc_entries=6 drm=0x10 content_type=0x20
+3258.918	  [ok  ]  content_id                matches XX0000-XXXX00000_00-XXXXXXXXXXXXXXXX
+3258.918	  [ok  ]  fih.signed_byte           0x00 (debug image, installable on debug consoles)
+3258.918	  [ok  ]  fih.pfs_bounds            pfs @0x10000..0x1A5F370000 inside file
+3258.918	  [ok  ]  fih.cnt_bounds            embedded CNT @0x1A5F370000
+3258.918	  [ok  ]  fih.naps_layout           24,372,256 bytes
+3258.918	  [ok  ]  cnt.wrap                  RSA-3072 public wrap verifies
+3258.918	  [ok  ]  cnt.param.json            2,744 bytes present
+3258.918	  [ok  ]  cnt.icon0.png             380,335 bytes present
+3258.918	  [ok  ]  cnt.playgo-chunk.dat      1,680 bytes, on-wire format OK
+3258.918	  [ok  ]  cnt.playgo-hash-table.dat  784 bytes, on-wire format OK
+3258.918	  [ok  ]  cnt.playgo-ficm.dat       198 bytes, on-wire format OK
+3258.918	  [ok  ]  cnt.playgo-scenario.json  2,293 bytes, valid scenario metadata
+3258.918	  [ok  ]  cnt.playgo-layout         21 chunk(s), 1 scenario(s), 22 extent(s) covering 0x1A5F370000 = the image before the CNT, 91 file(s)
+3258.918	  [ok  ]  param.contentId           matches CNT header
+3258.918	  [ok  ]  param.titleId             PPSA01234 matches the content id
+3258.918	  [ok  ]  param.applicationDrmType  standard (header drm_type=0x10)
+3258.918	  [ok  ]  image.icon0.png           512x512 8-bit RGB
+3258.918	  [ok  ]  image.icon0.dds           DX10 BC7, same size as the PNG
+3258.918	  [ok  ]  image.pic0.png            3840x2160 8-bit RGB
+3258.918	  [ok  ]  image.pic0.dds            DX10 BC7, same size as the PNG
+3258.918	  [ok  ]  image.pic1.png            3840x2160 8-bit RGB
+3258.918	  [ok  ]  image.pic1.dds            DX10 BC7, same size as the PNG
+3258.918	  [ok  ]  image.pic2.png            3840x2160 8-bit RGBA
+3258.918	  [ok  ]  image.pic2.dds            DX10 BC7, same size as the PNG
+3258.918	  [ok  ]  license.license.dat       1,024 bytes, for XX0000-PPSA01234_00-MAINGAME00000000
+3258.918	  [ok  ]  license.license.info      512 bytes, for XX0000-PPSA01234_00-MAINGAME00000000
+3258.918	  [ok  ]  np.nptitle.dat            id PPSA01234_00
+3258.918	  [ok  ]  np.trophy2/npbind.dat     id NPWR00000_00
+3258.918	  [ok  ]  np.uds/npbind.dat         id NPWR00000_00
+3258.918	  [ok  ]  sound.snd0.at9            RIFF/WAVE, 48 kHz
+3258.918	  [ok  ]  param.title               en-US: Example Game
+3258.918	  [ok  ]  param.contentVersion      01.001.001
+3258.918	  [ok  ]  param.firmware            requires system software 4.03 (SDK 4.03)
+3258.918	  [ok  ]  inner.pfs                 91 file(s) in the inner PFS
+3258.918	  [ok  ]  inner.junk                no OS junk files (._*, .DS_Store, Thumbs.db, ...)
+3258.918	  [ok  ]  inner.decode              eboot.bin read through the PFS (259,129,024 bytes)
+3258.918	  [ok  ]  eboot.magic               SCE fake-self (0xEEF51454) — good
+3258.918	summary: 40 passed, 0 warned, 0 failed
+3258.918	[SUCCESS] validation OK.

@@ -20,9 +20,10 @@ import threading
 from collections import deque
 
 STAGE_KEYS = ("1", "2", "3", "4", "5", "validate", "copy")
-# the fraction of a build's time each step takes when this install has no history yet. The first stage is most of
-# it; the rest are mostly sequential writes.
-DEFAULT_SHARES = {"1": 0.74, "2": 0.02, "3": 0.09, "4": 0.02, "5": 0.05, "validate": 0.03, "copy": 0.05}
+# the fraction of a build's time each step takes when this install has no history yet: from one real build (a 233 GiB
+# game, level 4, 12 workers: compressing 3094 s, the outer PFS 151 s, stages 2, 4 and 5 together 12 s, then about two
+# minutes to check the package). The copy to the output folder only counts with build_on_ssd and is a guess.
+DEFAULT_SHARES = {"1": 0.90, "2": 0.002, "3": 0.045, "4": 0.002, "5": 0.006, "validate": 0.03, "copy": 0.015}
 # what the page calls each step; UltraPack's own text is kept for a tooltip
 STAGE_NAMES = {"1": "Compressing", "2": "Indexing", "3": "Writing the image", "4": "Packaging", "5": "Finalizing",
                "validate": "Checking the package", "copy": "Copying to the output folder"}
@@ -197,9 +198,16 @@ def build_progress_fraction(sh, stage, frac, finished=False):
     return clamp(sum(sh[str(n)] for n in range(1, stage)) + sh[str(stage)] * clamp(frac))
 
 
-def estimate_build(tr, sh, now):
+HISTORY_FULL_AT = 0.4          # by this much overall progress the estimate is the build's own; before, earlier builds count too
+HISTORY_MIN_WEIGHT = 0.3       # what the build's own rate counts for at the very start
+
+
+def estimate_build(tr, sh, now, hist_total=None):
     """{progress, elapsed, remaining (None until there is signal), rate, stage_name, stage_pct} for a running build.
-    `sh` are normalised shares (see `normalise`)."""
+    `sh` are normalised shares (see `normalise`). `hist_total`: seconds a build of this size took before (this
+    install, this compression level), when known. Early in a build the rate has not settled (UltraPack's own ETA
+    undershoots while it is still fast), so the history counts for most of the estimate and fades out as the build
+    makes progress, to nothing at HISTORY_FULL_AT."""
     stage = tr.stage
     frac = tr.stage_fraction()
     progress = build_progress_fraction(sh, stage, frac, tr.finished)
@@ -222,7 +230,11 @@ def estimate_build(tr, sh, now):
     if r_cur is None:
         r_cur = scale * sh[cur] * (1 - frac)
     future = sum(sh[str(n)] for n in range(stage + 1, 6)) + sh["validate"] + sh["copy"]
-    out["remaining"] = max(0.0, r_cur + scale * future)
+    remaining = max(0.0, r_cur + scale * future)
+    if hist_total and hist_total > 0:
+        w = clamp(progress / HISTORY_FULL_AT, HISTORY_MIN_WEIGHT, 1.0)
+        remaining = w * remaining + (1 - w) * max(0.0, hist_total - elapsed)
+    out["remaining"] = remaining
     return out
 
 
@@ -311,7 +323,7 @@ class Smoother:
     """Shows an estimate that moves, not jumps: the displayed finish time follows the raw one at a fraction of the
     gap, and by at most `slew` seconds per `tick`. With no new raw estimate it keeps counting down."""
 
-    def __init__(self, alpha=0.25, slew=60.0, tick=5.0):
+    def __init__(self, alpha=0.25, slew=20.0, tick=5.0):
         self.alpha, self.slew, self.tick = alpha, slew, tick
         self.finish = self.at = None
 

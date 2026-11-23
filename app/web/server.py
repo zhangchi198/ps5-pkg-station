@@ -550,13 +550,16 @@ def status(request: Request):
     plan = plan_with_failures(entries, cfg, mapping)
     by_id = {p.get("title_id"): p for p in entries}
     attention = [failure_view(r, by_id.get(t), cfg, mapping) for t, r in failure_store().load().items() if not r.get("dismissed")]
+    big = S.biggest_build(plan)                      # the biggest game still to build: what the folders must have room for (as the Setup card judges it)
+    space = dict(biggest=dict(title=big.get("title") or big["title_id"], size=big["size"]) if big else None,
+                 reserve=int(cfg.get("ssd_reserve_gb") or 0) << 30)
     return dict(engine_running=bool(pid), engine_pid=pid, clock=S.clock_info(), failures_rev=failures_rev(), version=versions(),
                 access=WS.exposure(request.client.host if request.client else None, request.headers, login=bool(WS.password()),
                                    enabled=WS.warning_enabled(), server_ip=(request.scope.get("server") or (None,))[0]),
                 attention=[dict(title_id=a["title_id"], name=a.get("name"), state=a["state"], code=a["code"], summary=a["summary"],
                                 at_text=a.get("at_text"), will_retry=a["will_retry"]) for a in attention],
                 scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
-                status=st if pid else dict(st, live=False), next_run=next_run(cfg.get("schedule")), last_run=last_run(st, bool(pid)),
+                status=st if pid else dict(st, live=False), next_run=next_run(cfg.get("schedule")), last_run=last_run(st, bool(pid)), space=space,
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "copy", "failed", "done", "skip", "error")},

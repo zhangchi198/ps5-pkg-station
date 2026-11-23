@@ -166,11 +166,14 @@ function renderLive(s){const run=liveRun(s),st=s.status||{},now=s.now,r=st.resul
   else if(!s.engine_running&&r.length&&st.finished&&s.last_run)h=`<details class="card sec" id="resDetails" ${resOpen?"open":""}><summary><b>Last run (${r.length})</b> <span class="muted small">${esc(clk(s.last_run.finished,now))} · ${esc(countsText(s.last_run))}</span></summary>${resultsTable(r,now)}</details>`;
   const box=$("#liveBox");if(box.dataset.h!==h){box.dataset.h=h;box.innerHTML=h}}
 $("#liveBox").addEventListener("click",e=>{const a=e.target.closest("[data-log]");if(!a)return;e.preventDefault();wantLog=a.dataset.log;goTab("logs")});
-function folderProblems(s){const F=s.folders||{},d=s.disks||{},out=[];
-  for(const k of Object.keys(FOLDER_LABEL)){const f=F[k];if(!f)continue;const x=d[k]||{};
-    if(x.error)out.push(`${FOLDER_LABEL[k]}: not available`);
-    else if(["output","temp","config"].includes(k)&&f.mode==="ro")out.push(`${FOLDER_LABEL[k]}: read-only`);
-    else if(["output","temp"].includes(k)&&x.total&&(x.free<10*2**30||x.free<0.03*x.total))out.push(`${FOLDER_LABEL[k]}: only ${gib(x.free)} free`)}
+// what is wrong with a folder: missing, read-only, or too small for the biggest game still to build (the rules of the Setup card: the
+// output needs room for it, the work drive for 110 % of it on top of what is kept free; a big drive is never "low" for being nearly full)
+function folderProblems(s){const F=s.folders||{},d=s.disks||{},sp=s.space||{},big=num(sp.biggest&&sp.biggest.size),res=num(sp.reserve),out=[];
+  for(const k of Object.keys(FOLDER_LABEL)){const f=F[k];if(!f)continue;const x=d[k]||{},L=FOLDER_LABEL[k];
+    if(x.error)out.push(`${L}: not available`);
+    else if(["output","temp","config"].includes(k)&&f.mode==="ro")out.push(`${L}: read-only`);
+    else if(k==="output"&&big&&num(x.free)<big)out.push(`${L}: ${gib(x.free)} free, the biggest game (${gib(big)}) may not fit`);
+    else if(k==="temp"&&(num(x.free)-res<=0||(big&&big*1.1>num(x.free)-res)))out.push(`${L}: ${gib(x.free)} free, the biggest game needs about ${gib(big*1.1+res)} with what is kept free`)}
   return out}
 // one line about the library and the folders; the folders table opens from it, and moves to the top of the page when something is wrong with them
 function renderHealth(s){const c=s.plan_counts||{},d=s.disks||{},total=Object.values(c).reduce((a,b)=>a+num(b),0),probs=folderProblems(s),box=$("#healthBox");

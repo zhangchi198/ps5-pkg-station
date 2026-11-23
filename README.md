@@ -48,7 +48,7 @@ covers, how many are done or failed, a bar for the whole run and, when it can be
 it: each build with its stage in plain words (UltraPack's own text is in the tooltip), elapsed time and time left;
 what is being prepared or copied (bytes, percentage, rate); what is next; and the results. When nothing runs it shows
 the last run with its date and result, and the next scheduled time ("today 14:00" / "tomorrow 03:00", on the server's
-clock). The counts and the Library follow the run: a game that has been built since the scan is "done" at once.
+clock). The counts and the Library follow the run: a game that has been built since the scan is "done" at once. Folders are one line ("Library 40 games · 5 to build · Folders ok"); it turns red and moves to the top only when a folder is missing, read-only, or too small for the biggest game still to build (the rule of the Setup card, not a percentage).
 
 The estimates are not guesses about speed. A build's time left comes from its own UltraPack log (its progress and
 rate so far) and, for the stages after the current one, from how long each stage took relative to the others in

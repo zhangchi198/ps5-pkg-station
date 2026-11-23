@@ -208,7 +208,8 @@ class Snapshots(StatusCase):
             with mock.patch.object(E.PG, "MIN_SIGNAL_SECS", 120), mock.patch.object(E, "stop_requested", return_value=stopping):
                 return rs.snapshot(now=1500.0)["run"]["remaining"]
         self.assertGreater(eta(False), eta(True) + 3600)
-        self.assertAlmostEqual(eta(True), 2067, delta=100)                            # only the build in flight
+        sh = PG.normalise(PG.DEFAULT_SHARES, with_copy=False)
+        self.assertAlmostEqual(eta(True), 1500 + 2000 / sh["1"] * (1 - sh["1"]), delta=30)          # only the build in flight
 
     def test_a_status_that_cannot_be_written_is_said_once_not_every_tick(self):
         import contextlib

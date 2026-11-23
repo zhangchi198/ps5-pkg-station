@@ -100,6 +100,37 @@ class LiveCounts(ProgressCase):
         self.assertLessEqual(second - first, 0)
 
 
+class Space(ProgressCase):
+    """What the folders must have room for: the biggest game still to build, as the Setup card judges it (no percentages)."""
+
+    def test_the_biggest_game_still_to_build_and_what_is_kept_free(self):
+        gib = 2 ** 30
+        self.write_cfg(legacy_config(ssd_reserve_gb=50))
+        self.put("plan.json", [dict(plan_entry("PPSA00001"), size=100 * gib), dict(plan_entry("PPSA00002"), size=300 * gib, title="Big One"),
+                               dict(plan_entry("PPSA00003", action="done"), size=900 * gib), dict(plan_entry("PPSA00004", action="skip"), size=800 * gib)], age=600)
+        sp = self.get("/api/status")["space"]
+        self.assertEqual((sp["biggest"], sp["reserve"]), (dict(title="Big One", size=300 * gib), 50 * gib))
+
+    def test_a_game_built_since_the_scan_no_longer_counts(self):
+        gib = 2 ** 30
+        self.put("plan.json", [dict(plan_entry("PPSA00001"), size=100 * gib), dict(plan_entry("PPSA00002"), size=300 * gib)], age=600)
+        self.put("ledger.json", {"PPSA00002": dict(version="01.00", output="/o/a.pkg", built_ts=NOW - 60)})
+        self.assertEqual(self.get("/api/status")["space"]["biggest"]["size"], 100 * gib)
+
+    def test_nothing_to_build_means_nothing_has_to_fit(self):
+        self.assertIsNone(self.get("/api/status")["space"]["biggest"])
+        self.put("plan.json", [plan_entry("PPSA00001", action="done")], age=600)
+        self.assertIsNone(self.get("/api/status")["space"]["biggest"])
+        self.assertEqual(self.get("/api/status")["space"]["reserve"], legacy_config()["ssd_reserve_gb"] << 30)
+
+    def test_the_page_judges_folders_by_that_and_not_by_a_percentage(self):
+        js = (__import__("support").WEB_DIR / "static" / "app.js").read_text()
+        body = js[js.index("function folderProblems"):js.index("function renderHealth")]
+        self.assertIn("s.space", body)
+        self.assertNotIn("x.total", body)
+        self.assertNotIn("0.03", body)
+
+
 class NextRun(ProgressCase):
     def at(self, hm):
         return time.mktime(time.strptime("2030-06-15 " + hm, "%Y-%m-%d %H:%M"))

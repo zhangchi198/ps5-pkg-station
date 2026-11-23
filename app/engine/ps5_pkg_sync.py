@@ -1860,7 +1860,8 @@ class RunStatus:
             raw, kraken_left = None, 0.0
             if tr is not None and running:
                 tr.read(b["logf"], now)
-                est = PG.estimate_build(tr, self.shares, now)
+                per_gib = self.hist.get("build_per_gib")
+                est = PG.estimate_build(tr, self.shares, now, hist_total=(per_gib * job["size"] / PG.GIB) if per_gib and job.get("size") else None)
                 raw = est["remaining"]
                 kraken_left = (tr.local_remaining(now) or 0.0) if tr.stage == 1 and raw is not None else 0.0
                 row.update(stage=tr.stage, stage_text=tr.stage_text, stage_name=est["stage_name"], part=tr.part, pct=tr.pct,
