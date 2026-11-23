@@ -1275,8 +1275,9 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             except OSError:
                 pass
         elif res.get("code") == "validate_failed":            # the package is still there, unless it was on the SSD
-            res["data"] = dict(res["data"], staged=str(stage) if stage.exists() else None,
-                               staged_bytes=dir_size(stage) if stage.exists() else 0)
+            here = stage.exists()               # the stamp lets the server be sure, before deleting it, that this is still it
+            res["data"] = dict(res["data"], staged=str(stage) if here else None, staged_bytes=dir_size(stage) if here else 0,
+                               staged_stamp=ps5_failures.dir_stamp(stage) if here else None)
         log(f"  -> {job['title']}: {res['status']} (prep {res.get('prep_min')} min, build {res.get('build_min')} min). "
             f"{res.get('why', '')} {res.get('validate', '')}  SSD free {shutil.disk_usage(temp_root).free / 2**30:.0f} GiB")
         if res.get("status") == "built":

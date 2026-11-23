@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -318,25 +319,43 @@ class StagedPackage(FailureCase):
         (d / "x.bin").write_bytes(b"y" * 100)
         return d
 
+    def failed_validation(self, stage, stamp=True, **extra):
+        """The failure as the engine records it: where the package was left, how big, and its stamp."""
+        data = dict(summary="summary: 3 ok, 2 failed", failed_checks=2, staged=str(stage), staged_bytes=2148,
+                    staged_stamp=F.dir_stamp(stage) if stamp else None, **extra)
+        self.record(code="validate_failed", phase="validate", data=data)
+
+    def delete(self):
+        return self.client.post("/api/failures/PPSA01234/delete-staged")
+
+    def assert_refused(self, stage, text):
+        r = self.delete()
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn(text, r.json()["detail"])
+        self.assertTrue((stage / "game.pkg").exists() and (stage / "x.bin").exists())      # nothing was deleted
+        self.assertEqual(self.store.load()["PPSA01234"]["data"]["staged"], str(stage))      # and the record still points at it
+
     def test_the_size_of_the_package_left_behind_is_shown_and_it_can_be_deleted(self):
         stage = self.stage()
-        self.record(code="validate_failed", phase="validate", data=dict(summary="summary: 3 ok, 2 failed", failed_checks=2, staged=str(stage)))
+        self.failed_validation(stage)
         f = self.failures()[0]
-        self.assertEqual((f["staged"]["path"], f["staged"]["bytes"]), (str(stage), 2148))
+        self.assertEqual((f["staged"]["path"], f["staged"]["bytes"], f["staged"]["blocked"]), (str(stage), 2148, None))
         self.assertEqual(self.action_ids(f), ["view_log", "delete_staged", "retry"])
+        self.assertIsNone([a for a in f["actions"] if a["id"] == "delete_staged"][0]["disabled"])
         self.assertIn("failed 2 validation checks", f["summary"])
-        r = self.client.post("/api/failures/PPSA01234/delete-staged")
+        r = self.delete()
         self.assertEqual((r.status_code, r.json()), (200, {"ok": True, "freed": 2148}))
         self.assertFalse(stage.exists())
         f = self.failures()[0]
         self.assertIsNone(f["staged"])
         self.assertNotIn("delete_staged", self.action_ids(f))
-        self.assertEqual(self.client.post("/api/failures/PPSA01234/delete-staged").status_code, 404)
+        self.assertEqual(self.delete().status_code, 404)
         self.assertEqual(f["state"], "failed")                                 # the failure itself stays
+        self.assertIsNone(self.store.load()["PPSA01234"]["data"]["staged_stamp"])
 
     def test_delete_is_one_of_the_one_click_actions_too(self):
         stage = self.stage()
-        self.record(code="validate_failed", data=dict(staged=str(stage)))
+        self.failed_validation(stage)
         self.assertEqual(self.client.post("/api/failures/PPSA01234/action", json={"action": "delete_staged"}).status_code, 200)
         self.assertFalse(stage.exists())
 
@@ -345,11 +364,68 @@ class StagedPackage(FailureCase):
         outside.mkdir()
         (outside / "keep.txt").write_text("x")
         for sp in (str(outside), str(self.dir / "out" / ".staging"), str(self.dir / "out"), "/", str(self.dir / "out" / ".staging" / ".." / "..")):
-            self.record(code="validate_failed", data=dict(staged=sp))
+            self.record(code="validate_failed", data=dict(staged=sp, staged_stamp=F.dir_stamp(sp)))
             with self.subTest(sp):
-                self.assertEqual(self.client.post("/api/failures/PPSA01234/delete-staged").status_code, 404)
+                self.assertEqual(self.delete().status_code, 404)
         self.assertTrue((outside / "keep.txt").exists())
         self.assertTrue((self.dir / "out").exists())
+
+    def test_nothing_is_deleted_while_a_run_is_active(self):
+        stage = self.stage()
+        self.failed_validation(stage)
+        with mock.patch.object(self.srv, "engine_pid", return_value=4242):        # a run holds the lock: Retry was just pressed
+            self.assert_refused(stage, "a run is active")
+            f = self.failures()[0]
+            act = [a for a in f["actions"] if a["id"] == "delete_staged"][0]
+            self.assertEqual((act["disabled"], f["staged"]["blocked"]), ("a run is active and may be using it",) * 2)
+            self.assertEqual(self.client.post("/api/failures/PPSA01234/action", json={"action": "delete_staged"}).status_code, 409)
+            self.assertTrue(stage.exists())
+        self.assertEqual(self.delete().status_code, 200)                          # the run is over: allowed again
+
+    def test_a_run_this_server_just_started_counts_too(self):
+        stage = self.stage()
+        self.failed_validation(stage)
+        self.srv._run.update(pid=999, started=1.0, finished=None, rc=None)        # started, the engine has not taken its lock yet
+        self.assert_refused(stage, "a run is active")
+        self.srv._run.update(finished=2.0, rc=0)
+        self.assertEqual(self.delete().status_code, 200)
+
+    def test_a_folder_re_created_by_a_newer_attempt_is_never_deleted(self):
+        stage = self.stage()
+        self.failed_validation(stage)
+        shutil.rmtree(stage)
+        stage.mkdir()                                                              # the newer attempt's work folder
+        (stage / "game.pkg").write_bytes(b"x" * 2048)
+        (stage / "x.bin").write_bytes(b"y" * 100)                                  # even with the very same sizes
+        os.utime(stage / "game.pkg", ns=(2 * 10**18, 2 * 10**18))
+        self.assert_refused(stage, "changed after the failure was recorded")
+        f = self.failures()[0]
+        self.assertIn("changed after the failure", f["staged"]["blocked"])
+        self.assertEqual([a["disabled"] for a in f["actions"] if a["id"] == "delete_staged"], [f["staged"]["blocked"]])
+
+    def test_a_file_written_to_it_since_blocks_the_delete(self):
+        for what in ("added", "rewritten", "removed", "touched"):
+            with self.subTest(what):
+                stage = self.stage(name=f"PPSA01234")
+                self.failed_validation(stage)
+                if what == "added":
+                    (stage / "new.tmp").write_bytes(b"1")
+                elif what == "rewritten":
+                    (stage / "game.pkg").write_bytes(b"z" * 2048)
+                    os.utime(stage / "game.pkg", ns=(3 * 10**18, 3 * 10**18))
+                elif what == "removed":
+                    (stage / "x.bin").unlink()
+                else:
+                    os.utime(stage / "x.bin", ns=(4 * 10**18, 4 * 10**18))
+                self.assertEqual(self.delete().status_code, 409)
+                self.assertTrue((stage / "game.pkg").exists())
+                shutil.rmtree(stage)
+
+    def test_a_record_without_a_stamp_cannot_be_confirmed_so_nothing_is_deleted(self):
+        stage = self.stage()
+        self.failed_validation(stage, stamp=False)
+        self.assert_refused(stage, "can't be confirmed")
+        self.assertIn("can't be confirmed", self.failures()[0]["staged"]["blocked"])
 
 
 if __name__ == "__main__":

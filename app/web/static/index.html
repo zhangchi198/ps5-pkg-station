@@ -136,12 +136,12 @@ function renderFolders(s){const F=s.folders||{},d=s.disks||{};
   const any=Object.values(F).some(f=>f.source==="env"||f.source==="settings");
   $("#hostBanner").innerHTML=Object.keys(F).length&&!any&&!hostDismissed()?`<div class="banner warn">Folder locations are shown as paths inside the container. <a href="#" data-goto="host_paths.library">Tell the app where they are on your NAS</a>.<a href="#" data-dismiss class="small" style="float:right">Dismiss</a></div>`:""}
 // ---- games that failed or wait for space: explained, with what can be done (see /api/failures)
-let failures=[],lastFailRev;
+let failures=[],lastFailRev,engineBusy=false;
 function toast(m,bad){const t=$("#toast");t.textContent=m;t.hidden=false;t.style.background=bad?"var(--bad)":"";clearTimeout(toast.h);toast.h=setTimeout(()=>{t.hidden=true},6000)}
 const failTag=f=>f.state==="waiting"?`<span class="tag t-waiting">waiting for space</span>`:`<span class="tag t-failed">failed</span>`;
 function failureButtons(f,dismiss){const t=esc(f.title_id);
   return `<div class="btnrow">${(f.actions||[]).map(a=>a.kind==="retry"?`<button class="btn sm pri" data-fa="retry" data-tid="${t}">Retry</button>`
-    :a.kind==="api"?`<button class="btn sm" data-fa="api" data-act="${esc(a.id)}" data-tid="${t}">${esc(a.label)}</button>`
+    :a.kind==="api"?`<button class="btn sm" data-fa="api" data-act="${esc(a.id)}" data-tid="${t}" ${a.disabled||(a.id==="delete_staged"&&engineBusy)?`disabled title="${esc(a.disabled||"A run is active and may be using it")}"`:""} ${a.disabled?'data-blocked="1"':""}>${esc(a.label)}</button>`
     :a.kind==="goto"?`<button class="btn sm" data-fa="goto" data-field="${esc(a.field)}">${esc(a.label)}</button>`
     :`<button class="btn sm" data-fa="log" data-log="${esc(a.log)}">${esc(a.label)}</button>`).join("")}${dismiss?`<button class="btn sm" data-fa="dismiss" data-tid="${t}">Dismiss</button>`:""}</div>`}
 function failureBody(f){return `${f.detail?.length?`<ul class="small">${f.detail.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}`
@@ -170,7 +170,8 @@ function banners(s){const e=s.config_error,p=s.config_problems||[];let h="";
   if(p.length)h+=`<div class="banner warn"><b>Some settings in the settings file are not valid.</b> The defaults are used for them; the file itself is unchanged.<ul>${p.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
   if(s.host_problems?.length)h+=`<div class="banner warn"><b>Folder locations in the compose file are not valid.</b> They are ignored until fixed.<ul>${s.host_problems.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
   if(h!==bannerHtml){bannerHtml=h;$("#cfgBanner").innerHTML=h}}
-async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);
+function syncDeleteButtons(){document.querySelectorAll('[data-act="delete_staged"]').forEach(b=>{const blocked=engineBusy||b.dataset.blocked==="1";b.disabled=blocked;if(engineBusy)b.title="A run is active and may be using it"})}
+async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);engineBusy=!!s.engine_running;syncDeleteButtons();
   // config.json was edited since the form was loaded (a poll that started before the last load says nothing new)
   if(tab==="set"&&!s.config_error&&cfgRev!==undefined&&t0>cfgLoadedAt&&s.config_rev!==cfgRev){
     if(setDirty)$("#cfgChanged").hidden=false;else loadSet("Settings file changed on disk: reloaded.")}

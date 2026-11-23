@@ -107,6 +107,30 @@ class Fingerprint(FingerprintCase):
         self.assertFalse(F.blocks(self.cfg, self.entry, rec, version="0.2.2"))
 
 
+class DirStamp(StateCase):
+    def test_a_missing_folder_has_none(self):
+        self.assertIsNone(F.dir_stamp(self.dir / "nowhere"))
+
+    def test_it_changes_with_anything_that_happens_to_the_folder(self):
+        d = self.dir / "stage"
+        d.mkdir()
+        (d / "a.pkg").write_bytes(b"x" * 10)
+        (d / "sub").mkdir()
+        (d / "sub" / "b.bin").write_bytes(b"y" * 5)
+        for f in (d, d / "a.pkg", d / "sub", d / "sub" / "b.bin"):
+            os.utime(f, ns=(10**18, 10**18))
+        base = F.dir_stamp(d)
+        self.assertEqual(base[1:], [15, 2])
+        self.assertEqual(F.dir_stamp(d), base)                                  # stable while nothing happens
+        steps = [("a file is touched", lambda: os.utime(d / "sub" / "b.bin", ns=(2 * 10**18, 2 * 10**18))),
+                 ("a file is added", lambda: (d / "c").write_bytes(b"1")),
+                 ("a file is removed again", lambda: (d / "c").unlink())]
+        for what, step in steps:                      # every step leaves it different from what was recorded
+            step()
+            with self.subTest(what):
+                self.assertNotEqual(F.dir_stamp(d), base)
+
+
 class AppVersion(unittest.TestCase):
     def test_it_is_the_version_file_of_the_app(self):
         self.assertEqual(F.app_version(), (ENGINE_DIR.parent.parent / "VERSION").read_text().strip())

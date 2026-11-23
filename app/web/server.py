@@ -107,6 +107,25 @@ def failures_rev():
 LOG_LABEL = {"ultrapack_failed": "View build log", "validate_failed": "View report"}
 
 
+def run_active():
+    """An engine run (or one just started by this server) that may be working in the staging folder."""
+    return bool(engine_pid()) or (_run.get("pid") is not None and _run.get("finished") is None)
+
+
+def staged_block_reason(rec, sp):
+    """Why the staged package of a failure must not be deleted right now, or None. It is the live work folder of
+    a build of that title, so nothing is deleted during a run; and it must still be the folder that was there when
+    the failure was recorded (a newer attempt re-creates or writes to it)."""
+    if run_active():
+        return "a run is active and may be using it"
+    stamp = (rec.get("data") or {}).get("staged_stamp")
+    if not stamp:
+        return "it can't be confirmed to be the package of that failure"
+    if FL.dir_stamp(sp) != stamp:
+        return "it changed after the failure was recorded (a newer attempt?)"
+    return None
+
+
 def failure_actions(rec, entry, view):
     """What can be done about a failure: [{id, label, kind}], kind api (POST .../action), goto (a Settings field),
     log (open that log) or retry."""
@@ -124,7 +143,8 @@ def failure_actions(rec, entry, view):
                  {"id": "keep_backport", "label": "Keep backport", "kind": "api"},
                  {"id": "use_original", "label": "Use original", "kind": "api"}]
     elif code == "validate_failed":
-        acts += [log] + ([{"id": "delete_staged", "label": "Delete staged package", "kind": "api"}] if view.get("staged") else []) + [retry]
+        delete = dict(id="delete_staged", label="Delete staged package", kind="api", disabled=(view.get("staged") or {}).get("blocked"))
+        acts += [log] + ([delete] if view.get("staged") else []) + [retry]
     elif code == "title_mismatch":
         acts += [{"id": "skip_source", "label": "Skip this source", "kind": "api"}, log]
     else:
@@ -142,7 +162,7 @@ def failure_view(rec, entry, cfg, mapping):
     changed = bool(entry) and rec.get("fingerprint") != FL.fingerprint(cfg, entry)
     will_retry = state == FL.WAITING or bool(rec.get("retry")) or changed
     sp = (rec.get("data") or {}).get("staged")
-    staged = dict(path=sp, bytes=E.dir_size(sp)) if sp and os.path.isdir(sp) else None
+    staged = (dict(path=sp, bytes=E.dir_size(sp), blocked=staged_block_reason(rec, sp)) if sp and os.path.isdir(sp) else None)
     v = dict(rec, summary=ex["summary"], detail=ex["detail"], will_retry=will_retry, changed=changed, staged=staged,
              source=(entry or {}).get("source"))
     v["actions"] = failure_actions(rec, entry, v)
@@ -562,15 +582,20 @@ def failure_dismiss(tid: str):
 
 @app.post("/api/failures/{tid}/delete-staged")
 def failure_delete_staged(tid: str):
-    """Delete the package a failed validation left in the staging folder (only inside <output>/.staging)."""
+    """Delete the package a failed validation left in the staging folder: only inside <output>/.staging, never
+    during a run, and only while it is still the folder that was there when the failure was recorded."""
     rec, cfg = _failure(tid), load_cfg()
     sp = (rec.get("data") or {}).get("staged")
     root = (Path(cfg["output"]) / ".staging").resolve()
     if not sp or not os.path.isdir(sp) or Path(sp).resolve().parent != root:
         raise HTTPException(404, "there is no staged package to delete")
+    reason = staged_block_reason(rec, sp)
+    if reason:
+        raise HTTPException(409, f"Not deleted: {reason}.")
     freed = E.dir_size(sp)
     shutil.rmtree(sp, ignore_errors=True)
-    failure_store().update(lambda all_: all_[tid].update(data=dict(all_[tid].get("data") or {}, staged=None, staged_bytes=0)))
+    failure_store().update(lambda all_: all_[tid].update(
+        data=dict(all_[tid].get("data") or {}, staged=None, staged_bytes=0, staged_stamp=None)))
     try:
         root.rmdir()
     except OSError:

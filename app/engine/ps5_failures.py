@@ -96,6 +96,24 @@ def blocks(cfg, entry, rec, version=None):
                 and rec.get("fingerprint") == fingerprint(cfg, entry, version))
 
 
+def dir_stamp(path):
+    """The identity of a folder's contents, to tell later whether it is still the folder that was there when
+    something was recorded about it: [the latest modification time (ns) of the folder and everything in it, total
+    bytes, number of files]; None when it isn't there. A folder re-created or written to by a newer attempt
+    has another stamp."""
+    try:
+        root = Path(path)
+        latest, total, files = root.stat().st_mtime_ns, 0, 0
+        for f in root.rglob("*"):
+            st = f.lstat()
+            latest = max(latest, st.st_mtime_ns)
+            if stat.S_ISREG(st.st_mode):
+                total, files = total + st.st_size, files + 1
+    except OSError:
+        return None
+    return [latest, total, files]
+
+
 # ------------------------------------------------------------------ the store
 
 def _atomic_write(path, obj):

@@ -288,6 +288,8 @@ class Running(EngineCase):
         self.assertEqual((res["status"], res["code"], res["phase"]), ("failed", "validate_failed", "validate"))
         self.assertEqual((res["data"]["failed_checks"], res["data"]["staged"], res["data"]["staged_bytes"]), (2, str(stage), 74))
         self.assertTrue(stage.exists())
+        self.assertEqual(res["data"]["staged_stamp"], F.dir_stamp(stage))          # lets the server confirm it is still this folder
+        self.assertEqual(self.store.load()["PPSA01234"]["data"]["staged_stamp"], F.dir_stamp(stage))
         rec = self.store.load()["PPSA01234"]
         self.assertEqual((rec["code"], rec["data"]["staged"]), ("validate_failed", str(stage)))
         self.assertIn("failed 2 validation checks", notes[0][1])
