@@ -5,7 +5,7 @@ const $=s=>document.querySelector(s), esc=s=>String(s??"").replace(/[&<>"']/g,c=
 const num=v=>Number.isFinite(Number(v))?Number(v):0, cls=v=>String(v??"").replace(/[^\w-]/g,"");
 const README="https://github.com/zhangchi198/ps5-pkg-station#keeping-it-private";
 const gib=b=>b==null?"—":(b/2**30).toFixed(b>2**40?0:1)+" GiB", ago=t=>{if(!t)return"—";const s=Date.now()/1000-t;return s<90?Math.round(s)+" s":s<5400?Math.round(s/60)+" min":(s/3600).toFixed(1)+" h"};
-async function api(p,o={}){const r=await fetch(p,{headers:{"Content-Type":"application/json"},...o});if(r.status===401){location.reload();throw new Error("Log in first.")}if(!r.ok)throw new Error((await r.json().catch(()=>({detail:r.statusText}))).detail);return r.headers.get("content-type")?.includes("json")?r.json():r.text()}
+async function api(p,o={}){const r=await fetch(p,{headers:{"Content-Type":"application/json"},...o});if(r.status===401){location.reload();throw new Error("Log in first.")}if(!r.ok){const d=await r.json().catch(()=>({detail:r.statusText})),e=new Error(d.detail||r.statusText);e.errors=d.errors;throw e}return r.headers.get("content-type")?.includes("json")?r.json():r.text()}
 let tab="dash",plan=[],overrides={},libCfgHost=null;
 // A path for display: its place on the host when the server knows it (the container path goes into the tooltip), else
 // the container path with an "in container" tag, so it is never taken for a path on the NAS. Copy takes what is shown.
@@ -15,7 +15,7 @@ async function copyText(t){try{if(navigator.clipboard&&window.isSecureContext){a
   const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand("copy")}catch(e){}a.remove();return ok}   // plain http on a LAN has no clipboard API
 document.addEventListener("click",e=>{const b=e.target.closest("[data-copy]");if(!b)return;e.preventDefault();
   copyText(b.dataset.copy).then(ok=>{const t=b.textContent;b.textContent=ok?"copied":"select + Ctrl+C";setTimeout(()=>{b.textContent=t},1500)})});
-document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{if(tab==="set"&&b.dataset.tab!=="set"&&settingsDirty()&&!confirm("You have unsaved changes on the Settings page. Discard them?"))return;tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
 function say(t,bad){$("#msg").textContent=t;$("#msg").className="small "+(bad?"err":"muted")}
 $("#bRun").onclick=()=>api("/api/run",{method:"POST",body:"{}"}).then(()=>say("Run started")).catch(e=>say(e.message,1)).finally(()=>{refresh();loadSetup()});
 $("#bStop").onclick=()=>api("/api/stop",{method:"POST"}).then(()=>say("Stopping after the running builds")).catch(e=>say(e.message,1)).finally(refresh);
@@ -90,7 +90,7 @@ function ps4Files(p){const f=p.files||[],dest=p.dest_dir_host||p.dest_dir;
    ${(p.notes||[]).map(n=>`<div class="small muted">${esc(n)}</div>`).join("")}</details>`}
 function failBox(s){const ev=[["scan",s.scan],["run",s.run]].filter(([k,x])=>x&&x.finished).sort((a,b)=>b[1].finished-a[1].finished)[0];
   $("#failBox").innerHTML=ev&&ev[1].error&&!s.engine_running&&!s.scan.running?`<div class="banner bad"><b>The ${ev[0]==="scan"?"scan":"run"} failed.</b> ${esc(ev[1].error)}${ev[1].log_tail?.length?`<pre class="small">${esc((ev[1].log_tail_host||ev[1].log_tail).join("\n"))}</pre>`:""}<a href="#" data-log="${esc(ev[1].log)}">Open the log</a></div>`:""}
-let cfgRev,cfgLoadedAt=0,setDirty=false,bannerHtml="";   // cfgRev: version of config.json the Settings form shows
+let cfgRev,cfgLoadedAt=0,bannerHtml="";   // cfgRev: version of config.json the Settings form shows
 function banners(s){const e=s.config_error,p=s.config_problems||[];let h="";
   if(e)h+=`<div class="banner bad"><b>Settings file could not be read</b> (${e.line?`line ${esc(e.line)}: `:""}${esc(e.message)}). ${e.using==="last_good"?"Using the last working settings.":"Using the default settings."} Fix the file or restore a backup.</div>`;
   if(p.length)h+=`<div class="banner warn"><b>Some settings in the settings file are not valid.</b> The defaults are used for them; the file itself is unchanged.<ul>${p.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
@@ -112,8 +112,9 @@ async function poll(){const t0=performance.now(),s=await api("/api/status");bann
   if(s.clock){const m=/^([+-])(\d\d):(\d\d)$/.exec(s.clock.utc_offset||"");if(m)srvOff=(m[1]==="-"?-1:1)*(num(m[2])*3600+num(m[3])*60)}if(s.version)$("#ver").textContent=verText(s.version);engineBusy=!!s.engine_running;syncDeleteButtons();
   // config.json was edited since the form was loaded (a poll that started before the last load says nothing new)
   if(tab==="set"&&!s.config_error&&cfgRev!==undefined&&t0>cfgLoadedAt&&s.config_rev!==cfgRev){
-    if(setDirty)$("#cfgChanged").hidden=false;else loadSet("Settings file changed on disk: reloaded.")}
-  if(s.clock)$("#clockNote").textContent=`Server time now ${s.clock.time} (${s.clock.tz}, UTC${s.clock.utc_offset}). Schedule times use this clock.`;
+    if(settingsDirty())$("#cfgChanged").hidden=false;else loadSet("Settings file changed on disk: reloaded.")}
+  renderRescan(s);
+  if(s.clock&&$("#nextNote"))$("#nextNote").textContent=`Server time now ${s.clock.time} (${s.clock.tz}, UTC${s.clock.utc_offset}); times use this clock.${s.next_run?` Next run: ${s.next_run.label}.`:""}`;
   return s}
 // ---- the Dashboard: the run first (state, how far, how long), then what it is doing, then the library and the folders
 const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],p2=n=>String(n).padStart(2,"0");
@@ -245,6 +246,9 @@ function unrecBox(un,s){if(!un.length){$("#libUnrec").innerHTML="";return}
   $("#libUnrec").innerHTML=`<details class="card" id="unrecDetails"><summary><b>Not recognised (${un.length})</b> <span class="muted small">looked at, but not usable</span></summary>
     <div class="small muted" style="margin:6px 0">These files were scanned and could not be identified as a game. A patch, an add-on or an unrelated archive is not listed here, only what failed. Fix or remove the file and scan again.</div>
     <table>${un.map(x=>`<tr><td>${pathHtml(x.source_host,x.source)}<div class="small muted">${esc(x.origin==="library"?"in the game library":x.origin==="download"?"in downloads":x.origin||"")}</div></td><td class="small err">${esc(x.error)}</td></tr>`).join("")}</table></details>`}
+function libNote(s){const r=s.rescan||{needed:[]},busy=s.engine_running||(s.scan&&s.scan.running),btn=`<button class="btn" data-do="rescan" ${busy?"disabled":""}>Rescan now</button>${busy?` <span class="small">A run or scan is active: rescan when it ends.</span>`:""}`;
+  $("#libNote").innerHTML=r.stale?`<div class="banner warn"><b>This list was made by an older version of the app.</b> What it shows about firmware and backports is not judged until it is refreshed. ${btn}</div>`
+    :r.needed.length?`<div class="banner warn"><b>Settings changed since the last scan:</b> ${r.needed.map(esc).join(", ")}. The list below shows them after a rescan. ${btn}</div>`:""}
 function renderLib(){const {plan:pl,status:s,unrec:un}=libData,cf=s.folders?.config,cfgHost=cf&&cf.host&&!cf.partial?cf.host:null;libCfgHost=cfgHost;
   const n=a=>pl.filter(p=>p.action===a).length,bits=[[`${pl.length} titles`,""],[`${n("build")} to build`,"build"],...(n("copy")?[[`${n("copy")} PS4 to copy`,"copy"]]:[]),[`${n("done")} done`,"done"],...(n("failed")?[[`${n("failed")} failed`,"failed"]]:[]),
     ...(n("skip")?[[`${n("skip")} skipped`,"skip"]]:[]),...(n("error")?[[`${n("error")} problem${n("error")===1?"":"s"}`,"error"]]:[]),...(un.length?[[`${un.length} not recognised`,"unrec"]]:[])];
@@ -253,7 +257,7 @@ function renderLib(){const {plan:pl,status:s,unrec:un}=libData,cf=s.folders?.con
   $("#libRows").innerHTML=!pl.length?empty(!s.plan_time?`<b>No scan yet.</b> <span class="muted">Press Scan to look through your game library for games to build.</span> <button class="btn" data-do="scan">Scan for new games</button>`
       :`<b>The last scan found no games.</b> <span class="muted">Nothing usable was found in <code>${esc(s.disks.library?.path||"")}</code>${s.disks.downloads?.error?"":` or <code>${esc(s.disks.downloads?.path||"")}</code>`}. Check the folders on the Dashboard, then scan again.</span>${un.length?` <span class="muted">${un.length} file${un.length===1?"":"s"} could not be identified: see below.</span>`:""}`)
     :pl.map(p=>libRow(p,cfgHost)).join("")+`<tr id="libNone" hidden><td colspan="4"><span class="muted">No titles match the filter.</span></td></tr>`;
-  unrecBox(un,s);
+  unrecBox(un,s);libNote(s);
   $("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
   restoreLibUi();applyLibFilter()}
 // what the user had open or typed survives a re-render
@@ -294,7 +298,7 @@ async function buildOne(t){const p=libData.plan.find(x=>x.title_id===t)||{};
   try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
 function alertBox(m){say(m,1)}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-do]");if(!b)return;e.preventDefault();
-  if(b.dataset.do==="scan"){doScan();goTab("dash")}else if(b.dataset.do==="saveov")saveOv(b);else if(b.dataset.do==="buildone")buildOne(b.dataset.tid)});
+  if(b.dataset.do==="scan"){doScan();goTab("dash")}else if(b.dataset.do==="rescan")doScan();else if(b.dataset.do==="saveov")saveOv(b);else if(b.dataset.do==="buildone")buildOne(b.dataset.tid)});
 function builtRow(t,v){return `<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.ps4?` <span class="tag">PS4</span>${Array.isArray(v.files)?` <span class="muted small">${num(v.files.length)} package${v.files.length===1?"":"s"}</span>`:""}`:""}${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${esc(gib(v.bytes))}</td><td class="small">${v.ps4?"copied as they are":v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${esc((num(v.seconds)/60).toFixed(1))} min`:`prep ${esc(v.prep_min??"—")} · build ${esc(v.build_min??"—")} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${v.backport&&v.backport.differs?`<div class="muted">image differed from the original in ${num(v.backport.files)} file(s): the ${esc(v.backport.used)} was used</div>`:""}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`}
 function failedRow(f){return `<tr><td><b>${esc(f.name||f.title||f.title_id)}</b> ${failTag(f)}<div class="small">${esc(f.summary)}</div><div class="small muted">${esc(f.next||"")}</div>${failureButtons(f,false)}<details><summary class="small">Details and the log of this attempt</summary>${failureBody(f)}</details></td><td class="small">${esc(f.at_text||"")}</td><td>—</td><td class="small">attempt ${esc(f.attempts||1)} · ${esc(f.phase||"")}</td><td class="small">${esc(f.code||"")}</td></tr>`}
 async function loadHist(){const [l,fl]=await Promise.all([api("/api/ledger"),api("/api/failures")]);   // ledger entries from older versions have other field names and gaps
@@ -303,28 +307,97 @@ async function loadHist(){const [l,fl]=await Promise.all([api("/api/ledger"),api
     ...(fl||[]).map(f=>({k:"failed",f,when:String(f.at_text||"")}))].filter(r=>!flt||r.k===flt).sort((a,b)=>b.when.localeCompare(a.when));
   $("#histRows").innerHTML=!rows.length?`<tr><td colspan="5"><b>${flt==="failed"?"No failed attempts.":"Nothing built yet."}</b> <span class="muted">Finished packages are listed here, with their checks, once a run has built one; games that failed are listed with the reason.</span></td></tr>`:rows.map(r=>r.k==="failed"?failedRow(r.f):builtRow(r.t,r.v)).join("")}
 $("#histFilter").onchange=loadHist;
-const OPTS={ps4_mode:{copy:"copy their ready-made packages as they are (no conversion)",skip:"skip them (listed as skipped)"}};
-const FIELDS={fConv:[["compression_level","Kraken level (1-9; 4 = fast, 7 = smaller)","n"],["cpu_count","Workers per build","n"],["max_compress","Builds compressing at once","n"],["max_builds","Builds alive at once","n"],["nice","CPU priority (nice 0-19)","n"],["ssd_reserve_gb","Keep free on work drive (GB)","n"],["build_on_ssd","Write package on work drive, then copy","b"],["console_fw","Console firmware (picks original vs backport)"],["skip_download_prefixes","Skip download folders starting with (comma separated)","l"],["junk_file_patterns","Delete files whose name matches (regex, comma separated)","l"],["junk_title_patterns","Cut from game titles (regex, comma separated)","l"],["ps4_mode","PS4 titles (CUSA...)","m"]],
- fSched:[["schedule.enabled","Run automatically","b"],["schedule.times","At (HH:MM, comma separated)","l"],["notify_url","Notification URL (ntfy topic, optional)"]]};
-let cfg={};
-$("#set").addEventListener("input",()=>{setDirty=true});$("#bReload").onclick=()=>loadSet("Reloaded from the file.");
+// ---- Settings: built from the server's own definition of every setting (label, help, default, range), checked as you type
+// by the server, saved all at once from a bar that appears when something changed. Nothing is dropped silently.
+let cfg={},setBase="",setMsgTimer=null,valTimer=null,setErrors=[];
+const NICE_NOTE="Lower priority = builds give way to other programs.";
+const valueOf=(c,key)=>key.split(".").reduce((o,x)=>o?.[x],c);
+function fieldHtml(f){const v=valueOf(cfg,f.key),id="f_"+f.key.replace(/\W/g,"_"),k=f.key;let ctl="";
+  if(f.kind==="int")ctl=`<input type="number" id="${id}" data-c="${esc(k)}" data-t="n" min="${num(f.min)}" max="${num(f.max)}" step="${num(f.step)||1}" value="${esc(v)}"> <span class="small muted">${esc(f.unit||"")}${f.min!=null?` (${num(f.min)} to ${num(f.max)})`:""}</span>`;
+  else if(f.kind==="bool")ctl=`<label class="small"><input type="checkbox" id="${id}" data-c="${esc(k)}" data-t="b" ${v?"checked":""}> on</label>`;
+  else if(f.kind==="choice"||f.kind==="nice"){const ch=f.choices||[],has=ch.some(c=>String(c[0])===String(v));
+    ctl=`<select id="${id}" data-c="${esc(k)}" data-t="${f.kind==="nice"?"n":"s"}">${ch.map(c=>`<option value="${esc(c[0])}" ${String(c[0])===String(v)?"selected":""}>${esc(c[1])}</option>`).join("")}${has?"":`<option value="${esc(v)}" selected>Custom (${esc(v)})</option>`}</select>`}
+  else if(f.kind==="lines"||f.kind==="regex")ctl=`<textarea id="${id}" rows="3" data-c="${esc(k)}" data-t="lines" spellcheck="false" placeholder="${esc(f.example||"")}">${esc((v||[]).join("\n"))}</textarea>`
+    +(f.kind==="regex"?`<div class="ptest"><button type="button" class="btn sm" data-ptest="${esc(k)}">Test against the last scan</button><div class="small" data-pout="${esc(k)}"></div></div>`:"");
+  else if(f.kind==="times")ctl=`<div class="times" id="${id}" data-c="${esc(k)}" data-t="times">${(v||[]).map(timeRow).join("")}</div><button type="button" class="btn sm" data-addtime>Add a time</button> <span class="small muted" id="nextNote"></span>`;
+  else ctl=`<input type="text" id="${id}" data-c="${esc(k)}" data-t="s" value="${esc(v)}" placeholder="${esc(f.example||"")}">`;
+  const def=f.kind==="lines"||f.kind==="regex"?(f.default||[]).join(", ")||"none":f.kind==="times"?(f.default||[]).join(", ")||"none":f.kind==="choice"||f.kind==="nice"?((f.choices||[]).find(c=>String(c[0])===String(f.default))||[0,String(f.default)])[1]:f.kind==="bool"?(f.default?"on":"off"):f.default===""?"empty":String(f.default);
+  return `<div class="fld" data-f="${esc(k)}"><label class="t" for="${id}">${esc(f.label)}</label>${ctl}<div class="small muted help">${esc(f.help)}${f.kind==="nice"?" "+NICE_NOTE:""}</div>
+    <div class="small"><span class="muted def">Default: ${esc(def)}</span><a href="#" data-reset="${esc(k)}" hidden>Reset to default</a></div><div class="small err" data-err="${esc(k)}"></div><div class="small warn" data-warn="${esc(k)}"></div></div>`}
+const timeRow=t=>`<div class="row"><input type="text" inputmode="numeric" placeholder="03:00" maxlength="5" value="${esc(t)}" data-time> <button type="button" class="btn sm" data-rmtime title="Remove this time">Remove</button></div>`;
+function renderGroups(){const sc=cfg.schema||[],threads=cfg.machine&&cfg.machine.cpus;
+  $("#setGroups").innerHTML=(cfg.groups||[]).filter(g=>sc.some(f=>f.group===g[0])).map(([gk,gl])=>`<div class="card" data-g="${esc(gk)}"><h2>${esc(gl)}</h2>
+    ${gk==="performance"?`<div class="small" id="perfCtx" style="margin-bottom:6px"></div>`:""}${sc.filter(f=>f.group===gk).map(fieldHtml).join("")}</div>`).join("");
+  perfContext()}
+function perfContext(){const el=$("#perfCtx");if(!el)return;const m=cfg.machine||{},mc=num($("#f_max_compress")?.value),cc=num($("#f_cpu_count")?.value);
+  el.innerHTML=m.cpus?`This machine: <b>${num(m.cpus)} CPU threads</b>. With these values up to ${mc} × ${cc} = <b>${mc*cc} threads</b> compress at once${mc*cc>m.cpus?`, <span class="err">more than the machine has</span>`:""}.`:""}
+// one control's value as the server wants it
+function readCtl(e){const t=e.dataset.t;
+  if(t==="b")return e.checked;
+  if(t==="n")return e.value===""||!/^-?\d+$/.test(e.value.trim())?(e.value===""?null:e.value.trim()):Number(e.value);   // a blank or odd number is sent as it is: the server says what is wrong
+  if(t==="lines")return e.value.split("\n").map(x=>x.trim()).filter(Boolean);
+  if(t==="times")return [...e.querySelectorAll("[data-time]")].map(x=>x.value.trim()).filter(Boolean);
+  return e.value.trim()}
+function collectForm(){const out={};document.querySelectorAll("#set [data-c]").forEach(e=>{const v=readCtl(e),[a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});return out}
+const settingsDirty=()=>!!setBase&&tab==="set"&&JSON.stringify(collectForm())!==setBase;
+function showSetBar(){const dirty=settingsDirty(),bad=setErrors.length;$("#saveBar").hidden=!(dirty||$("#setMsg").textContent);
+  $("#barText").innerHTML=dirty?(bad?`<b class="err">Unsaved changes · ${bad} problem${bad===1?"":"s"} to fix</b>`:"<b>Unsaved changes</b>"):"";
+  $("#bSave").disabled=!dirty||bad>0;$("#bDiscard").hidden=!dirty;
+  document.querySelectorAll("#set [data-reset]").forEach(a=>{const f=(cfg.schema||[]).find(x=>x.key===a.dataset.reset),e=document.querySelector(`#set [data-c="${CSS.escape(a.dataset.reset)}"]`);
+    if(!f||!e)return;const v=JSON.stringify(readCtl(e)),d=f.kind==="nice"||f.kind==="int"?Number(f.default):f.default;a.hidden=v===JSON.stringify(d)})}
+function setMessage(t,bad,keep){const m=$("#setMsg");clearTimeout(setMsgTimer);m.textContent=t;m.className="small "+(bad?"err":"");showSetBar();
+  if(t&&!bad&&!keep)setMsgTimer=setTimeout(()=>{m.textContent="";showSetBar()},7000)}
+// the server's verdict, next to the fields
+function showFieldMessages(errors,warnings){setErrors=errors||[];
+  document.querySelectorAll("#set [data-err]").forEach(el=>el.textContent="");document.querySelectorAll("#set [data-warn]").forEach(el=>el.textContent="");document.querySelectorAll("#set .fld.bad").forEach(el=>el.classList.remove("bad"));
+  const put=(sel,list,bad)=>{const by={};list.forEach(x=>{(by[x.field]=by[x.field]||[]).push(x.message)});
+    for(const [field,msgs] of Object.entries(by)){const slot=document.querySelector(`#set [${sel}="${CSS.escape(field)}"]`)||document.querySelector(`#set [${sel}="${CSS.escape(field.split(".")[0])}"]`);
+      if(slot){slot.innerHTML=msgs.map(esc).join("<br>");if(bad)slot.closest(".fld")?.classList.add("bad")}}};
+  put("data-err",errors||[],true);put("data-warn",warnings||[],false);
+  const loose=(errors||[]).filter(x=>!document.querySelector(`#set [data-err="${CSS.escape(x.field)}"]`)&&!document.querySelector(`#set [data-err="${CSS.escape(x.field.split(".")[0])}"]`));
+  if(loose.length)setMessage(loose.map(x=>x.message).join(" "),true)}
+function validateSoon(){clearTimeout(valTimer);valTimer=setTimeout(async()=>{try{const r=await api("/api/config/validate",{method:"POST",body:JSON.stringify(collectForm())});showFieldMessages(r.errors,r.warnings);showSetBar()}catch(e){}},350)}
+$("#set").addEventListener("input",e=>{if(!e.target.closest("#setGroups,#fFolders"))return;perfContext();showSetBar();validateSoon()});
+$("#set").addEventListener("change",e=>{if(!e.target.closest("#setGroups,#fFolders"))return;showSetBar();validateSoon()});
+$("#setGroups").addEventListener("click",e=>{
+  const r=e.target.closest("[data-reset]");if(r){e.preventDefault();const f=cfg.schema.find(x=>x.key===r.dataset.reset),el=document.querySelector(`#set [data-c="${CSS.escape(f.key)}"]`),d=f.default;
+    if(el.dataset.t==="b")el.checked=!!d;else if(el.dataset.t==="lines")el.value=(d||[]).join("\n");else if(el.dataset.t==="times")el.innerHTML=(d||[]).map(timeRow).join("");else el.value=d;
+    el.dispatchEvent(new Event("input",{bubbles:true}));return}
+  if(e.target.closest("[data-addtime]")){const box=document.querySelector('#set [data-c="schedule.times"]');box.insertAdjacentHTML("beforeend",timeRow(""));box.lastElementChild.querySelector("input").focus();showSetBar();return}
+  const rm=e.target.closest("[data-rmtime]");if(rm){const box=rm.closest(".times");rm.closest(".row").remove();box.dispatchEvent(new Event("input",{bubbles:true}));return}
+  const t=e.target.closest("[data-ptest]");if(t)testPatterns(t.dataset.ptest)});
+async function testPatterns(key){const f=cfg.schema.find(x=>x.key===key),out=document.querySelector(`#set [data-pout="${CSS.escape(key)}"]`),ta=document.querySelector(`#set [data-c="${CSS.escape(key)}"]`);
+  out.textContent="Testing…";
+  try{const r=await api("/api/config/preview-patterns",{method:"POST",body:JSON.stringify({kind:f.subject,patterns:readCtl(ta)})});
+    if(r.errors&&r.errors.length){out.innerHTML=r.errors.map(x=>`<span class="err">${esc(x.message)}</span>`).join("<br>");return}
+    out.innerHTML=`<b>${num(r.total)} match${r.total===1?"":"es"}</b>${r.total>r.matches.length?` (first ${r.matches.length} shown)`:""}. <span class="muted">${esc(r.note)}</span>${r.matches.length?`<ul>${r.matches.map(m=>`<li><code>${esc(m.text)}</code>${m.after!=null?` → <code>${esc(m.after)}</code>`:""}</li>`).join("")}</ul>`:""}`}
+  catch(e){out.innerHTML=`<span class="err">${esc(e.message)}</span>`}}
+// what only shows in the Library after another scan, with a button for it
+function renderRescan(s){const r=s.rescan||{needed:[]},box=$("#rescanBox");if(!box)return;
+  const busy=s.engine_running||(s.scan&&s.scan.running);
+  box.innerHTML=r.needed.length?`<div class="banner warn" style="margin:8px 0 0"><b>Changed since the last scan:</b> ${r.needed.map(esc).join(", ")}. The Library shows this after a rescan. <button class="btn" data-do="rescan" ${busy?"disabled":""}>Rescan now</button>${busy?` <span class="small">A run or scan is active: rescan when it ends.</span>`:""}</div>`:"";
+}
 function foldersForm(){const F=cfg.folders||{},hp=cfg.host_paths||{};
   const intro=cfg.in_docker?`Where each folder is <i>inside</i> the container is fixed by the <code>volumes:</code> list in docker-compose.yml. Tell the app where it is on your NAS, so paths are shown the way you know them. This only changes what is displayed.`
     :`Tell the app where each folder is on the machine you think of as the host, so paths are shown the way you know them. This only changes what is displayed.`;
   const rows=Object.keys(FOLDER_LABEL).filter(k=>F[k]).map(k=>{const f=F[k];
     const val=f.source==="env"?`<span><code>${esc(f.host)}</code> <span class="muted small">set in docker-compose (${esc(f.via)}); Settings can't change it</span></span>`
-      :`<input type="text" data-c="host_paths.${k}" data-t="s" value="${esc(hp[k]||"")}" placeholder="${esc(f.source==="detected"?f.host:"/path/on/your/nas")}">`;
+      :`<div><input type="text" data-c="host_paths.${k}" data-t="s" value="${esc(hp[k]||"")}" placeholder="${esc(f.source==="detected"?f.host:"/path/on/your/nas")}"><div class="small err" data-err="host_paths.${k}"></div></div>`;
     return `<label class="f"><span>${esc(FOLDER_LABEL[k])} is shown as<div class="small">in the container: ${esc(f.container)}</div></span>${val}</label>`}).join("");
   const adv=cfg.in_docker?"":`<details><summary class="small">Advanced: folder paths as the app uses them</summary>${["library","downloads","output","temp"].map(k=>`<label class="f"><span>${esc(FOLDER_LABEL[k])}</span><input type="text" data-c="${k}" data-t="s" value="${esc(cfg[k])}"></label>`).join("")}</details>`;
   $("#fFolders").innerHTML=`<p class="small muted" style="margin-top:0">${intro}</p>${rows}${adv}`}
-async function loadSet(note){loadStorage();cfgLoadedAt=performance.now();cfg=await api("/api/config");cfgRev=cfg.config_rev;setDirty=false;$("#cfgChanged").hidden=true;
-  if(typeof note==="string"){$("#setMsg").textContent=note;$("#setMsg").className="small muted"}
-  foldersForm();
-  for(const [box,fs] of Object.entries(FIELDS)){$("#"+box).innerHTML=fs.map(([k,l,t])=>{const v=k.split(".").reduce((o,x)=>o?.[x],cfg);
-  return `<label class="f"><span>${esc(l)}</span>${t==="m"?`<select data-c="${k}" data-t="s">${Object.entries(OPTS[k]).map(([o,x])=>`<option value="${o}" ${v===o?"selected":""}>${esc(x)}</option>`).join("")}</select>`:t==="b"?`<input type="checkbox" data-c="${k}" data-t="b" ${v?"checked":""}>`:`<input type="${t==="n"?"number":"text"}" data-c="${k}" data-t="${t||"s"}" value="${esc(Array.isArray(v)?v.join(", "):v)}">`}</label>`}).join("")}}
-$("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]").forEach(e=>{let v=e.dataset.t==="b"?e.checked:e.dataset.t==="n"?Number(e.value):e.dataset.t==="l"?e.value.split(",").map(x=>x.trim()).filter(Boolean):e.value.trim();
-  const [a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});
-  try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved to "+(storage?(storage.settings.host||storage.settings.path):"the settings file");$("#setMsg").className="small muted";loadSet();loadSetup()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};
+async function loadSet(note){loadStorage();cfgLoadedAt=performance.now();cfg=await api("/api/config");cfgRev=cfg.config_rev;$("#cfgChanged").hidden=true;
+  $("#rescanNote").textContent=cfg.rescan_note?" "+cfg.rescan_note:"";renderGroups();foldersForm();setBase=JSON.stringify(collectForm());setErrors=[];showFieldMessages(cfg.problems||[],cfg.warnings||[]);
+  if(typeof note==="string")setMessage(note,false);else showSetBar()}
+async function saveSettings(){const body=collectForm();$("#bSave").disabled=true;
+  try{const r=await api("/api/config",{method:"PUT",body:JSON.stringify(body)});
+    await loadSet();setMessage("Saved."+(r.run_active?" Applies to the next run.":""),false);toast("Saved."+(r.run_active?" Applies to the next run.":""));loadSetup();
+    showFieldMessages([],r.warnings||[]);showSetBar();poll().catch(()=>{})}
+  catch(e){showFieldMessages(e.errors||[{field:"",message:e.message}],[]);setMessage("Not saved: "+(e.errors&&e.errors.length>1?`${e.errors.length} problems, shown next to the fields.`:e.message),true);
+    const first=document.querySelector("#set .fld.bad");if(first)first.scrollIntoView({block:"center"})}
+  showSetBar()}
+$("#bSave").onclick=saveSettings;$("#bDiscard").onclick=()=>loadSet("Changes discarded.");$("#bReload").onclick=()=>loadSet("Reloaded from the file.");
+window.addEventListener("beforeunload",e=>{if(settingsDirty()){e.preventDefault();e.returnValue=""}});
 // ---- Storage & backup, per-game overrides (see /api/storage)
 let storage=null,impText=null;
 const when=t=>t?new Date(t*1000).toLocaleString():"never";

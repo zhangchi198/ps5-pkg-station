@@ -32,6 +32,11 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
 .cands{list-style:none;margin:4px 0 8px;padding:0}.cands li{padding:5px 0;border-top:1px solid var(--line)}.cands li:first-child{border-top:0}
 .v-chosen{color:var(--ok);border-color:var(--ok)}.v-packed,.v-older,.v-not_used{color:var(--muted)}.v-verifies{color:var(--acc);border-color:var(--acc)}
 #libSum a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--muted)}#libSum a.on{font-weight:700}.why summary{cursor:pointer}
+.fld{padding:10px 0;border-top:1px solid var(--line)}.fld:first-of-type{border-top:0}.fld>label.t{display:block;font-weight:600;margin-bottom:4px}.fld input[type=number]{width:8em}.fld input[type=text],.fld textarea,.fld select{width:100%;max-width:34em}
+.fld textarea{font:12px/1.4 ui-monospace,Menlo,monospace;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}.fld .help{margin:3px 0}.fld .def{margin-right:8px}
+.fld .warn{color:var(--warn)}.fld.bad input,.fld.bad textarea,.fld.bad select{border-color:var(--bad)}.times .row{margin:3px 0}.times input{width:7em}
+.savebar{position:sticky;bottom:0;z-index:3;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--card);border:1px solid var(--acc);border-radius:10px;padding:10px 14px;margin-top:12px;box-shadow:0 -3px 12px rgba(0,0,0,.12)}
+.savebar[hidden]{display:none}.ptest{margin-top:6px}.ptest ul{margin:4px 0 0;padding-left:18px}
 .banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}.banner pre{color:var(--fg);max-height:14em;margin:8px 0}
 .lv-ok{color:var(--ok)}.lv-warn{color:var(--warn)}.lv-fail{color:var(--bad);font-weight:700}.setup td:first-child{width:3.5em;white-space:nowrap}
 a{color:var(--acc)}
@@ -73,6 +78,7 @@ a{color:var(--acc)}
   <div id="healthBottom"><details class="card" id="healthBox"><summary id="healthSum">Folders</summary><div id="folders" class="muted">—</div></details></div>
 </section>
 <section id="lib">
+  <div id="libNote"></div>
   <div class="card"><div class="row"><span id="libSum"></span><span class="muted small" id="libTime"></span>
     <input id="libFilter" placeholder="Filter by name, ID or file…" style="max-width:240px;margin-left:auto">
     <select id="libAct"><option value="">All</option><option value="build">To build</option><option value="copy">PS4 to copy</option><option value="failed">Failed</option><option value="done">Done</option><option value="skip">Skipped</option><option value="error">Problems</option></select>
@@ -84,12 +90,15 @@ a{color:var(--acc)}
   <div class="card"><table><thead><tr><th>Package</th><th>Built</th><th>Size</th><th>Times</th><th>Checks</th></tr></thead><tbody id="histRows"></tbody></table></div></section>
 <section id="set">
   <div class="banner warn" id="cfgChanged" hidden>Settings file changed on disk. <button class="btn" id="bReload">Reload from the file</button> <span class="small">(what you edited on this page and haven't saved is discarded)</span></div>
+  <div class="card small" id="setNotes"><b>When a change applies.</b> Build settings are read when a run starts, so a change applies from the next run, not to games already in progress.
+    <span class="muted" id="rescanNote"></span><div id="rescanBox"></div></div>
+  <div id="setGroups"></div>
   <div class="card"><h2>Folders</h2><div id="fFolders"></div></div>
-  <div class="card"><h2>Conversion</h2><div id="fConv"></div></div>
-  <div class="card"><h2>Schedule &amp; notifications</h2><div id="fSched"></div><div class="small muted" id="clockNote"></div></div>
-  <div class="row"><button class="btn pri" id="bSave">Save settings</button><button class="btn" id="bSetupSet">Check setup</button><span id="setMsg" class="small"></span></div>
+  <div class="row"><button class="btn" id="bSetupSet">Check setup</button></div>
   <div class="card" id="ovrCard" style="margin-top:14px"></div>
   <div class="card" id="storageCard"></div>
+  <div class="savebar" id="saveBar" hidden><span id="barText"><b>Unsaved changes</b></span><span id="setMsg" class="small"></span>
+    <span style="margin-left:auto" class="row"><button class="btn pri" id="bSave">Save settings</button><button class="btn" id="bDiscard">Discard</button></span></div>
 </section>
 <section id="logs"><div class="card"><div class="row"><select id="logSel"></select><button class="btn" id="bLog">Refresh</button>
   <label class="small"><input type="checkbox" id="logFollow" checked> follow</label>

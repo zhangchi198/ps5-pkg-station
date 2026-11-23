@@ -31,6 +31,8 @@ class LibraryCase(ServerCase):
     def put(self, name, obj, age=None):
         p = self.state / name
         p.write_text(json.dumps(obj))
+        if name == "plan.json":                                     # a plan made by this version of the engine
+            (self.state / "plan_settings.json").write_text(json.dumps(dict(format=self.srv.E.PLAN_FORMAT, settings={})))
         if age is not None:
             import os
             os.utime(p, (NOW - age, NOW - age))

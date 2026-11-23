@@ -97,7 +97,7 @@ class Settings(Ps4Api):
         self.assertEqual(self.client.put("/api/config", json={"ps4_mode": "skip"}).status_code, 200)
         self.assertEqual(self.get("/api/config")["ps4_mode"], "skip")
         r = self.client.put("/api/config", json={"ps4_mode": "convert"})
-        self.assertEqual((r.status_code, r.json()["detail"]), (400, "ps4_mode must be copy or skip"))
+        self.assertEqual((r.status_code, r.json()["detail"], r.json()["errors"][0]["field"]), (400, "Choose copy or skip.", "ps4_mode"))
         self.assertEqual(self.get("/api/config")["ps4_mode"], "skip")
 
     def test_it_is_exported_and_imported_with_the_other_settings(self):

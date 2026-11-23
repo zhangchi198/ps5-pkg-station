@@ -33,6 +33,7 @@ sys.path.insert(0, str(ENGINE.parent))
 import ps5_pkg_sync as E  # noqa: E402  (same defaults/validation as the engine)
 import ps5_failures as FL  # noqa: E402  (games that failed: why, and when another try can help)
 import ps5_progress as PG  # noqa: E402  (what earlier builds say about how long a game takes)
+import ps5_settingsmeta as M  # noqa: E402  (what the Settings page shows and checks)
 import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
 import ps5_settingsio as IO  # noqa: E402  (export / import of the settings)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
@@ -616,7 +617,7 @@ def status(request: Request):
                                 at_text=a.get("at_text"), will_retry=a["will_retry"]) for a in attention],
                 scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
                 status=st if pid else dict(st, live=False), next_run=next_run(cfg.get("schedule")), last_run=last_run(st, bool(pid)), space=space,
-                pace=build_pace(cfg),
+                pace=build_pace(cfg), rescan=rescan_info(cfg),
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "copy", "failed", "done", "skip", "error")},
@@ -636,7 +637,8 @@ def plan():
     data, mapping = read_json(STATE / "plan.json", []), host_view(cfg)["mapping"]
     if isinstance(data, list):
         ledger = read_json_cached(STATE / "ledger.json", {})
-        data = [library_extras(p, cfg, ledger) for p in plan_with_failures(live_plan(data), cfg, mapping)]
+        stale = rescan_info(cfg)["stale"]                                  # made by an older version: its fields are not trusted, a scan refreshes them
+        data = [p if stale else library_extras(p, cfg, ledger) for p in plan_with_failures(live_plan(data), cfg, mapping)]
     if not mapping or not isinstance(data, list):
         return data
     out = []
@@ -698,13 +700,52 @@ def stop():
 SETTINGS = E.SETTINGS   # key: (type, min, max) - everything the Settings page may change
 
 
+def machine_info(cfg):
+    """What the performance settings are judged against: the CPU threads, and the size of the work drive."""
+    total, p = None, Path(cfg.get("temp") or "/")
+    while True:
+        try:
+            total = shutil.disk_usage(p).total
+            break
+        except OSError:
+            if p == p.parent:
+                break
+            p = p.parent
+    return dict(cpus=os.cpu_count(), work_total=total)
+
+
+def rescan_info(cfg):
+    """{needed: [labels of the settings changed since the last scan that only show in the Library after another one],
+    stale: the plan was made by an older version of the app}. Nothing to say without a plan."""
+    if not (STATE / "plan.json").exists():
+        return dict(needed=[], stale=False)
+    info = read_json_cached(STATE / "plan_settings.json", None)
+    if not isinstance(info, dict) or info.get("format") != E.PLAN_FORMAT:
+        return dict(needed=[], stale=True)
+    return dict(needed=M.rescan_needed(info.get("settings"), cfg), stale=False)
+
+
 @app.get("/api/config")
 def get_config():
     # config_rev says which version of the file the values are from; the Settings page compares it with the
     # one in /api/status to notice a change on disk
     info = E.load_cfg_info()
+    machine = machine_info(info.cfg)
     return {**{k: info.cfg.get(k) for k in SETTINGS}, "config_rev": info.rev, "in_docker": E.IN_DOCKER,
-            "folders": folders_info(info.cfg)[0]}
+            "folders": folders_info(info.cfg)[0], "schema": M.schema(), "groups": M.GROUPS, "machine": machine,
+            "warnings": M.warnings(info.cfg, machine), "problems": M.cross_errors(info.cfg), "rescan_note": M.RESCAN_NOTE, "rescan_keys": list(E.RESCAN_KEYS),
+            "run_active": run_active(), "labels": M.LABEL}
+
+
+def check_config(body):
+    """(changes, errors, warnings) for settings sent by the page, on top of the current ones."""
+    info = E.load_cfg_info()
+    return M.check(info.cfg, body, machine_info(info.cfg))
+
+
+def invalid(errors):
+    """400 with every problem, field by field, and the first one as the plain `detail`."""
+    return JSONResponse(status_code=400, content={"detail": errors[0]["message"], "errors": errors})
 
 
 @app.put("/api/config")
@@ -712,16 +753,31 @@ async def put_config(req: Request):
     body = await req.json()
     if not isinstance(body, dict):
         raise HTTPException(400, "expected a JSON object")
-    changes = {}
-    for k, v in body.items():
-        if k not in SETTINGS:
-            raise HTTPException(400, f"unknown setting {k}")
-        try:
-            changes[k] = E.validate_setting(k, v)     # the same checks as when the file is read
-        except ValueError as ex:
-            raise HTTPException(400, str(ex))
+    changes, errors, warns = check_config(body)
+    if errors:
+        return invalid(errors)
     cfg = update_cfg(lambda raw: raw.update(changes))
-    return {k: cfg.get(k) for k in SETTINGS}
+    return {**{k: cfg.get(k) for k in SETTINGS}, "warnings": warns, "run_active": run_active(), "rescan": rescan_info(cfg)}
+
+
+@app.post("/api/config/validate")
+async def validate_config(req: Request):
+    """What is wrong with these settings, and what is only worth a look, without saving anything: the Settings page asks
+    while a field is being edited."""
+    body = await req.json()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+    _, errors, warns = check_config(body)
+    return {"errors": errors, "warnings": warns}
+
+
+@app.post("/api/config/preview-patterns")
+async def preview_patterns(req: Request):
+    """Which titles ("title") or file names ("file") of the last scan these cleanup patterns would match."""
+    body = await req.json()
+    if not isinstance(body, dict) or body.get("kind") not in ("title", "file") or not isinstance(body.get("patterns"), list):
+        raise HTTPException(400, "expected {kind: title | file, patterns: [...]}")
+    return M.preview_patterns(STATE, body["kind"], body["patterns"])
 
 
 def patch_root():
@@ -809,8 +865,9 @@ def storage():
         settings=dict(file_info(E.CFG_PATH, mapping), error=info.error.as_dict() if info.error else None),
         history=dict(file_info(STATE / "ledger.json", mapping), packages=sum(1 for v in ledger_.values() if isinstance(v, dict)) if isinstance(ledger_, dict) else 0),
         failures=dict(file_info(STATE / "failures.json", mapping), count=len(failed) if isinstance(failed, dict) else 0),
-        state_note=("The build history (ledger.json) and the failed-game records (failures.json) are state, not settings: "
-                    "they are not in an export, and not in a full backup unless you ask for the failed-game records."),
+        state_note=("The build history (ledger.json) and the failed-game records (failures.json) are state, not settings, so an export "
+                    "does not contain them. The full backup (.zip) includes the build history; the failed-game records only if you tick "
+                    "the box for them."),
         backups=dict(keep=E.BACKUP_KEEP, count=len(backups), last=backups[0]["at"] if backups else None, items=backups,
                      folder=file_info(E.backups_dir(), mapping), error=E.backup_status["error"]),
         versions=versions(), overrides=overrides_table(info.cfg, mapping))

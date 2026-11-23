@@ -88,14 +88,32 @@ SEVENZ = ps5_setup.SEVENZ
 JUNK_FILE = JUNK_TITLE = None   # compiled from cfg junk_file_patterns / junk_title_patterns by load_cfg()
 
 
+def junk_file_regex(patterns):
+    jf = [x for x in patterns or [] if x]
+    return re.compile("|".join(f"(?:{x})" for x in jf), re.I) if jf else None
+
+
+def junk_title_regex(patterns):
+    jt = [x for x in patterns or [] if x]
+    return re.compile(r"\s*[-_–—]?\s*(?:" + "|".join(f"(?:{x})" for x in jt) + r")\s*", re.I) if jt else None
+
+
 def set_junk(cfg):
     """Release-group watermarks to clean: files whose name matches a junk_file_pattern are deleted,
     and junk_title_patterns are cut out of titles (param.json and the package name)."""
     global JUNK_FILE, JUNK_TITLE
-    jf = [x for x in cfg.get("junk_file_patterns") or [] if x]
-    jt = [x for x in cfg.get("junk_title_patterns") or [] if x]
-    JUNK_FILE = re.compile("|".join(f"(?:{x})" for x in jf), re.I) if jf else None
-    JUNK_TITLE = re.compile(r"\s*[-_–—]?\s*(?:" + "|".join(f"(?:{x})" for x in jt) + r")\s*", re.I) if jt else None
+    JUNK_FILE = junk_file_regex(cfg.get("junk_file_patterns"))
+    JUNK_TITLE = junk_title_regex(cfg.get("junk_title_patterns"))
+
+
+# What only shows in the Library after a scan (the plan is made from these); the Settings page says so and offers a rescan.
+RESCAN_KEYS = ("library", "downloads", "output", "ps4_mode", "skip_download_prefixes", "junk_file_patterns", "junk_title_patterns")
+PLAN_FORMAT = 1          # the shape of plan.json; bump it when a change to the plan's fields should make an old plan read "rescan to refresh"
+
+
+def plan_settings(cfg):
+    """The settings a plan was made with, kept next to it (state/plan_settings.json)."""
+    return {k: cfg.get(k) for k in RESCAN_KEYS}
 
 
 # ------------------------------------------------------------------ settings file
@@ -529,8 +547,13 @@ def patched_identity(patch):
     return ident if ident["version"] else None
 
 
-def clean_title(t: str) -> str:
-    t = (JUNK_TITLE.sub(" ", t) if JUNK_TITLE else t).replace("™", "").replace("®", "")
+_CURRENT = object()
+
+
+def clean_title(t: str, junk=_CURRENT) -> str:
+    """A title as it goes into a name: the configured junk cut out (or the given regex), characters a file name can't have replaced."""
+    rx = JUNK_TITLE if junk is _CURRENT else junk
+    t = (rx.sub(" ", t) if rx else t).replace("™", "").replace("®", "")
     t = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", t)
     return re.sub(r"\s+", " ", t).strip(" .-_")[:120] or "Unknown"
 
@@ -2523,6 +2546,8 @@ def main():
             if j["action"] == "done" and j["title_id"] in failures:
                 failure_store().clear(j["title_id"])
         (STATE / "plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False))
+        write_json_atomic(STATE / "plan_settings.json", dict(format=PLAN_FORMAT, at=time.time(), app_version=ps5_failures.app_version(),
+                                                             settings=plan_settings(cfg)))
         log("=== plan")
         for j in plan:
             log(f"  {j['action']:6} {j.get('name', j['title_id'])}  <- {j.get('source', '')} ({j['why']})"

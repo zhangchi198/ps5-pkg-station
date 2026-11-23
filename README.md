@@ -38,7 +38,7 @@ Open `http://<host>:8765`.
 | Dashboard | the current run first (how far along, about how long it will take, each build's stage), run now, stop after the current games, rescan; what is being prepared and what is next; the last run's result when idle; setup checklist; free space; why a scan or run failed |
 | Library | every game found, the copy that will be used and why (each copy with its path, version and what became of it), whether it runs on your console's firmware, the backport decision, files that could not be identified; per-game options: copy to use, keep the backport or the original, extra files folder, never build, build just this one |
 | History | every finished package with its validation result, size and times |
-| Settings | folders, compression level, parallel builds, console firmware, junk-file cleanup patterns, schedule, notifications |
+| Settings | in plain language, with a description and the default of every setting: console firmware, performance (games at once, threads, compression level, priority, free space), cleanup patterns with a test against your last scan, schedule, notifications, folders; mistakes are shown next to the field and nothing is saved until all of it is valid |
 | Logs | the run log and each build's log, live |
 
 ### Progress and time estimates
@@ -238,12 +238,29 @@ All settings live in `/config/state/config.json` and can be changed from the Set
 
 - `console_fw`: your console's firmware, for example `9.60`. Used to choose between an original copy and a
   backport.
-- `compression_level`: UltraPack's Kraken level, 1 to 9. 4 is fast; 7 gives somewhat smaller packages.
-- `max_builds` / `max_compress` / `cpu_count`: how many games are in flight, how many compress at once,
-  and how many workers each one uses.
+- `compression_level`: UltraPack's Kraken level, 1 (fastest) to 9 (smallest). 4 is fast; 7 gives somewhat smaller packages.
+- `max_builds` / `max_compress` / `cpu_count`: how many games are in progress at once, how many of them compress
+  at once (never more than `max_builds`), and how many threads each one uses. Settings shows how many threads the
+  machine has and warns when games compressing at once times threads per game is more; the warning can be saved
+  anyway.
 - `junk_file_patterns` / `junk_title_patterns`: regexes for release-group watermarks. Matching files are
   deleted from the work copy, and matching text is cut out of the title in `param.json` and the file
-  name. Both are empty by default.
+  name. Both are empty by default. On the Settings page they are one pattern per line (so a pattern can contain a
+  comma, like `\d{1,3}`), a pattern that is not a valid regex is refused with the compile error and its line, and
+  **Test against the last scan** lists the titles, or the file names inside the archives the scans listed, that the
+  patterns would match.
+
+### When a change applies
+
+Build settings (compression level, parallel builds, threads, priority, free space, console firmware, schedule,
+notifications) are read when a run starts: a change applies **from the next run**, not to the games already in
+progress. Saving during a run says so ("Saved. Applies to the next run.").
+
+A few settings decide what the **Library** shows, so they need a rescan: the library, downloads and output folders,
+`ps4_mode`, `skip_download_prefixes` and the two junk-pattern lists. The scan records the values it used next to the
+plan (`state/plan_settings.json`); when they differ from the saved settings, Settings and the Library say which
+changed, with a **Rescan now** button. A plan made by an older version of the app (one without that record) is shown
+as "rescan to refresh" and its firmware and backport fields are not judged until it is refreshed.
 - `overrides`: per title ID, `source`, `patch` (a folder, for example under `/config/patches`, whose files are
   copied over the game; it must be inside `/config/patches`), `modified_exec` (`image` or `original`), `skip_verify` (don't check the copy against the
   original archive: "keep this copy anyway"), `skip`. Usually set from the Library page. A patch that contains
@@ -274,7 +291,7 @@ Keys you leave out use their defaults, and keys this version doesn't know are ke
 
 A PS4 game (a `CUSA` title ID) usually comes as an archive that already holds ready-to-install packages: the base
 game `.pkg`, often a small update or downgrade patch, sometimes a `DLC.zip` or DLC `.pkg` files. These aren't
-converted. With `ps4_mode` = `copy` (the default, under Settings > Conversion) the planner shows the title as
+converted. With `ps4_mode` = `copy` (the default, under Settings > Console) the planner shows the title as
 **copy**, and a run copies the `.pkg` files as they are, never starting UltraPack and never changing a byte:
 
 - Each package is named and classified from **its own header** (the content ID, the title and the version in its
@@ -316,10 +333,11 @@ version of the app and of the bundled UltraPack.
 | `failures.json` | games that failed or wait for space, and why | they're tried once more |
 | `../patches/` | the patch folders your overrides point to (if you use any) | the overlay files are gone |
 
-`ledger.json` and `failures.json` are **state**, not settings: an export doesn't contain them.
+`ledger.json` and `failures.json` are **state**, not settings: an export doesn't contain them. The full backup (.zip)
+includes `ledger.json`; `failures.json` only if you tick the box for it.
 
 **What is safe to delete:** `ident_cache.json` and `listing_cache/` (they are rebuilt by the next scan, which is
-then slower), `plan.json`, `status.json`, `last_run.json`, the `logs` folder, and `backups/` (the automatic
+then slower), `plan.json` and `plan_settings.json` (the Library then asks for a rescan), `status.json`, `last_run.json`, the `logs` folder, and `backups/` (the automatic
 backups, below).
 
 On the Settings page:

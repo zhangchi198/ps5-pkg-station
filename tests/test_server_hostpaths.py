@@ -165,9 +165,9 @@ class SettingsFallback(HostCase):
 
     def test_bad_values_are_refused_and_nothing_is_saved(self):
         before = self.snapshot()
-        for body, text in [({"host_paths": {"library": "games/ps5"}}, "host_paths.library must be an absolute path"),
-                           ({"host_paths": {"pkg": "/x"}}, "unknown folder 'pkg'"), ({"host_paths": {"library": 5}}, "must be text"),
-                           ({"host_paths": ["/x"]}, "host_paths must be an object")]:
+        for body, text in [({"host_paths": {"library": "games/ps5"}}, "Game library folder: must be an absolute path"),
+                           ({"host_paths": {"pkg": "/x"}}, "unknown folder 'pkg'"), ({"host_paths": {"library": 5}}, "enter text"),
+                           ({"host_paths": ["/x"]}, "Folder locations must be an object")]:
             with self.subTest(body):
                 r = self.client.put("/api/config", json=body)
                 self.assertEqual(r.status_code, 400, r.text)

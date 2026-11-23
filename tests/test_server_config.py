@@ -190,21 +190,23 @@ class UnknownKeysAndFormat(ServerCase):
         self.assertIn("Préféré", text)
         self.assertIn('\n  "overrides": {\n    "PPSA01234": {', text)
 
-    def test_the_put_checks_are_the_same_as_before(self):
+    def test_a_bad_value_is_refused_with_its_field_and_a_plain_message(self):
         self.write_cfg(legacy_config())
         before = self.snapshot()
-        for body, msg in [({"compression_level": 99}, "compression_level must be 1..9"),
-                          ({"nice": 20}, "nice must be 0..19"),
-                          ({"console_fw": "nine"}, "console_fw looks like 13.20"),
-                          ({"library": 3}, "library must be text"),
-                          ({"junk_file_patterns": ["("]}, "junk_file_patterns: bad pattern '('"),
-                          ({"schedule": {"enabled": True, "times": ["3:00"]}}, "schedule.times"),
-                          ({"not_a_setting": 1}, "unknown setting not_a_setting"),
-                          ({"nice": 1, "compression_level": 0}, "compression_level must be 1..9")]:
+        for body, field, msg in [({"compression_level": 99}, "compression_level", "Compression level must be a whole number from 1 to 9."),
+                                 ({"nice": 20}, "nice", "Run builds at low priority must be a whole number from 0 to 19."),
+                                 ({"console_fw": "nine"}, "console_fw", "Enter the firmware like 13.20"),
+                                 ({"library": 3}, "library", "Game library folder: enter text."),
+                                 ({"junk_file_patterns": ["("]}, "junk_file_patterns", "Line 1: '(' is not a valid pattern"),
+                                 ({"schedule": {"enabled": True, "times": ["3:00"]}}, "schedule.times", "'3:00' is not a time. Use 24-hour HH:MM"),
+                                 ({"not_a_setting": 1}, "not_a_setting", "'not_a_setting' is not a setting this version has."),
+                                 ({"nice": 1, "compression_level": 0}, "compression_level", "Compression level must be a whole number from 1 to 9.")]:
             with self.subTest(body):
                 r = self.client.put("/api/config", json=body)
                 self.assertEqual(r.status_code, 400, r.text)
                 self.assertIn(msg, r.json()["detail"])
+                self.assertEqual(r.json()["errors"][0]["field"], field)
+                self.assertNotIn(field.split(".")[0] + " must", r.json()["detail"])                              # no internal key names in the words
         self.assertEqual(self.client.put("/api/config", json=[1]).status_code, 400)
         self.assertEqual(self.snapshot(), before)                # a rejected save changes nothing, not even the valid part
 
