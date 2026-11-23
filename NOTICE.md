@@ -2,9 +2,9 @@
 
 PS5 PKG Station is a front end. The packages are built by **PS5 UltraPack**
 (<https://github.com/knutwurst/ps5-ultrapack>, GPL-3.0). It is not part of this repository:
-the Docker build downloads UltraPack's official Linux x64 release, checks its pinned SHA-256
-and installs its `backend/` folder to `/opt/ultrapack`, together with UltraPack's own `LICENSE`
-and `NOTICE`. That release bundles further tools under their own licenses (7-Zip,
+the Docker build downloads UltraPack's source at the pinned release tag and the native tools from
+its official Linux x64 release, checks both against pinned SHA-256 sums, and installs them to
+`/opt/ultrapack`, together with UltraPack's own `LICENSE` and `NOTICE`. That release bundles further tools under their own licenses (7-Zip,
 LibOrbisPkg / LibProsperoPkg, MkPFS, ampr-emu and others), which are listed in
 `/opt/ultrapack/NOTICE` and `/opt/ultrapack/backend/native/` inside the image.
 
