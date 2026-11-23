@@ -341,6 +341,50 @@ class Snapshots(StatusCase):
             json.loads((self.state / "status.json").read_text())
 
 
+class Writers(StatusCase):
+    """The status writer belongs to its run: it stops with it, and never writes into another folder."""
+
+    def test_a_writer_writes_into_the_folder_it_was_made_for(self):
+        other = self.dir / "other-state"
+        other.mkdir()
+        rs = E.RunStatus(self.cfg)
+        with mock.patch.object(E, "STATE", other):                                   # a later test's (or install's) folder
+            rs.write()
+            rs.finish([])
+        self.assertTrue((self.state / "status.json").exists())
+        self.assertEqual([p.name for p in other.iterdir()], [])
+
+    def test_a_queue_that_dies_does_not_leave_a_writer_running_and_says_it_was_interrupted(self):
+        made = []
+        real = E.RunStatus
+
+        def spy(*a, **kw):
+            made.append(real(*a, **kw))
+            return made[-1]
+        job_ = dict(job(), source=str(self.dir / "x"), kind="folder", fingerprint="x")
+        with mock.patch.object(E, "RunStatus", spy), mock.patch.object(E, "prepare", return_value=dict(app=Path("x"), clean=None, prep_min=1)), \
+                mock.patch.object(E, "start_build", side_effect=KeyboardInterrupt), mock.patch.object(E, "notify", lambda *a: None), \
+                self.assertRaises(KeyboardInterrupt):
+            E.run_queue(self.cfg, [job_], lambda m: None, self.state / "ledger.json", {})
+        rs = made[0]
+        rs.thread.join(timeout=3)
+        self.assertFalse(rs.thread.is_alive(), "the status writer of a dead run is still going")
+        st = self.status()
+        self.assertTrue(st["finished"])
+        self.assertTrue(st["run"]["interrupted"])
+        before = (self.state / "status.json").read_text()
+        rs.write()
+        self.assertEqual((self.state / "status.json").read_text(), before)            # nothing more is written once it is over
+
+    def test_a_finished_run_has_no_writer_left_either(self):
+        made = []
+        real = E.RunStatus
+        with mock.patch.object(E, "RunStatus", lambda *a, **kw: made.append(real(*a, **kw)) or made[-1]):
+            E.run_queue(self.cfg, [], lambda m: None, self.state / "ledger.json", {})
+        made[0].thread.join(timeout=3)
+        self.assertFalse(made[0].thread.is_alive())
+
+
 class RealRun(StatusCase):
     """The real engine, with a stand-in for UltraPack that prints the lines UltraPack prints."""
 
@@ -366,6 +410,19 @@ class RealRun(StatusCase):
         self.assertEqual(proc.returncode, 0, out)
         return snaps, out
 
+    def final_status(self, deadline=15.0):
+        """status.json of the finished run: waited for (a condition with a deadline), not assumed to be there the moment the engine exits."""
+        end, last = time.time() + deadline, None
+        while time.time() < end:
+            try:
+                last = json.loads((self.state / "status.json").read_text())
+            except (OSError, ValueError):
+                last = None
+            if last and last.get("finished"):
+                return last
+            time.sleep(0.1)
+        self.fail(f"no finished status.json within {deadline:.0f} s; the last one read: {json.dumps(last)[:300]}")
+
     def test_a_scheduled_run_reports_itself_its_build_and_what_it_learned(self):
         snaps, out = self.run_and_watch("--trigger", "scheduled")
         self.assertTrue(snaps)
@@ -389,8 +446,7 @@ class RealRun(StatusCase):
         self.assertTrue(any(len(r["stages"]) > 1 for r in rows), "stage timings should grow with the build")
         for s in building:
             self.assertEqual((s["run"]["total"], s["run"]["trigger"]), (1, "scheduled"))
-        last = json.loads((self.state / "status.json").read_text())
-        self.assertTrue(last["finished"])
+        last = self.final_status()
         self.assertEqual((last["run"]["built"], last["run"]["done"], last["run"]["total"], last["run"]["progress"]), (1, 1, 1, 1.0))
         res = last["results"][0]
         self.assertEqual((res["status"], res["title_id"]), ("built", "PPSA01234"))
@@ -408,13 +464,12 @@ class RealRun(StatusCase):
 
     def test_no_trigger_means_manual(self):
         snaps, _ = self.run_and_watch(nap="0.02")
-        self.assertEqual(json.loads((self.state / "status.json").read_text())["run"]["trigger"], "manual")
+        self.assertEqual(self.final_status()["run"]["trigger"], "manual")
 
     def test_a_run_with_nothing_to_do_still_ends_with_a_finished_status(self):
         (self.state / "ledger.json").write_text(json.dumps({"PPSA01234": dict(version="01.002.003", output=str(Path(self.env["output"])), built="2026-01-01 00:00")}))
         snaps, out = self.run_and_watch(nap="0.02")
-        last = json.loads((self.state / "status.json").read_text())
-        self.assertTrue(last["finished"])
+        last = self.final_status()
         self.assertEqual((last["run"]["total"], last["run"]["done"]), (0, 0))
 
 

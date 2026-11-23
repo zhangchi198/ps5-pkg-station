@@ -1858,6 +1858,7 @@ class RunStatus:
         self.smoothers, self.paced = {}, set()
         self.pace, self.prep_pace, self.ps4_pace = [], [], []     # seconds per source GiB of what finished in this run
         self.progress = 0.0
+        self.state = STATE                  # the folder it writes to: fixed now, so a writer that outlives its run can never write into another one
         self.stop_evt, self.thread, self.finished, self.last_error = threading.Event(), None, False, None
         self.lock = threading.Lock()
 
@@ -2096,9 +2097,9 @@ class RunStatus:
             with self.lock:
                 if self.finished:
                     return
-                tmp = STATE / "status.json.part"
+                tmp = self.state / "status.json.part"
                 tmp.write_text(json.dumps(self.snapshot(), ensure_ascii=False, default=str))
-                tmp.replace(STATE / "status.json")
+                tmp.replace(self.state / "status.json")
         except Exception as ex:                                 # a run must not stop over its status; but say so, once per kind of error
             msg = f"status.json could not be written: {type(ex).__name__}: {ex}"
             if msg != self.last_error:
@@ -2115,10 +2116,10 @@ class RunStatus:
                        total=max(len(results), len(self.jobs) + len(self.ps4_jobs)), done=len(results), progress=1.0, **run_counts(results))
             if interrupted:
                 run["interrupted"] = True
-            tmp = STATE / "status.json.part"
+            tmp = self.state / "status.json.part"
             tmp.write_text(json.dumps(dict(updated=now, pid=None, finished=True, run=run,
                                            results=[{k: r.get(k) for k in RESULT_KEYS} for r in results]), ensure_ascii=False, default=str))
-            tmp.replace(STATE / "status.json")
+            tmp.replace(self.state / "status.json")
 
 
 def run_ps4(cfg, jobs, log, ledger_p, ledger, rs=None):
@@ -2169,14 +2170,29 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger, rs=None):
 def run_queue(cfg, todo, log, ledger_p, ledger, preset=None, rs=None):
     """Three-stage pipeline:  prepare (extract+verify+clean) game N+2  |  compress game N+1  |
     hash/write/validate game N.  At most max_compress builds in the Kraken stage and max_builds UltraPack
-    processes; prepares only start when the SSD can hold them on top of what is in flight."""
+    processes; prepares only start when the SSD can hold them on top of what is in flight. `rs` is the run's
+    RunStatus (main() makes it); without one this call is the whole run as far as the status goes, and a queue
+    that dies leaves a finished (interrupted) status behind instead of a writer that goes on for ever."""
+    if rs is not None:
+        return _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs)
+    rs = RunStatus(cfg, ledger=ledger)
+    rs.plan(todo, [])
+    rs.ps4_results = list(preset or [])
+    rs.start()
+    try:
+        return _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs)
+    except BaseException:
+        if not rs.finished:
+            try:
+                rs.finish(rs.snapshot()["results"], interrupted=True)
+            except Exception:
+                rs.stop_evt.set()
+        raise
+
+
+def _run_queue(cfg, todo, log, ledger_p, ledger, preset, rs):
     import threading
     results = list(preset or [])          # what ran before the queue (PS4 copies) is part of this run's results
-    if rs is None:                        # not started by main(): this call is the whole run as far as the status goes
-        rs = RunStatus(cfg, ledger=ledger)
-        rs.plan(todo, [])
-        rs.ps4_results = list(results)
-        rs.start()
     ledger_lock = threading.Lock()
     prep_pool = ThreadPoolExecutor(max_workers=1)
     fin_pool = ThreadPoolExecutor(max_workers=cfg.get("max_builds", 3))
