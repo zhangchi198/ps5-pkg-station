@@ -193,6 +193,11 @@ converted. With `ps4_mode` = `copy` (the default, under Settings > Conversion) t
 
 - Each package is named and classified from **its own header** (the content ID, the title and the version in its
   PARAM.SFO; game / patch / DLC), not from its file name. Only the first few MiB of each package are read.
+- The folder and the base game's file name use the game's **English title**, like the PS5 side: the package's
+  `TITLE_01` (English US), else `TITLE_18` (English UK); if it has none and its `TITLE` isn't mostly Latin script
+  (an Asian release often has a Chinese or Korean `TITLE` only), the English title in the base game's file name next to
+  the title ID (`<Title>-CUSA12345.v1.0[tag].pkg`), else the name of the folder the release was downloaded into,
+  else `TITLE`. The title the package itself carries is shown in the Library ("Title in package: ...").
 - A `.pkg` inside a nested archive (`DLC.zip`) is copied too. If it holds no `.pkg`, nothing is copied from it and the
   Library says so. Other files in the archive (`.url` files and the like) are not copied.
 - Files go to `<output>/PS4/<title> [CUSA12345]/` through `<output>/.staging` and are renamed into place once 7-Zip
@@ -202,6 +207,8 @@ converted. With `ps4_mode` = `copy` (the default, under Settings > Conversion) t
 - The title is "done" like a built one (same title and version, also after a restart) and is marked **PS4** in
   History; a newer package set is copied again, and nothing already in the folder is deleted (a file it replaces is
   kept as `... (replaced <time>).pkg`).
+- A copy counts as **copied**, not built: the run summary says `built N, copied N, ...`, "This run" shows `copied`, and
+  the notification is "PS4: copied" with the folder it went to.
 - A failed copy is remembered and explained like any failed game (see below), and **Retry** copies it again.
 
 `ps4_mode` = `skip` lists PS4 titles as "PS4: skipped" instead. A per-game **skip** override always wins over both.

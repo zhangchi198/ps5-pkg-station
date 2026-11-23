@@ -168,7 +168,7 @@ def make_sfo(**fields):
     return b"\0PSF" + struct.pack("<IIII", 0x101, kstart, kstart + len(ktab), len(keys)) + index + ktab + dtab
 
 
-def make_ps4_pkg(content_id, title, app_ver, category, *, body=b"x" * 4096, with_sfo=True):
+def make_ps4_pkg(content_id, title, app_ver, category, *, body=b"x" * 4096, with_sfo=True, extra=None):
     """A small package that parses like a PS4 one: the magic, the content ID, an entry table with PARAM.SFO."""
     import struct
     buf = bytearray(0x4000)
@@ -179,7 +179,7 @@ def make_ps4_pkg(content_id, title, app_ver, category, *, body=b"x" * 4096, with
     struct.pack_into(">I", buf, 0x74, 0x1A)
     import re
     tid = (re.search(r"CUSA\d{5}", content_id) or ["CUSA00000"])[0]
-    sfo = make_sfo(TITLE=title, TITLE_ID=tid, CONTENT_ID=content_id, CATEGORY=category, APP_VER=app_ver, VERSION=app_ver) if with_sfo else b""
+    sfo = make_sfo(TITLE=title, TITLE_ID=tid, CONTENT_ID=content_id, CATEGORY=category, APP_VER=app_ver, VERSION=app_ver, **(extra or {})) if with_sfo else b""
     struct.pack_into(">IIIIII", buf, 0x2000, 0x1000, 0, 0, 0, 0x3000, len(sfo))
     buf[0x3000:0x3000 + len(sfo)] = sfo
     return bytes(buf) + body

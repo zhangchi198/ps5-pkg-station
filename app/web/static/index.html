@@ -19,7 +19,7 @@ button.btn{border:1px solid var(--line);background:var(--card);color:var(--fg);p
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button:disabled{opacity:.5;cursor:default}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:12px}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
-.t-build,.t-copy{color:var(--acc)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred,.t-waiting{color:var(--warn)}.att{padding:10px 0;border-top:1px solid var(--line)}.att:first-of-type{border-top:0}.att pre{max-height:16em;margin:6px 0}.btnrow{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.btn.sm{padding:2px 9px;font-size:12px}
+.t-build,.t-copy{color:var(--acc)}.t-copied{color:var(--ok)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred,.t-waiting{color:var(--warn)}.att{padding:10px 0;border-top:1px solid var(--line)}.att:first-of-type{border-top:0}.att pre{max-height:16em;margin:6px 0}.btnrow{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.btn.sm{padding:2px 9px;font-size:12px}
 #toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;max-width:90vw;z-index:9}
 .bar{height:8px;background:var(--bar);border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
 .muted{color:var(--muted)}.small{font-size:12px}pre{white-space:pre-wrap;word-break:break-all;font:12px/1.4 ui-monospace,Menlo,monospace;max-height:70vh;overflow:auto;margin:0}
@@ -169,6 +169,7 @@ document.addEventListener("click",async e=>{const b=e.target.closest("[data-fa]"
 function ps4Files(p){const f=p.files||[],dest=p.dest_dir_host||p.dest_dir;
   return `<details><summary class="small">PS4 packages (${f.length}) → ${esc(p.dest_dir_host?"your NAS":"the output folder")}</summary>
    <div class="small">Copied to ${pathHtml(p.dest_dir_host,p.dest_dir)}</div>
+   ${p.title_in_package?`<div class="small muted">Title in package: ${esc(p.title_in_package)}${p.title_source&&p.title_source!=="package"?` · named after the ${esc(p.title_source)}`:""}</div>`:""}
    <table class="small"><tbody>${f.map(x=>`<tr><td>${esc(x.name)}${x.via?` <span class="muted">(from ${esc(x.via.split("/").pop())})</span>`:""}</td><td>${esc(x.kind)}</td><td>${x.size?gib(x.size):""}</td></tr>`).join("")}</tbody></table>
    ${(p.notes||[]).map(n=>`<div class="small muted">${esc(n)}</div>`).join("")}</details>`}
 function failBox(s){const ev=[["scan",s.scan],["run",s.run]].filter(([k,x])=>x&&x.finished).sort((a,b)=>b[1].finished-a[1].finished)[0];

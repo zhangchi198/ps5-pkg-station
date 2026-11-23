@@ -77,6 +77,16 @@ def version_of(sfo):
     return ""
 
 
+def english_title(sfo):
+    """The English title a package carries: TITLE_01 (English, US), else TITLE_18 (English, UK); "" when it has none
+    (an Asian release often has TITLE in Chinese or Korean and no English one)."""
+    for k in ("TITLE_01", "TITLE_18"):
+        v = str(sfo.get(k) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 def category_kind(category):
     """game / patch / dlc / other from PARAM.SFO's CATEGORY."""
     c = str(category or "").lower()

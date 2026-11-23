@@ -14,7 +14,7 @@ import ps5_failures as F  # noqa: E402
 TID = "CUSA12345"
 SRC = "/downloads/Example Game/Example.Game.CUSA12345.part1.rar"
 PS4 = dict(title_id=TID, title="Example Game", version="01.01", fw="", source=SRC, kind="archive-ps4", size=8000, action="copy", why="PS4: copy packages as they are",
-           name=f"Example Game [{TID}]", ps4=True, dest_dir=f"/output/PS4/Example Game [{TID}]", candidates=[dict(source=SRC, kind="archive-ps4", version="01.01", packed="", size=8000)],
+           name=f"Example Game [{TID}]", ps4=True, dest_dir=f"/output/PS4/Example Game [{TID}]", title_in_package="\u7bc4\u4f8b\u904a\u6232", title_source="file name", candidates=[dict(source=SRC, kind="archive-ps4", version="01.01", packed="", size=8000)],
            files=[dict(name=f"Example Game [{TID}] [v01.00].pkg", size=5000, kind="game", path="x", via=None, dest="x"),
                   dict(name="HP0177-patch.pkg", size=3000, kind="patch", path="y", via=None, dest="y")],
            notes=["DLC.zip: no .pkg inside, nothing is copied from it"])
@@ -41,6 +41,16 @@ class Planning(Ps4Api):
         self.assertEqual((p["action"], p["ps4"], p["dest_dir"]), ("copy", True, f"/output/PS4/Example Game [{TID}]"))
         self.assertEqual([f["kind"] for f in p["files"]], ["game", "patch"])
         self.assertEqual(self.get("/api/status")["plan_counts"], dict(build=1, copy=1, failed=0, done=0, skip=0, error=0))
+
+    def test_the_title_in_the_package_stays_visible_next_to_the_name_it_was_given(self):
+        p = self.entry()
+        self.assertEqual((p["title_in_package"], p["title_source"], p["name"]), ("\u7bc4\u4f8b\u904a\u6232", "file name", f"Example Game [{TID}]"))
+
+    def test_a_copy_in_this_run_is_listed_as_copied(self):
+        (self.state / "status.json").write_text(json.dumps(dict(updated=1, finished=True, results=[dict(title_id=TID, name=f"Example Game [{TID}]", status="copied", gib=0.5)])))
+        r = self.get("/api/status")["status"]["results"][0]
+        self.assertEqual((r["status"], r["title_id"]), ("copied", TID))
+        self.assertNotIn("summary", r)
 
     def test_the_folder_it_is_copied_to_has_a_host_path_when_known(self):
         with mock.patch.dict(os.environ, {"PS5PKG_HOST_OUTPUT": "/srv/games/ps5/pkg"}):

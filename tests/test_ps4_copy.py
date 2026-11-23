@@ -138,6 +138,97 @@ class Planning(Ps4Case):
         self.assertEqual(self.scan()[0], [])
 
 
+ASIAN = "\u7bc4\u4f8b\u904a\u6232"                               # a Traditional-Chinese TITLE
+KOREAN = "\uc608\uc2dc \uac8c\uc784"
+
+
+def asian_pkg(**extra):
+    """The real shape: TITLE in Chinese, TITLE_09 in Korean, no English title."""
+    return make_ps4_pkg(f"UP9000-{TID}_00-EXAMPLEGAME00000", ASIAN, "01.00", "gd", body=b"B" * 5000, extra={"TITLE_09": KOREAN, **extra})
+
+
+class Titles(Ps4Case):
+    """The PS5 side names games from the English title: so does the PS4 copy."""
+
+    def make(self, pkg, member=BASE_NAME, folder="Example-Game"):
+        top = self.downloads / folder
+        top.mkdir(parents=True, exist_ok=True)
+        for old in self.downloads.glob("*/*.part1.rar"):
+            old.unlink()
+        self.archive = top / ARCHIVE_NAME
+        make_zip(self.archive, {member: pkg})
+
+    def named(self, cfg=None):
+        e = self.entry(cfg)
+        return e["name"], [f["dest"] for f in e["files"] if f["kind"] == "game"][0], e
+
+    def test_an_asian_release_is_named_after_the_english_title_in_the_file_name(self):
+        self.make(asian_pkg())                                                      # member "Example Game-CUSA12345.v1.0[SiteTag].pkg"
+        folder, game, e = self.named()
+        self.assertEqual((folder, game), (f"Example Game [{TID}]", f"Example Game [{TID}] [v01.00].pkg"))
+        self.assertEqual((e["title"], e["title_in_package"], e["title_source"]), ("Example Game", ASIAN, "file name"))
+        self.assertTrue(e["dest_dir"].endswith(f"PS4/Example Game [{TID}]"))
+
+    def test_the_title_in_the_package_stays_visible_in_the_plan(self):
+        self.make(asian_pkg())
+        e = self.entry()
+        self.assertEqual(e["title_in_package"], ASIAN)
+        self.assertNotIn("\u7bc4", e["name"])
+
+    def test_an_english_title_in_the_package_wins_over_everything(self):
+        self.make(asian_pkg(TITLE_01="Real English Title"))
+        folder, game, e = self.named()
+        self.assertEqual((folder, game, e["title_source"]), (f"Real English Title [{TID}]", f"Real English Title [{TID}] [v01.00].pkg", "package (English)"))
+        self.assertEqual(e["title_in_package"], ASIAN)
+
+    def test_title_18_when_there_is_no_title_01(self):
+        self.make(asian_pkg(TITLE_18="British English Title"))
+        self.assertEqual(self.named()[0], f"British English Title [{TID}]")
+        self.make(asian_pkg(TITLE_18="British English Title", TITLE_01="American English Title"))
+        self.assertEqual(self.named()[0], f"American English Title [{TID}]")
+
+    def test_a_latin_script_title_is_kept_even_when_it_is_not_english(self):
+        self.make(make_ps4_pkg(f"UP9000-{TID}_00-EXAMPLEGAME00000", "\u00c9cho des \u00c2mes", "01.00", "gd", extra={"TITLE_02": "x"}))
+        folder, _, e = self.named()
+        self.assertEqual((folder, e["title_source"]), (f"\u00c9cho des \u00c2mes [{TID}]", "package"))
+
+    def test_without_a_title_id_next_to_a_title_in_the_file_name_the_source_folder_is_used(self):
+        self.make(asian_pkg(), member=f"{TID}/release.pkg")
+        folder, game, e = self.named()
+        self.assertEqual((folder, e["title_source"]), (f"Example Game [{TID}]", "folder name"))       # "Example-Game" -> "Example Game"
+
+    def test_the_package_title_is_the_last_resort(self):
+        self.make(asian_pkg(), member=f"{TID}/release.pkg", folder=KOREAN)           # a folder that is not Latin script either
+        folder, _, e = self.named()
+        self.assertEqual((folder, e["title_source"]), (f"{ASIAN} [{TID}]", "package"))
+
+    def test_the_folder_is_the_one_the_release_was_downloaded_into_however_deep_the_archive_is(self):
+        self.make(asian_pkg(), member=f"{TID}/release.pkg", folder="Example-Game/CD1")
+        folder, _, e = self.named()
+        self.assertEqual((folder, e["title_source"]), (f"Example Game [{TID}]", "folder name"))
+
+    def test_the_title_id_may_come_first_and_the_configured_junk_is_removed(self):
+        self.make(asian_pkg(), member=f"{TID}/{TID} Example Game v1.0 [SiteTag].pkg")
+        self.assertEqual(self.named()[0], f"Example Game [{TID}]")
+        self.make(asian_pkg(), member=f"{TID}/Example_Game SiteTag-{TID}.v1.0.pkg")
+        self.assertEqual(self.named()[0], f"Example Game [{TID}]")                          # junk removed, _ and - read as spaces
+        cfg = {**self.cfg, "junk_file_patterns": [], "junk_title_patterns": []}
+        self.assertEqual(self.named(cfg)[0], f"Example Game SiteTag [{TID}]")                # nothing is hard-coded
+
+    def test_the_file_name_wins_only_when_it_is_next_to_the_title_id_and_latin(self):
+        self.make(asian_pkg(), member=f"{TID}/{ASIAN}-{TID}.v1.0.pkg", folder="Fallback-Folder")
+        self.assertEqual(self.named()[0], f"Fallback Folder [{TID}]")                        # a Chinese file name is no English title either
+
+    def test_the_helpers(self):
+        for text, want in [("Example Game", True), ("\u00c9cho des \u00c2mes", True), ("1942", True), ("", True), (ASIAN, False), (KOREAN, False),
+                           ("Example \u7bc4\u4f8b\u904a\u6232 Game", True), ("\u7bc4\u4f8b\u904a\u6232 Ex", False)]:
+            with self.subTest(text):
+                self.assertEqual(E.mostly_latin(text), want)
+        self.assertEqual(E.ps4_title_from_name(f"{TID}/Example Game-{TID}.v1.0[SiteTag].pkg", TID), "Example Game")
+        self.assertEqual(E.ps4_title_from_name("whatever.pkg", TID), "")
+        self.assertEqual(E.ps4_title_from_name(f"{TID}.pkg", TID), "")
+
+
 class Modes(Ps4Case):
     def test_skip_mode_lists_the_title_as_skipped_and_plans_nothing(self):
         p = self.entry({**self.cfg, "ps4_mode": "skip"})
@@ -195,7 +286,7 @@ class Copying(Ps4Case):
     def test_the_packages_are_copied_byte_for_byte_into_the_title_folder(self):
         e, res, ledger, notes = self.run_copy()
         dest = self.output / "PS4" / f"Example Game [{TID}]"
-        self.assertEqual((res[0]["status"], res[0]["title_id"]), ("built", TID), res)
+        self.assertEqual((res[0]["status"], res[0]["title_id"]), ("copied", TID), res)
         self.assertEqual(sorted(p.name for p in dest.iterdir()), sorted([f"Example Game [{TID}] [v01.00].pkg", f"HP0177-{TID}_00-ZZZZZZZZZZZZZZZZ-A0101-V0100.pkg"]))
         self.assertEqual((dest / f"Example Game [{TID}] [v01.00].pkg").read_bytes(), BASE)             # no byte changed
         self.assertEqual((dest / f"HP0177-{TID}_00-ZZZZZZZZZZZZZZZZ-A0101-V0100.pkg").read_bytes(), PATCH)
@@ -206,7 +297,7 @@ class Copying(Ps4Case):
         self.make_archive(dlc_pkg=True)
         _, res, _, _ = self.run_copy()
         dest = self.output / "PS4" / f"Example Game [{TID}]"
-        self.assertEqual(res[0]["status"], "built", res)
+        self.assertEqual(res[0]["status"], "copied", res)
         self.assertEqual((dest / "Extra DLC.pkg").read_bytes(), DLC_PKG)
         self.assertFalse(list(dest.glob("*.zip")) or list(dest.glob("*.url")) or list(dest.glob("*.txt")))
 
@@ -217,7 +308,7 @@ class Copying(Ps4Case):
         with mock.patch.object(E, "notify", lambda *a: None):
             res = E.run_ps4(self.cfg, [e], lambda m: None, self.state / "ledger.json", {})
         dest = self.output / "PS4" / f"Example Game [{TID}]"
-        self.assertEqual(res[0]["status"], "built", res)
+        self.assertEqual(res[0]["status"], "copied", res)
         self.assertEqual((dest / "Extra DLC.pkg").read_bytes(), DLC_PKG)
 
     def test_the_title_is_done_afterwards_including_in_a_new_process(self):
@@ -281,6 +372,14 @@ class Copying(Ps4Case):
         self.assertEqual(len([n for n in names if "(replaced" in n]), 2)
         self.assertEqual((dest / f"Example Game [{TID}] [v01.00].pkg").read_bytes(), BASE)
 
+    def test_the_notification_says_copied_and_where(self):
+        os.environ["PS5PKG_HOST_OUTPUT"] = "/srv/games/ps5/pkg"
+        try:
+            e, res, ledger, notes = self.run_copy()
+        finally:
+            del os.environ["PS5PKG_HOST_OUTPUT"]
+        self.assertEqual(notes, [("PS4: copied", f"Example Game [{TID}]\nSaved in /srv/games/ps5/pkg/PS4/Example Game [{TID}]")])
+
     def test_the_stop_request_is_honoured_between_titles(self):
         e = self.entry()
         (self.state / "stop.request").write_text("x")
@@ -299,7 +398,8 @@ class WholeRun(Ps4Case):
         dest = self.output / "PS4" / f"Example Game [{TID}]"
         self.assertEqual((dest / f"Example Game [{TID}] [v01.00].pkg").read_bytes(), BASE)
         st = json.loads((self.state / "status.json").read_text())
-        self.assertEqual([(x["title_id"], x["status"]) for x in st["results"]], [(TID, "built")])
+        self.assertEqual([(x["title_id"], x["status"]) for x in st["results"]], [(TID, "copied")])
+        self.assertIn("=== summary: built 0, copied 1, failed 0, deferred 0", r.stdout)         # a copy is not an UltraPack build
         plan = json.loads((self.state / "plan.json").read_text())[0]
         self.assertEqual(plan["action"], "copy")                                                         # the plan made at the start of the run
         r2 = self.run_engine("run")                                                                      # a new process: nothing in memory

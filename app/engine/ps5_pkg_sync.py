@@ -32,6 +32,7 @@ import stat
 import subprocess
 import sys
 import threading
+import unicodedata
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
@@ -623,7 +624,7 @@ def _parse_listing(text, crcs):
     return out
 
 
-IDENT_VERSION = 2                    # bump to make every archive be identified again (the ident cache is versioned)
+IDENT_VERSION = 3                    # bump to make every archive be identified again (the ident cache is versioned)
 PS4_NESTED_MAX = 2 << 30            # a nested archive (DLC.zip) up to this size is opened while scanning to see its packages
 PS4_MAX_PKGS = 40
 ARCHIVE_EXT = (".zip", ".rar", ".7z")
@@ -661,7 +662,7 @@ def ps4_describe(cfg, archive, member, size, via=None):
     if head and head["ps4"]:
         sfo = head["sfo"]
         d.update(header=True, ps4=True, content_id=head["content_id"], title_id=head["title_id"], title=str(sfo.get("TITLE") or ""),
-                 version=ps5_ps4pkg.version_of(sfo), category=str(sfo.get("CATEGORY") or ""))
+                 title_en=ps5_ps4pkg.english_title(sfo), version=ps5_ps4pkg.version_of(sfo), category=str(sfo.get("CATEGORY") or ""))
         d["kind"] = ps5_ps4pkg.category_kind(sfo.get("CATEGORY")) if sfo else ps5_ps4pkg.kind_from_name(Path(member).name)
     elif head is not None:
         d.update(header=True, ps4=False)                 # a package of another kind (PS5), or not a package at all
@@ -735,7 +736,8 @@ def ident_ps4(cfg, path, paths):
     if not game:
         return None                                      # patches / DLC only: not a game to copy
     versions = [m["version"] for m in members if m.get("version")]
-    return dict(title=game.get("title") or "", title_id=tid, version=max(versions, key=vkey) if versions else "", fw="", packed="",
+    return dict(title=game.get("title") or "", title_en=game.get("title_en") or "", game_path=game["path"],
+                title_id=tid, version=max(versions, key=vkey) if versions else "", fw="", packed="",
                 size=sum(m["size"] for m in members if m["kind"] != "nested-archive"), kind="archive-ps4", ps4=True,
                 members=members, notes=notes)
 
@@ -884,11 +886,73 @@ def ps4_clean_name(name):
     return t[:150] + ext
 
 
+def mostly_latin(text):
+    """True when most of the letters are Latin script (accents included): digits and punctuation don't count."""
+    letters = [c for c in text if c.isalpha()]
+    return not letters or sum(unicodedata.name(c, "").startswith("LATIN") for c in letters) * 2 >= len(letters)
+
+
+def _plain_title(text):
+    """A title taken from a file or folder name: junk patterns removed, - and _ read as spaces."""
+    for rx in (JUNK_TITLE, JUNK_FILE):
+        if rx:
+            text = rx.sub(" ", text)
+    text = re.sub(r"\[[^\]]*\]", " ", text)                      # a [site tag] left over
+    return re.sub(r"\s+", " ", re.sub(r"[-_]+", " ", text)).strip(" .")
+
+
+def ps4_title_from_name(member_path, tid):
+    """The English title a PS4 package's file name carries next to the title ID ("<Title>-CUSA12345.v1.0[tag].pkg",
+    or "CUSA12345 <Title> v1.0.pkg"); "" when the name has no ID or nothing sits next to it."""
+    stem = Path(member_path).stem
+    m = re.search(re.escape(tid), stem) or re.search(r"CUSA\d{5}", stem)
+    if not m:
+        return ""
+    before, after = stem[:m.start()], stem[m.end():]
+    if not before.strip(" ._-[]()"):
+        after = re.sub(r"^_\d{2}", "", after)                        # "CUSA12345_00" content ID counter
+        before = re.sub(r"[-_. ]v?\d+(?:\.\d+)+\b.*$", "", after)       # the title after the ID, up to its version
+    return _plain_title(before)
+
+
+def ps4_source_folder(cfg, source):
+    """The name of the folder a release was downloaded into: the first folder below the library or downloads folder
+    that holds the archive ("" when it sits directly in one)."""
+    src = Path(source)
+    for key in ("downloads", "library"):
+        try:
+            parts = src.relative_to(cfg[key]).parts
+        except ValueError:
+            continue
+        return parts[0] if len(parts) > 1 else ""
+    return src.parent.name
+
+
+def ps4_pick_title(cfg, pick, game):
+    """(title, where it came from, the title the package itself carries): the PS5 side names games from the English
+    title, so: the package's English title (TITLE_01, then TITLE_18); else its default TITLE when that is mostly
+    Latin script; else the English title in the base game's file name; else the source folder's name; else TITLE."""
+    default = (game or {}).get("title") or pick.get("title") or ""
+    tid = pick["title_id"]
+    if (game or {}).get("title_en"):
+        return game["title_en"], "package (English)", default
+    if default and mostly_latin(default):
+        return default, "package", default
+    from_name = ps4_title_from_name(pick.get("game_path") or (game or {}).get("path") or "", tid)
+    if from_name and mostly_latin(from_name):
+        return from_name, "file name", default
+    folder = _plain_title(ps4_source_folder(cfg, pick.get("source") or ""))
+    if folder and mostly_latin(folder):
+        return folder, "folder name", default
+    return default or tid, "package", default
+
+
 def ps4_plan(cfg, pick):
     """The plan fields of a PS4 title: its folder under <output>/PS4 and what is copied under which name."""
     tid, members = pick["title_id"], pick.get("members") or []
     game = next((m for m in members if m["kind"] == "game"), None)
-    title = clean_title((game or {}).get("title") or pick.get("title") or tid)
+    chosen, source, in_package = ps4_pick_title(cfg, pick, game)
+    title = clean_title(chosen)
     folder = f"{title} [{tid}]"
     used, files = set(), []
     for m in members:
@@ -906,7 +970,8 @@ def ps4_plan(cfg, pick):
         used.add(name.lower())
         files.append(dict(name=name, size=m["size"], kind=m["kind"], path=m["path"], via=m.get("via"), version=m.get("version", ""),
                           content_id=m.get("content_id", ""), dest=name))
-    return dict(ps4=True, name=folder, dest_dir=str(Path(cfg["output"]) / "PS4" / folder), files=files, notes=list(pick.get("notes") or []))
+    return dict(ps4=True, name=folder, title=title, title_source=source, title_in_package=in_package,
+                dest_dir=str(Path(cfg["output"]) / "PS4" / folder), files=files, notes=list(pick.get("notes") or []))
 
 
 def choose(cfg, cands, ledger, failures=None):
@@ -1228,7 +1293,7 @@ def notification_text(cfg, name, status, why=None, output=None):
     folder it is in, on the host when that is known (never a container path nobody could find)."""
     mapping = host_mapping(cfg)
     text = ps5_hostpaths.display_text(f"{name}" + (f": {why}" if why else ""), mapping)
-    if status == "built" and output:
+    if status in ("built", "copied") and output:
         folder = ps5_hostpaths.display_path(str(Path(output).parent), mapping)
         if folder:
             text += f"\nSaved in {folder}"
@@ -1665,13 +1730,13 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger):
             ledger[tid] = dict(version=job["version"], output=r["output"], source=job["source"], built=time.strftime("%Y-%m-%d %H:%M"),
                                bytes=r["bytes"], ps4=True, kind="ps4", files=r["files"], validate=r["validate"])
             ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
-            res.update(status="built", output=str(Path(r["output"]) / r["files"][0]) if r["files"] else r["output"],
+            res.update(status="copied", output=str(Path(r["output"]) / r["files"][0]) if r["files"] else r["output"],
                        gib=round(r["bytes"] / 2**30, 2), validate=r["validate"])
             try:
                 failure_store().clear(tid)
             except Exception:
                 pass
-            notify(cfg, "PS5 pkg: built", notification_text(cfg, job["name"], "built", None, res["output"]))
+            notify(cfg, "PS4: copied", notification_text(cfg, job["name"], "copied", None, res["output"]))
         except Exception as ex:
             code, phase, data = ps5_failures.classify(ex)
             if code == "output_no_space":                    # not a failure: it is copied when there is room
@@ -1901,7 +1966,7 @@ def main():
             log(f"=== PS4: {len(copies)} title(s) to copy as they are")
         results = run_queue(cfg, todo, log, ledger_p, ledger, preset=run_ps4(cfg, copies, log, ledger_p, ledger))
         log("=== summary: " + ", ".join(f"{s} {sum(1 for r in results if r['status'] == s)}"
-                                        for s in ("built", "failed", "deferred")))
+                                        for s in ("built", "copied", "failed", "deferred")))
     finally:
         if a.mode == "run" and lock.exists():
             lock.unlink()

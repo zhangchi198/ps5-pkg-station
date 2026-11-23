@@ -59,6 +59,21 @@ class Header(unittest.TestCase):
         self.assertEqual(P.parse_header(bytes(buf))["title_id"], None)
 
 
+class EnglishTitle(unittest.TestCase):
+    def test_title_01_then_title_18(self):
+        self.assertEqual(P.english_title({"TITLE": "\u7bc4\u4f8b", "TITLE_01": "Example Game", "TITLE_18": "Example Game UK"}), "Example Game")
+        self.assertEqual(P.english_title({"TITLE": "\u7bc4\u4f8b", "TITLE_01": "  ", "TITLE_18": "Example Game UK"}), "Example Game UK")
+
+    def test_an_asian_release_has_none(self):
+        self.assertEqual(P.english_title({"TITLE": "\u7bc4\u4f8b\u904a\u6232", "TITLE_09": "\uc608\uc2dc \uac8c\uc784"}), "")
+        self.assertEqual(P.english_title({}), "")
+
+    def test_it_is_read_from_a_real_header(self):
+        pkg = make_ps4_pkg(CID, "\u7bc4\u4f8b\u904a\u6232", "01.00", "gd", extra={"TITLE_09": "\uc608\uc2dc \uac8c\uc784", "TITLE_01": "Example Game"})
+        sfo = P.parse_header(pkg)["sfo"]
+        self.assertEqual((sfo["TITLE"], sfo["TITLE_09"], P.english_title(sfo)), ("\u7bc4\u4f8b\u904a\u6232", "\uc608\uc2dc \uac8c\uc784", "Example Game"))
+
+
 class Classify(unittest.TestCase):
     def test_by_category(self):
         self.assertEqual([P.category_kind(c) for c in ("gd", "gda", "gdc", "gp", "ac", "GP", "", None, "xx")],
