@@ -19,7 +19,7 @@ button.btn{border:1px solid var(--line);background:var(--card);color:var(--fg);p
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button:disabled{opacity:.5;cursor:default}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:12px}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
-.t-build{color:var(--acc)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred,.t-waiting{color:var(--warn)}.att{padding:10px 0;border-top:1px solid var(--line)}.att:first-of-type{border-top:0}.att pre{max-height:16em;margin:6px 0}.btnrow{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.btn.sm{padding:2px 9px;font-size:12px}
+.t-build,.t-copy{color:var(--acc)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred,.t-waiting{color:var(--warn)}.att{padding:10px 0;border-top:1px solid var(--line)}.att:first-of-type{border-top:0}.att pre{max-height:16em;margin:6px 0}.btnrow{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.btn.sm{padding:2px 9px;font-size:12px}
 #toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;max-width:90vw;z-index:9}
 .bar{height:8px;background:var(--bar);border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
 .muted{color:var(--muted)}.small{font-size:12px}pre{white-space:pre-wrap;word-break:break-all;font:12px/1.4 ui-monospace,Menlo,monospace;max-height:70vh;overflow:auto;margin:0}
@@ -65,7 +65,7 @@ a{color:var(--acc)}
 <section id="lib">
   <div class="card"><div class="row"><b id="libSum"></b><span class="muted small" id="libTime"></span>
     <input id="libFilter" placeholder="Filter…" style="max-width:220px;margin-left:auto">
-    <select id="libAct"><option value="">All</option><option>build</option><option>failed</option><option>done</option><option>skip</option><option>error</option></select>
+    <select id="libAct"><option value="">All</option><option>build</option><option>copy</option><option>failed</option><option>done</option><option>skip</option><option>error</option></select>
   </div></div>
   <div class="card"><table><thead><tr><th>Game</th><th>Version</th><th>Source</th><th>Status</th></tr></thead><tbody id="libRows"></tbody></table></div>
 </section>
@@ -165,6 +165,12 @@ document.addEventListener("click",async e=>{const b=e.target.closest("[data-fa]"
       :await api(`/api/failures/${tid}/action`,{method:"POST",body:JSON.stringify({action:b.dataset.act})});
     toast(r?.message||"Done")}catch(err){toast(err.message,1)}
   b.disabled=false;loadFailures();if(tab==="lib")loadLib();if(tab==="hist")loadHist();refresh().catch(()=>{})});
+// ---- PS4 titles: their packages are copied as they are (see the plan's `files`)
+function ps4Files(p){const f=p.files||[],dest=p.dest_dir_host||p.dest_dir;
+  return `<details><summary class="small">PS4 packages (${f.length}) → ${esc(p.dest_dir_host?"your NAS":"the output folder")}</summary>
+   <div class="small">Copied to ${pathHtml(p.dest_dir_host,p.dest_dir)}</div>
+   <table class="small"><tbody>${f.map(x=>`<tr><td>${esc(x.name)}${x.via?` <span class="muted">(from ${esc(x.via.split("/").pop())})</span>`:""}</td><td>${esc(x.kind)}</td><td>${x.size?gib(x.size):""}</td></tr>`).join("")}</tbody></table>
+   ${(p.notes||[]).map(n=>`<div class="small muted">${esc(n)}</div>`).join("")}</details>`}
 function failBox(s){const ev=[["scan",s.scan],["run",s.run]].filter(([k,x])=>x&&x.finished).sort((a,b)=>b[1].finished-a[1].finished)[0];
   $("#failBox").innerHTML=ev&&ev[1].error&&!s.engine_running&&!s.scan.running?`<div class="banner bad"><b>The ${ev[0]==="scan"?"scan":"run"} failed.</b> ${esc(ev[1].error)}${ev[1].log_tail?.length?`<pre class="small">${esc((ev[1].log_tail_host||ev[1].log_tail).join("\n"))}</pre>`:""}<a href="#" data-log="${esc(ev[1].log)}">Open the log</a></div>`:""}
 let cfgRev,cfgLoadedAt=0,setDirty=false,bannerHtml="";   // cfgRev: version of config.json the Settings form shows
@@ -190,7 +196,7 @@ async function refresh(){
   const fin=[s.scan.finished,s.run?.finished].join("|");if(fin!==lastFin){const first=lastFin===undefined;lastFin=fin;if(!first)loadSetup()}   // a scan changes what the biggest game is
   $("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
   const d=s.disks;renderFolders(s);
-  $("#kpis").innerHTML=[["To build",s.plan_counts.build],["Built",s.plan_counts.done],["Work drive free",gib(d.temp?.free)],["Output free",gib(d.output?.free)]].map(([k,v])=>`<div class="kpi"><b>${v??"—"}</b><span>${k}</span></div>`).join("")+`<div class="kpi"><b>${s.plan_time?ago(s.plan_time):"never"}</b><span>Last scan</span></div>`;
+  $("#kpis").innerHTML=[["To build",s.plan_counts.build],...(s.plan_counts.copy?[["PS4 to copy",s.plan_counts.copy]]:[]),["Built",s.plan_counts.done],["Work drive free",gib(d.temp?.free)],["Output free",gib(d.output?.free)]].map(([k,v])=>`<div class="kpi"><b>${v??"—"}</b><span>${k}</span></div>`).join("")+`<div class="kpi"><b>${s.plan_time?ago(s.plan_time):"never"}</b><span>Last scan</span></div>`;
   const b=s.engine_running?(st.builds||[]):[];
   $("#builds").innerHTML=b.length?b.map(x=>`<div style="margin:8px 0"><div class="row"><b>${esc(x.name)}</b><span class="muted small">stage ${x.stage}/5 ${esc(x.stage_text)} · ${esc(x.part)} ${x.pct}% · ${ago(x.since)}</span></div><div class="bar"><i style="width:${((x.stage-1)*20+x.pct/5)}%"></i></div></div>`).join(""):"Nothing building.";
   $("#preparing").innerHTML=(s.engine_running&&st.preparing?.length)?st.preparing.map(x=>`<div>${esc(x.name)} <span class="muted small">copying &amp; verifying · ${ago(x.since)}</span></div>`).join(""):"—";
@@ -223,7 +229,7 @@ async function loadLib(){
      <div class="row"><button class="btn" onclick="saveOv(this)">Save options</button>${p.action==="build"?`<button class="btn" onclick="buildOne('${p.title_id}')">Build only this</button>`:""}<span class="small muted"></span></div></div></details></td>
     <td>${esc(p.version)}</td><td class="small">${esc(p.kind||"")}<div>${pathHtml(p.source_host,p.source)}</div></td>
     <td>${p.failure?failTag(p.failure.state==="waiting"||p.action==="failed"?p.failure:{state:"failed"}):`<span class="tag t-${p.action}">${p.action}</span>`}${p.failure&&p.failure.state==="failed"&&p.action==="build"?` <span class="tag t-build">will retry</span>`:""}
-     <div class="small muted">${esc(p.why_host||p.why)}</div>${p.failure?`${failureButtons(p.failure,false)}<details><summary class="small">Why, and the log</summary>${failureBody(p.failure)}</details>`:""}</td></tr>`}).join("");
+     <div class="small muted">${esc(p.why_host||p.why)}</div>${p.ps4&&p.files?ps4Files(p):""}${p.failure?`${failureButtons(p.failure,false)}<details><summary class="small">Why, and the log</summary>${failureBody(p.failure)}</details>`:""}</td></tr>`}).join("");
   $("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
 }
 $("#libFilter").oninput=loadLib;$("#libAct").onchange=loadLib;
@@ -233,7 +239,7 @@ async function saveOv(btn){const box=btn.closest(".ovr"),o={};box.querySelectorA
     const h=box.querySelector("[data-patchhint]");if(h)h.innerHTML=patchHint(r,box.dataset.tid,libCfgHost)}catch(e){m.textContent=e.message;m.className="small err"}}
 async function buildOne(t){try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
 function alertBox(m){say(m,1)}
-function builtRow(t,v){return `<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">${v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${(v.seconds/60).toFixed(1)} min`:`prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`}
+function builtRow(t,v){return `<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.ps4?` <span class="tag">PS4</span>${Array.isArray(v.files)?` <span class="muted small">${v.files.length} package${v.files.length===1?"":"s"}</span>`:""}`:""}${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">${v.ps4?"copied as they are":v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${(v.seconds/60).toFixed(1)} min`:`prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`}
 function failedRow(f){return `<tr><td><b>${esc(f.name||f.title||f.title_id)}</b> ${failTag(f)}<div class="small">${esc(f.summary)}</div><div class="small muted">${esc(f.next||"")}</div>${failureButtons(f,false)}<details><summary class="small">Details and the log of this attempt</summary>${failureBody(f)}</details></td><td class="small">${esc(f.at_text||"")}</td><td>—</td><td class="small">attempt ${f.attempts||1} · ${esc(f.phase||"")}</td><td class="small">${esc(f.code||"")}</td></tr>`}
 async function loadHist(){const [l,fl]=await Promise.all([api("/api/ledger"),api("/api/failures")]);   // ledger entries from older versions have other field names and gaps
   const flt=$("#histFilter").value;
@@ -241,7 +247,8 @@ async function loadHist(){const [l,fl]=await Promise.all([api("/api/ledger"),api
     ...(fl||[]).map(f=>({k:"failed",f,when:String(f.at_text||"")}))].filter(r=>!flt||r.k===flt).sort((a,b)=>b.when.localeCompare(a.when));
   $("#histRows").innerHTML=!rows.length?`<tr><td colspan="5"><b>${flt==="failed"?"No failed attempts.":"Nothing built yet."}</b> <span class="muted">Finished packages are listed here, with their checks, once a run has built one; games that failed are listed with the reason.</span></td></tr>`:rows.map(r=>r.k==="failed"?failedRow(r.f):builtRow(r.t,r.v)).join("")}
 $("#histFilter").onchange=loadHist;
-const FIELDS={fConv:[["compression_level","Kraken level (1-9; 4 = fast, 7 = smaller)","n"],["cpu_count","Workers per build","n"],["max_compress","Builds compressing at once","n"],["max_builds","Builds alive at once","n"],["nice","CPU priority (nice 0-19)","n"],["ssd_reserve_gb","Keep free on work drive (GB)","n"],["build_on_ssd","Write package on work drive, then copy","b"],["console_fw","Console firmware (picks original vs backport)"],["skip_download_prefixes","Skip download folders starting with (comma separated)","l"],["junk_file_patterns","Delete files whose name matches (regex, comma separated)","l"],["junk_title_patterns","Cut from game titles (regex, comma separated)","l"]],
+const OPTS={ps4_mode:{copy:"copy their ready-made packages as they are (no conversion)",skip:"skip them (listed as skipped)"}};
+const FIELDS={fConv:[["compression_level","Kraken level (1-9; 4 = fast, 7 = smaller)","n"],["cpu_count","Workers per build","n"],["max_compress","Builds compressing at once","n"],["max_builds","Builds alive at once","n"],["nice","CPU priority (nice 0-19)","n"],["ssd_reserve_gb","Keep free on work drive (GB)","n"],["build_on_ssd","Write package on work drive, then copy","b"],["console_fw","Console firmware (picks original vs backport)"],["skip_download_prefixes","Skip download folders starting with (comma separated)","l"],["junk_file_patterns","Delete files whose name matches (regex, comma separated)","l"],["junk_title_patterns","Cut from game titles (regex, comma separated)","l"],["ps4_mode","PS4 titles (CUSA...)","m"]],
  fSched:[["schedule.enabled","Run automatically","b"],["schedule.times","At (HH:MM, comma separated)","l"],["notify_url","Notification URL (ntfy topic, optional)"]]};
 let cfg={};
 $("#set").addEventListener("input",()=>{setDirty=true});$("#bReload").onclick=()=>loadSet("Reloaded from the file.");
@@ -258,7 +265,7 @@ async function loadSet(note){loadStorage();cfgLoadedAt=performance.now();cfg=awa
   if(typeof note==="string"){$("#setMsg").textContent=note;$("#setMsg").className="small muted"}
   foldersForm();
   for(const [box,fs] of Object.entries(FIELDS)){$("#"+box).innerHTML=fs.map(([k,l,t])=>{const v=k.split(".").reduce((o,x)=>o?.[x],cfg);
-  return `<label class="f"><span>${esc(l)}</span>${t==="b"?`<input type="checkbox" data-c="${k}" data-t="b" ${v?"checked":""}>`:`<input type="${t==="n"?"number":"text"}" data-c="${k}" data-t="${t||"s"}" value="${esc(Array.isArray(v)?v.join(", "):v)}">`}</label>`}).join("")}}
+  return `<label class="f"><span>${esc(l)}</span>${t==="m"?`<select data-c="${k}" data-t="s">${Object.entries(OPTS[k]).map(([o,x])=>`<option value="${o}" ${v===o?"selected":""}>${esc(x)}</option>`).join("")}</select>`:t==="b"?`<input type="checkbox" data-c="${k}" data-t="b" ${v?"checked":""}>`:`<input type="${t==="n"?"number":"text"}" data-c="${k}" data-t="${t||"s"}" value="${esc(Array.isArray(v)?v.join(", "):v)}">`}</label>`}).join("")}}
 $("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]").forEach(e=>{let v=e.dataset.t==="b"?e.checked:e.dataset.t==="n"?Number(e.value):e.dataset.t==="l"?e.value.split(",").map(x=>x.trim()).filter(Boolean):e.value.trim();
   const [a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});
   try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved to "+(storage?(storage.settings.host||storage.settings.path):"the settings file");$("#setMsg").className="small muted";loadSet();loadSetup()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};

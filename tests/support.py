@@ -150,3 +150,84 @@ class ServerCase(StateCase):
         r = self.client.get(path)
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
+
+
+# ------------------------------------------------------------------ PS4 packages and a stand-in for 7-Zip
+
+def make_sfo(**fields):
+    """A PARAM.SFO with the given string fields (keys sorted, as the real ones are)."""
+    import struct
+    keys = sorted(fields)
+    ktab, dtab, index = b"", b"", b""
+    for k in keys:
+        v = str(fields[k]).encode("utf-8") + b"\0"
+        index += struct.pack("<HHIII", len(ktab), 0x0204, len(v), len(v), len(dtab))
+        ktab += k.encode() + b"\0"
+        dtab += v
+    kstart = 0x14 + len(index)
+    return b"\0PSF" + struct.pack("<IIII", 0x101, kstart, kstart + len(ktab), len(keys)) + index + ktab + dtab
+
+
+def make_ps4_pkg(content_id, title, app_ver, category, *, body=b"x" * 4096, with_sfo=True):
+    """A small package that parses like a PS4 one: the magic, the content ID, an entry table with PARAM.SFO."""
+    import struct
+    buf = bytearray(0x4000)
+    buf[0:4] = b"\x7fCNT"
+    struct.pack_into(">I", buf, 0x10, 1)
+    struct.pack_into(">I", buf, 0x18, 0x2000)
+    buf[0x40:0x40 + len(content_id)] = content_id.encode()
+    struct.pack_into(">I", buf, 0x74, 0x1A)
+    import re
+    tid = (re.search(r"CUSA\d{5}", content_id) or ["CUSA00000"])[0]
+    sfo = make_sfo(TITLE=title, TITLE_ID=tid, CONTENT_ID=content_id, CATEGORY=category, APP_VER=app_ver, VERSION=app_ver) if with_sfo else b""
+    struct.pack_into(">IIIIII", buf, 0x2000, 0x1000, 0, 0, 0, 0x3000, len(sfo))
+    buf[0x3000:0x3000 + len(sfo)] = sfo
+    return bytes(buf) + body
+
+
+FAKE_7ZZ = '''#!{python}
+"""A stand-in for 7zz that understands the few commands the engine uses, on zip files of any name:
+l -slt -ba, e -so ARCHIVE MEMBER, x -o DIR ARCHIVE MEMBER (a CRC error or a missing member is a failure)."""
+import os, sys, zipfile
+args = sys.argv[1:]
+cmd = args[0]
+rest = [a for a in args[1:] if not a.startswith("-")]
+out = next((a[2:] for a in args if a.startswith("-o")), None)
+try:
+    z = zipfile.ZipFile(rest[0])
+    if cmd == "l":
+        for i in z.infolist():
+            sys.stdout.write("Path = %s\\nFolder = %s\\nSize = %d\\nCRC = %08X\\n\\n" % (i.filename.rstrip("/"), "+" if i.is_dir() else "-", i.file_size, i.CRC))
+    elif cmd == "e":
+        sys.stdout.buffer.write(z.read(rest[1]))
+    elif cmd == "x":
+        for m in rest[1:]:
+            if m not in z.namelist():
+                sys.stderr.write("WARNING: No more files: %s\\n" % m)
+                sys.exit(1)
+            z.extract(m, out)
+    else:
+        sys.exit(7)
+except BrokenPipeError:
+    pass
+except zipfile.BadZipFile as ex:
+    sys.stderr.write("ERROR: CRC Failed : %s\\n" % ex)
+    sys.exit(2)
+'''
+
+
+def install_fake_7zz(env):
+    """Replace the empty 7zz of make_env() with the stand-in."""
+    p = Path(env["ultrapack_src"]) / "backend" / "native" / "7zz"
+    p.write_text(FAKE_7ZZ.format(python=sys.executable))
+    p.chmod(0o755)
+    return p
+
+
+def make_zip(path, members, *, compression=0):
+    """A zip (any file name) with {name: bytes} members, stored uncompressed so a byte can be flipped later."""
+    import zipfile
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED if not compression else zipfile.ZIP_DEFLATED) as z:
+        for name, data in members.items():
+            z.writestr(name, data)
+    return Path(path)

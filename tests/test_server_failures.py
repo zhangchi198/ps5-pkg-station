@@ -151,7 +151,7 @@ class LibraryState(FailureCase):
         self.assertIn("failed on", p["why"])
         self.assertIn("sce_sys/param.json", p["why"])
         self.assertEqual((p["failure"]["code"], p["failure"]["will_retry"]), ("crc_mismatch", False))
-        self.assertEqual(self.get("/api/status")["plan_counts"], dict(build=0, failed=1, done=0, skip=0, error=0))
+        self.assertEqual(self.get("/api/status")["plan_counts"], dict(build=0, copy=0, failed=1, done=0, skip=0, error=0))
 
     def test_eligible_again_when_the_override_or_the_source_changes(self):
         self.record()

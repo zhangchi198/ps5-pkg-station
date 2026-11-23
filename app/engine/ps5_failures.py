@@ -232,6 +232,9 @@ def explain(rec):
     elif code == "no_space":
         summary = (f"Needs about {_gib(d.get('need'))} on the work drive; {_gib(d.get('usable'))} usable. "
                    f"Will be retried automatically.")
+    elif code == "output_no_space":
+        summary = (f"Needs about {_gib(d.get('need'))} in the output folder; {_gib(d.get('free'))} free. "
+                   f"Will be retried automatically.")
     elif code == "ultrapack_failed":
         stage = d.get("stage_text")
         summary = f"UltraPack stopped with an error{f' during {stage}' if stage else ''}."

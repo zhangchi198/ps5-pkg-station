@@ -47,6 +47,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import ps5_ampr_audit as A  # noqa: E402  (read-only exFAT/PFS/PFSC/UFS2 readers)
 import ps5_failures  # noqa: E402  (what failed, in words, and whether another try can help)
+import ps5_ps4pkg  # noqa: E402  (PS4 package headers: name and classify packages by what they say)
 import ps5_hostpaths  # noqa: E402  (where the container's folders are on the host: validated here, shown by the server)
 import ps5_setup  # noqa: E402  (first-run setup checks, shared with the web server)
 
@@ -78,6 +79,7 @@ DEFAULT_CFG = {
     # title_id -> {"source": exact path (optional), "patch": dir of loose files to overlay}
     "overrides": {},
     "host_paths": {},              # folder -> where it is on the host, for display only (see ps5_hostpaths)
+    "ps4_mode": "copy",            # PS4 titles (CUSA...): "copy" their ready-made packages as they are, or "skip" them
 }
 SEVENZ = ps5_setup.SEVENZ
 JUNK_FILE = JUNK_TITLE = None   # compiled from cfg junk_file_patterns / junk_title_patterns by load_cfg()
@@ -107,8 +109,9 @@ SETTINGS = {  # key: (type, min, max) - everything the Settings page may change
     "max_compress": (int, 1, 4), "max_builds": (int, 1, 6), "ssd_reserve_gb": (int, 0, 10000),
     "build_on_ssd": (bool,), "console_fw": (str,), "notify_url": (str,),
     "skip_download_prefixes": (list,), "junk_file_patterns": (list,), "junk_title_patterns": (list,),
-    "schedule": (dict,), "host_paths": (dict,),
+    "schedule": (dict,), "host_paths": (dict,), "ps4_mode": (str,),
 }
+PS4_MODES = ("copy", "skip")
 FILE_ONLY = {"ultrapack_src": (str,), "python": (str,)}   # valid in the file, not on the Settings page
 EXIT_NOT_MOUNTED = 2        # exit codes of main(); the web server explains them to the user
 EXIT_LOCKED = 3
@@ -179,6 +182,8 @@ def validate_setting(key, v):
                     re.compile(f"(?:{x})")
                 except re.error as ex:
                     raise ValueError(f"{key}: bad pattern {x!r}: {ex}")
+    if key == "ps4_mode" and v not in PS4_MODES:
+        raise ValueError(f"ps4_mode must be {' or '.join(PS4_MODES)}")
     if key == "host_paths":
         v = ps5_hostpaths.validate_setting(v)
     if key == "schedule":
@@ -553,6 +558,12 @@ def ident_image_or_folder(path):
         files = {k[len(root):].lower(): e for k, e in uw.fs.files.items() if k.startswith(root)}
         pj = files.get("sce_sys/param.json")
         if not pj:
+            sfo = files.get("sce_sys/param.sfo")           # a PS4 game folder: named, so Library can say it is not handled
+            if sfo:
+                p = ps5_ps4pkg.parse_sfo(uw.fs.read(sfo, 0, min(sfo.size, 1 << 20)))
+                if str(p.get("TITLE_ID", "")).startswith("CUSA"):
+                    return dict(title=str(p.get("TITLE") or ""), title_id=p["TITLE_ID"], version=ps5_ps4pkg.version_of(p), fw="",
+                                packed="", size=sum(e.size for e in files.values()), kind="ps4-folder", ps4=True)
             raise ValueError("no sce_sys/param.json")
         d = parse_param(uw.fs.read(pj, 0, pj.size))
         d["packed"] = ("LZ4" if "ampr_assets.index" in files else "") + ("Zstd" if "ampr_zstd.index" in files else "")
@@ -612,17 +623,137 @@ def _parse_listing(text, crcs):
     return out
 
 
+IDENT_VERSION = 2                    # bump to make every archive be identified again (the ident cache is versioned)
+PS4_NESTED_MAX = 2 << 30            # a nested archive (DLC.zip) up to this size is opened while scanning to see its packages
+PS4_MAX_PKGS = 40
+ARCHIVE_EXT = (".zip", ".rar", ".7z")
+
+
+def seven_env():
+    return dict(os.environ, LC_ALL="C.UTF-8")           # names with accents or kana in the archive and on the command line
+
+
+def seven_head(cfg, archive, member, nbytes=ps5_ps4pkg.HEAD_BYTES, timeout=180):
+    """The first bytes of an archive member: 7-Zip streams it, we stop reading once we have them and stop 7-Zip."""
+    exe = str(Path(cfg["ultrapack_src"]) / SEVENZ)
+    proc = subprocess.Popen([exe, "e", "-so", "-p-", archive, member], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            stdin=subprocess.DEVNULL, env=seven_env())
+    timer = threading.Timer(timeout, proc.kill)
+    timer.start()
+    try:
+        return proc.stdout.read(nbytes)
+    finally:
+        timer.cancel()
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
+def ps4_describe(cfg, archive, member, size, via=None):
+    """One .pkg of a PS4 set: {path, size, via, kind, title, version, content_id, header} from its own header (the
+    file name only when the header can't be read)."""
+    head = None
+    try:
+        head = ps5_ps4pkg.parse_header(seven_head(cfg, archive, member))
+    except OSError:
+        pass
+    d = dict(path=member, size=size, via=via, kind="other", title="", version="", content_id="", header=False, ps4=None)
+    if head and head["ps4"]:
+        sfo = head["sfo"]
+        d.update(header=True, ps4=True, content_id=head["content_id"], title_id=head["title_id"], title=str(sfo.get("TITLE") or ""),
+                 version=ps5_ps4pkg.version_of(sfo), category=str(sfo.get("CATEGORY") or ""))
+        d["kind"] = ps5_ps4pkg.category_kind(sfo.get("CATEGORY")) if sfo else ps5_ps4pkg.kind_from_name(Path(member).name)
+    elif head is not None:
+        d.update(header=True, ps4=False)                 # a package of another kind (PS5), or not a package at all
+    else:
+        d["kind"] = ps5_ps4pkg.kind_from_name(Path(member).name)
+    return d
+
+
+def ps4_open_nested(cfg, archive, member, workdir):
+    """Extract a nested archive (DLC.zip) from `archive` into `workdir` and list it: (path of the nested archive on
+    disk, {member: size}, "" or why it could not be opened)."""
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run([str(Path(cfg["ultrapack_src"]) / SEVENZ), "x", "-y", "-bso0", "-bsp0", f"-o{workdir}", "-p-", archive, member],
+                       capture_output=True, stdin=subprocess.DEVNULL, env=seven_env())
+    nested = workdir / member
+    if r.returncode != 0 or not nested.is_file():
+        return None, {}, f"extracting {Path(member).name} failed ({r.returncode})"
+    ls = subprocess.run([str(Path(cfg["ultrapack_src"]) / SEVENZ), "l", "-slt", "-ba", "-p-", str(nested)], capture_output=True,
+                        stdin=subprocess.DEVNULL, env=seven_env())
+    if ls.returncode != 0:
+        return None, {}, f"{Path(member).name} can't be read as an archive"
+    return nested, _parse_listing(ls.stdout.decode("utf-8", "replace"), None), ""
+
+
+def ident_ps4(cfg, path, paths):
+    """A PS4 title in an archive that holds ready-made packages: a candidate (kind archive-ps4) listing its .pkg
+    members, each named and classified by its own header (game / patch / dlc), or None when this isn't a PS4 set.
+    Packages inside a nested archive (DLC.zip) are listed too; one with no .pkg in it is noted, copying nothing."""
+    pkgs = sorted(p for p in paths if p.lower().endswith(".pkg"))[:PS4_MAX_PKGS]
+    if not pkgs:
+        return None
+    hint = re.search(r"CUSA\d{5}", path) or any(re.search(r"CUSA\d{5}", p) for p in paths)
+    members = [ps4_describe(cfg, path, p, paths[p]) for p in pkgs]
+    if not (any(m["ps4"] for m in members) or (hint and any(m["ps4"] is None for m in members))):
+        return None                                      # not a PS4 set (PS5 packages, say)
+    members = [m for m in members if m["ps4"] is not False]
+    notes = []
+    for nested in [p for p in paths if p.lower().endswith(ARCHIVE_EXT)][:10]:
+        if paths[nested] > PS4_NESTED_MAX:
+            members.append(dict(path=nested, size=paths[nested], via=None, kind="nested-archive", inspected=False, ps4=None))
+            notes.append(f"{Path(nested).name} ({paths[nested] / 2**30:.1f} GiB) is opened when the packages are copied")
+            continue
+        tmp = Path(cfg["temp"]) / f"ps4-inspect-{os.getpid()}-{hashlib.sha1(nested.encode()).hexdigest()[:8]}"
+        try:
+            inner_path, inner, why = ps4_open_nested(cfg, path, nested, tmp)
+            if inner_path is None:
+                notes.append(f"{Path(nested).name}: {why}; nothing is copied from it")
+                continue
+            ips = sorted(q for q in inner if q.lower().endswith(".pkg"))[:PS4_MAX_PKGS]
+            if not ips:
+                notes.append(f"{Path(nested).name}: no .pkg inside, nothing is copied from it")
+            members += [m for m in (ps4_describe(cfg, str(inner_path), q, inner[q], via=nested) for q in ips) if m["ps4"] is not False]
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    ids = [m["title_id"] for m in members if m.get("title_id")]
+    tid = max(set(ids), key=ids.count) if ids else (re.search(r"CUSA\d{5}", " ".join([path] + [m["path"] for m in members])) or [None])[0]
+    if not tid:
+        return None
+    foreign = [m for m in members if m.get("title_id") and m["title_id"] != tid]
+    if foreign:
+        notes.append(f"{len(foreign)} package(s) of another title ({', '.join(sorted({m['title_id'] for m in foreign}))}) are not copied")
+        members = [m for m in members if m not in foreign]
+    game = next((m for m in members if m["kind"] == "game"), None)
+    if not game:                                         # no header said which is the game: the biggest package, then
+        unread = [m for m in members if m["ps4"] is None and m["kind"] != "nested-archive"]
+        if unread:
+            game = max(unread, key=lambda m: m["size"])
+            game["kind"] = "game"
+            notes.append(f"the header of {Path(game['path']).name} could not be read: it is taken as the game because it is the biggest")
+    if not game:
+        return None                                      # patches / DLC only: not a game to copy
+    versions = [m["version"] for m in members if m.get("version")]
+    return dict(title=game.get("title") or "", title_id=tid, version=max(versions, key=vkey) if versions else "", fw="", packed="",
+                size=sum(m["size"] for m in members if m["kind"] != "nested-archive"), kind="archive-ps4", ps4=True,
+                members=members, notes=notes)
+
+
 def ident_archive(cfg, path):
     paths = archive_listing(cfg, path)
     pj = [p for p in paths if p.lower().endswith("sce_sys/param.json")]
     if not pj:
+        ps4 = ident_ps4(cfg, path, paths)
+        if ps4:
+            return ps4
         inner = [p for p in paths if p.lower().endswith((".exfat", ".ffpfsc", ".ffpfs", ".ffpkg", ".pkg"))
                  and paths[p] > (1 << 30)]
         if len(inner) != 1:
             return None                 # patch / backport / DLC / unlocker archive
         m = re.search(r"(PPSA|CUSA)\d{5}", inner[0]) or re.search(r"(PPSA|CUSA)\d{5}", path)
-        if not m:
-            return None
+        if not m or m.group(0).startswith("CUSA"):
+            return None                 # (a PS4 title never goes to the PS5 conversion)
         is_pkg = inner[0].lower().endswith(".pkg")
         return dict(title=Path(path).parent.parent.name if is_pkg else Path(path).parent.name, title_id=m.group(0),
                     version="", fw="", packed="", size=paths[inner[0]], inner=inner[0],
@@ -727,13 +858,55 @@ def discover(cfg, log, cache):
 # Measured 2026-11-22 extracting the same ~20 GiB to the SSD (logs/pkg/bench_read.log):
 # .ffpfsc 409 MiB/s, .exfat 264 MiB/s, RAR 172 MiB/s; folders over SMB are slower still.
 KIND_PREF = {"ffpfsc": 0, "ffpfs": 0, "exfat": 0, "ffpkg": 0, "rar": 1, "zip": 1, "7z": 1,
-             "archive-image": 2, "archive-pkg": 2, "folder": 3}
+             "archive-image": 2, "archive-pkg": 2, "archive-ps4": 2, "ps4-folder": 3, "folder": 3}
 
 
 def nas_exists(p) -> bool:
     """smbfs keeps names as stored (NFD here): check both Unicode normal forms."""
     import unicodedata
     return any(Path(unicodedata.normalize(f, str(p))).exists() for f in ("NFC", "NFD"))
+
+
+def ps4_clean_name(name):
+    """The name of a PS4 package that is copied under its own name (patches, DLC): the configured junk patterns
+    removed (junk_title_patterns and the text junk_file_patterns match), illegal characters and empty brackets gone.
+    If nothing sensible is left the name is only made safe, never emptied."""
+    stem, ext = os.path.splitext(name)
+    t = stem
+    for rx in (JUNK_TITLE, JUNK_FILE):
+        if rx:
+            t = rx.sub(" ", t)
+    t = re.sub(r"\[\s*\]|\(\s*\)", " ", t)
+    t = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" .-_")
+    if not t:
+        t = re.sub(r"\s+", " ", re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", stem)).strip(" .-_") or "package"
+    return t[:150] + ext
+
+
+def ps4_plan(cfg, pick):
+    """The plan fields of a PS4 title: its folder under <output>/PS4 and what is copied under which name."""
+    tid, members = pick["title_id"], pick.get("members") or []
+    game = next((m for m in members if m["kind"] == "game"), None)
+    title = clean_title((game or {}).get("title") or pick.get("title") or tid)
+    folder = f"{title} [{tid}]"
+    used, files = set(), []
+    for m in members:
+        if m["kind"] == "nested-archive":
+            files.append(dict(name=Path(m["path"]).name, size=m["size"], kind="nested archive", path=m["path"], via=None, dest=None))
+            continue
+        if m is game:
+            name = f"{title} [{tid}]" + (f" [v{m['version']}]" if m.get("version") else "") + ".pkg"
+        else:
+            name = ps4_clean_name(Path(m["path"]).name)
+        stem, ext, n, name0 = Path(name).stem, Path(name).suffix, 1, name
+        while name.lower() in used:
+            n += 1
+            name = f"{stem} ({n}){ext}"
+        used.add(name.lower())
+        files.append(dict(name=name, size=m["size"], kind=m["kind"], path=m["path"], via=m.get("via"), version=m.get("version", ""),
+                          content_id=m.get("content_id", ""), dest=name))
+    return dict(ps4=True, name=folder, dest_dir=str(Path(cfg["output"]) / "PS4" / folder), files=files, notes=list(pick.get("notes") or []))
 
 
 def choose(cfg, cands, ledger, failures=None):
@@ -759,12 +932,21 @@ def choose(cfg, cands, ledger, failures=None):
             pick = sorted(usable, key=lambda c: (tuple(-x for x in vkey(c["version"])), KIND_PREF.get(c["kind"], 9)))[0]
         done = ledger.get(tid)
         name = pkg_name(pick)
-        if ov.get("skip"):
+        ps4 = bool(pick.get("ps4"))
+        if ov.get("skip"):                                                  # an override always wins
             action, why = "skip", "skipped by override"
+        elif ps4 and pick["kind"] == "ps4-folder":
+            action, why = "skip", "PS4 folder: not handled (only PS4 package sets are copied)"
+        elif ps4 and cfg.get("ps4_mode") == "skip":
+            action, why = "skip", "PS4: skipped (ps4_mode is skip)"
+        elif tid.startswith("CUSA") and not ps4:
+            action, why = "skip", "PS4 title that is not a set of packages: not handled"
         elif pick.get("packed"):
             action, why = "skip", f"only {pick['packed']}-packed sources"
         elif done and vkey(done["version"]) >= vkey(pick["version"]) and nas_exists(done["output"]):
             action, why = "done", f"built {done.get('built', '')}: {Path(done['output']).name}"
+        elif ps4:
+            action, why = "copy", "PS4: copy packages as they are" + (" (newer version)" if done else "")
         else:
             action, why = "build", "newer version" if done else "new"
         twin = next((c for c in lst if c["kind"] in ("rar", "zip", "7z") and c["version"] == pick["version"]
@@ -781,9 +963,11 @@ def choose(cfg, cands, ledger, failures=None):
                          skipped_duplicates=[f"{c['source']} (v{c['version']}{', ' + c['packed'] if c.get('packed') else ''})"
                                              for c in lst if c["source"] != pick["source"]]))
         entry = plan[-1]
+        if ps4 and pick["kind"] == "archive-ps4":
+            entry.update(ps4_plan(cfg, pick))
         entry["fingerprint"] = ps5_failures.fingerprint(cfg, entry)
         rec = failures.get(tid)
-        if action == "build" and ps5_failures.blocks(cfg, entry, rec):
+        if action in ("build", "copy") and ps5_failures.blocks(cfg, entry, rec):
             entry["action"] = "failed"
             entry["why"] = (f"failed on {rec.get('at_text', '?')}, unchanged: {ps5_failures.short_reason(rec)} "
                             f"It is retried when its source or options change, the app is updated, or you press Retry.")
@@ -1387,12 +1571,129 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
                     cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=res["code"], data=res["data"], message=res.get("why", "")))))
 
 
-def run_queue(cfg, todo, log, ledger_p, ledger):
+def copy_ps4(cfg, job, log):
+    """Copy a PS4 title's .pkg members out of its archive into <output>/PS4/<title> [CUSA...]/, as they are: through
+    <output>/.staging, each file extracted by 7-Zip (which checks its CRC and fails on a mismatch) and checked
+    against the size in the listing, then renamed into place. UltraPack is never involved and no byte is changed.
+    Returns {output, files, bytes, validate}."""
+    tid = job["title_id"]
+    log = job_log(log, tid)
+    _JOB_LINES[tid] = []
+    out, dest = Path(cfg["output"]), Path(job["dest_dir"])
+    stage = out / ".staging" / f"{tid}-ps4"
+    exe = str(Path(cfg["ultrapack_src"]) / SEVENZ)
+    todo = [f for f in job["files"] if f.get("dest")]
+    total = sum(f["size"] for f in todo)
+    free = shutil.disk_usage(out).free
+    if free < total + (64 << 20):
+        raise ps5_failures.GameError("output_no_space", f"needs ~{total / 2**30:.1f} GiB in the output folder, {free / 2**30:.1f} GiB free",
+                                     phase="copy", need=total, free=free)
+    if stage.exists():
+        guarded_rmtree(stage, out)
+    stage.mkdir(parents=True)
+    done = []
+    try:
+        nested = {}
+        # packages inside a nested archive that was too big to open while scanning: open it now
+        for f in [f for f in job["files"] if f.get("kind") == "nested archive"]:
+            np_, listing, why = ps4_open_nested(cfg, job["source"], f["path"], stage / "nested" / str(len(nested)))
+            if np_ is None:
+                log(f"  {f['name']}: {why}; nothing is copied from it")
+                continue
+            nested[f["path"]] = np_
+            pk = sorted(q for q in listing if q.lower().endswith(".pkg"))
+            if not pk:
+                log(f"  {f['name']}: no .pkg inside, nothing is copied from it")
+            for q in pk:
+                m = ps4_describe(cfg, str(np_), q, listing[q], via=f["path"])
+                if m["ps4"] is not False:
+                    todo.append(dict(name=Path(q).name, size=m["size"], kind=m["kind"], path=q, via=f["path"], dest=ps4_clean_name(Path(q).name)))
+        for i, f in enumerate(todo):
+            src, member = job["source"], f["path"]
+            if f.get("via"):
+                if f["via"] not in nested:
+                    np_, _, why = ps4_open_nested(cfg, job["source"], f["via"], stage / "nested" / str(len(nested)))
+                    if np_ is None:
+                        raise ps5_failures.GameError("extract_failed", f"{Path(f['via']).name}: {why}", phase="copy", detail=why)
+                    nested[f["via"]] = np_
+                src = str(nested[f["via"]])
+            work = stage / "x" / str(i)
+            work.mkdir(parents=True)
+            log(f"  copying {f['name']} ({f['size'] / 2**30:.2f} GiB, {f['kind']})")
+            r = subprocess.run([exe, "x", "-y", "-bso0", "-bsp0", f"-o{work}", "-p-", src, member], capture_output=True,
+                               stdin=subprocess.DEVNULL, env=seven_env())
+            got = work / member
+            if r.returncode != 0 or not got.is_file():
+                tail = (r.stdout + r.stderr).decode("utf-8", "replace")[-300:]
+                raise ps5_failures.GameError("extract_failed", f"7-Zip failed on {f['name']} ({r.returncode}): {tail}", phase="copy",
+                                             rc=r.returncode, detail=tail)
+            if f["size"] and got.stat().st_size != f["size"]:
+                raise ps5_failures.GameError("extract_failed", f"{f['name']}: {got.stat().st_size} bytes extracted, the listing says {f['size']}",
+                                             phase="copy", detail="size differs from the archive listing")
+            (stage / "final").mkdir(exist_ok=True)
+            os.replace(got, stage / "final" / f["dest"])
+            done.append(f)
+        dest.mkdir(parents=True, exist_ok=True)
+        for f in done:
+            target = dest / f["dest"]
+            if target.exists():
+                target.rename(target.with_name(f"{target.stem} (replaced {time.strftime('%Y%m%d%H%M')}){target.suffix}"))
+            os.replace(stage / "final" / f["dest"], target)
+        log(f"  -> {len(done)} package(s) in {dest}")
+        return dict(output=str(dest), files=[f["dest"] for f in done], bytes=sum(f["size"] for f in done),
+                    validate=f"CRC verified by 7-Zip: {len(done)} package(s)")
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        try:
+            (out / ".staging").rmdir()
+        except OSError:
+            pass
+
+
+def run_ps4(cfg, jobs, log, ledger_p, ledger):
+    """Copy the planned PS4 titles one after the other (it is only disk to disk). Returns their results."""
+    results = []
+    for job in jobs:
+        if stop_requested():
+            log(f"=== stop requested: not copying the remaining {len(jobs) - len(results)} PS4 title(s)")
+            break
+        tid = job["title_id"]
+        log(f"PS4 copy {job['name']}  <- {job['source']}")
+        res = dict(title=job.get("title") or job["name"], title_id=tid, name=job["name"], status="failed", source=job["source"])
+        try:
+            r = copy_ps4(cfg, job, log)
+            ledger[tid] = dict(version=job["version"], output=r["output"], source=job["source"], built=time.strftime("%Y-%m-%d %H:%M"),
+                               bytes=r["bytes"], ps4=True, kind="ps4", files=r["files"], validate=r["validate"])
+            ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
+            res.update(status="built", output=str(Path(r["output"]) / r["files"][0]) if r["files"] else r["output"],
+                       gib=round(r["bytes"] / 2**30, 2), validate=r["validate"])
+            try:
+                failure_store().clear(tid)
+            except Exception:
+                pass
+            notify(cfg, "PS5 pkg: built", notification_text(cfg, job["name"], "built", None, res["output"]))
+        except Exception as ex:
+            code, phase, data = ps5_failures.classify(ex)
+            if code == "output_no_space":                    # not a failure: it is copied when there is room
+                res.update(status="deferred", why=str(ex), code=code, phase="copy", data=data)
+                log(f"  -> deferred: {ex}")
+                record_failure(cfg, job, log, phase="copy", code=code, message=str(ex), data=data, state=ps5_failures.WAITING)
+            else:
+                res.update(status="failed", why=f"{type(ex).__name__}: {ex}", code=code, phase="copy", data=data)
+                job_log(log, tid)(f"  -> {job['name']}: failed: {type(ex).__name__}: {ex}")
+                if record_failure(cfg, job, log, phase="copy", code=code, message=f"{type(ex).__name__}: {ex}", data=data):
+                    notify(cfg, "PS5 pkg: failed", notification_text(
+                        cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))))
+        results.append(res)
+    return results
+
+
+def run_queue(cfg, todo, log, ledger_p, ledger, preset=None):
     """Three-stage pipeline:  prepare (extract+verify+clean) game N+2  |  compress game N+1  |
     hash/write/validate game N.  At most max_compress builds in the Kraken stage and max_builds UltraPack
     processes; prepares only start when the SSD can hold them on top of what is in flight."""
     import threading
-    results = []
+    results = list(preset or [])          # what ran before the queue (PS4 copies) is part of this run's results
     ledger_lock = threading.Lock()
     prep_pool = ThreadPoolExecutor(max_workers=1)
     fin_pool = ThreadPoolExecutor(max_workers=cfg.get("max_builds", 3))
@@ -1563,6 +1864,8 @@ def main():
     try:
         cache_p = STATE / "ident_cache.json"
         cache = {} if a.rescan or not cache_p.exists() else json.loads(cache_p.read_text())
+        if cache.get("__version__") != IDENT_VERSION:     # identified by an older version: look at everything once more
+            cache = {"__version__": IDENT_VERSION}
         ledger_p = STATE / "ledger.json"
         ledger = json.loads(ledger_p.read_text()) if ledger_p.exists() else {}
         log(f"=== {a.mode}: scanning")
@@ -1581,7 +1884,9 @@ def main():
         if a.mode == "plan":
             return
         todo = [j for j in plan if (j["action"] == "build" or (j["action"] == "failed" and a.only))     # --only always retries
-                and (not a.only or j["title_id"] in a.only)]
+                and not j.get("ps4") and (not a.only or j["title_id"] in a.only)]
+        copies = [j for j in plan if (j["action"] == "copy" or (j["action"] == "failed" and j.get("ps4") and a.only))
+                  and (not a.only or j["title_id"] in a.only)]
         for j in plan:
             if j["action"] == "failed" and not a.only:
                 rec = failures.get(j["title_id"]) or {}
@@ -1592,7 +1897,9 @@ def main():
             todo = todo[: a.limit]
         log(f"=== run: {len(todo)} build(s); level {cfg['compression_level']}, {cfg['cpu_count']} workers, nice {cfg['nice']}, "
             f"{cfg.get('max_compress', 2)} concurrent compressions")
-        results = run_queue(cfg, todo, log, ledger_p, ledger)
+        if copies:
+            log(f"=== PS4: {len(copies)} title(s) to copy as they are")
+        results = run_queue(cfg, todo, log, ledger_p, ledger, preset=run_ps4(cfg, copies, log, ledger_p, ledger))
         log("=== summary: " + ", ".join(f"{s} {sum(1 for r in results if r['status'] == s)}"
                                         for s in ("built", "failed", "deferred")))
     finally:

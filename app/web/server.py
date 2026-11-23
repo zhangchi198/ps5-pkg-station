@@ -208,14 +208,15 @@ def plan_with_failures(plan, cfg, mapping):
     out = []
     for p in plan:
         rec = store.get(p.get("title_id")) if isinstance(p, dict) else None
-        if isinstance(p, dict) and p.get("action") in ("build", "failed"):
+        if isinstance(p, dict) and p.get("action") in ("build", "copy", "failed"):
+            todo_action = "copy" if p.get("ps4") else "build"         # what the engine does with it when it is tried
             if rec:
                 fv = failure_view(rec, p, cfg, mapping)
-                p = dict(p, failure=fv, action="build" if fv["will_retry"] else "failed",
+                p = dict(p, failure=fv, action=todo_action if fv["will_retry"] else "failed",
                          why=(f"failed on {rec.get('at_text', '?')}: {fv['summary']} {fv['next']}" if rec.get("state") == FL.FAILED
                               else f"waiting for space: {fv['summary']}"))
             elif p.get("action") == "failed":
-                p = dict(p, action="build", why="new")
+                p = dict(p, action=todo_action, why="new")
         out.append(p)
     return out
 
@@ -408,7 +409,7 @@ def status():
                 status=st if pid else dict(st, live=False),
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
-                plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "failed", "done", "skip", "error")},
+                plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "copy", "failed", "done", "skip", "error")},
                 stop_requested=(STATE / "stop.request").exists(), schedule=cfg.get("schedule"),
                 folders=folders, host_paths=configured, host_problems=host_problems, in_docker=E.IN_DOCKER,
                 config_rev=info.rev, config_problems=info.problems,
@@ -418,7 +419,8 @@ def status():
 @app.get("/api/plan")
 def plan():
     """plan.json with `source_host` / `patch_host` / `verify_archive_host`, `candidates[].source_host` and
-    `skipped_duplicates_host` where the folder has a host location, and `failure` (see /api/failures) on a title
+    `skipped_duplicates_host` (and `dest_dir_host`, the folder a PS4 title is copied into) where the folder has a host
+    location, and `failure` (see /api/failures) on a title
     that failed or is waiting for space: action `failed` means it is skipped until something changes."""
     cfg = load_cfg()
     data, mapping = read_json(STATE / "plan.json", []), host_view(cfg)["mapping"]
@@ -428,7 +430,7 @@ def plan():
         return data
     out = []
     for p in data:
-        p = host_twins(p, mapping, ("source", "patch", "verify_archive"))
+        p = host_twins(p, mapping, ("source", "patch", "verify_archive", "dest_dir"))
         p = text_twin(text_twin(p, "skipped_duplicates", mapping), "why", mapping)
         if isinstance(p, dict) and isinstance(p.get("candidates"), list):
             p = dict(p, candidates=[host_twins(c, mapping, ("source",)) for c in p["candidates"]])

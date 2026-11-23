@@ -21,6 +21,8 @@ command-line builder.
   you choose per game.
 - **Builds** with UltraPack (`--stage-in-place`, so the work disk needs room for roughly one copy of
   each game in flight), validates the package, and names it `Title [PPSA12345] [v01.002.003] [fw10.00].pkg`.
+- **Copies PS4 packages as they are**: a PS4 title's ready-made `.pkg` files are copied, named from their own
+  headers, without conversion (see "PS4 titles" below).
 - **Remembers** what it built: later runs only build new games and newer versions.
 - **Runs on a schedule** (or on demand), several builds in parallel, at low CPU priority, with an
   optional push notification ([ntfy](https://ntfy.sh)-style URL) when each game finishes.
@@ -181,6 +183,29 @@ Keys you leave out use their defaults, and keys this version doesn't know are ke
 - Reading never changes the file. It's written only when you save from Settings or the Library page (and
   once with the defaults if it doesn't exist yet). A save rewrites the whole file (indented JSON), through a
   lock, in one step. `config.json.lock` next to it is that lock; leave it.
+
+## PS4 titles
+
+A PS4 game (a `CUSA` title ID) usually comes as an archive that already holds ready-to-install packages: the base
+game `.pkg`, often a small update or downgrade patch, sometimes a `DLC.zip` or DLC `.pkg` files. These aren't
+converted. With `ps4_mode` = `copy` (the default, under Settings > Conversion) the planner shows the title as
+**copy**, and a run copies the `.pkg` files as they are, never starting UltraPack and never changing a byte:
+
+- Each package is named and classified from **its own header** (the content ID, the title and the version in its
+  PARAM.SFO; game / patch / DLC), not from its file name. Only the first few MiB of each package are read.
+- A `.pkg` inside a nested archive (`DLC.zip`) is copied too. If it holds no `.pkg`, nothing is copied from it and the
+  Library says so. Other files in the archive (`.url` files and the like) are not copied.
+- Files go to `<output>/PS4/<title> [CUSA12345]/` through `<output>/.staging` and are renamed into place once 7-Zip
+  has extracted them with its CRC check and the sizes match the listing. The base game is named
+  `Title [CUSA12345] [v01.00].pkg`; patches and DLC keep their own names.
+- Names are cleaned with **your** `junk_title_patterns` (and the text `junk_file_patterns` match), nothing is hard-coded.
+- The title is "done" like a built one (same title and version, also after a restart) and is marked **PS4** in
+  History; a newer package set is copied again, and nothing already in the folder is deleted (a file it replaces is
+  kept as `... (replaced <time>).pkg`).
+- A failed copy is remembered and explained like any failed game (see below), and **Retry** copies it again.
+
+`ps4_mode` = `skip` lists PS4 titles as "PS4: skipped" instead. A per-game **skip** override always wins over both.
+PS4 game *folders* (an extracted game) are listed as "PS4 folder: not handled".
 
 ## Backing up
 
