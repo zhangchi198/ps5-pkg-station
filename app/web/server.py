@@ -52,18 +52,43 @@ def load_cfg():
     return E.load_cfg()
 
 
+def host_view(cfg):
+    """Where each folder is, in the container and on the host (see ps5_hostpaths for the precedence): {folders,
+    configured, problems, mapping}. Read per call: it is cheap and the settings can change."""
+    return H.folders_for(cfg, state=STATE, logs=LOGS, environ=os.environ, mountinfo=MOUNTINFO)
+
+
 def folders_info(cfg):
-    """Where each folder is, in the container and on the host (see ps5_hostpaths for the precedence), plus what
-    is wrong with the PS5PKG_HOST_* environment. Read per call: it is cheap and the settings can change."""
-    env, problems = H.read_env(os.environ)
-    try:
-        config_root = os.path.commonpath([str(STATE), str(LOGS)])
-    except ValueError:
-        config_root = str(STATE.parent)
-    containers = {k: cfg[k] for k in H.FOLDERS if k != "config"}
-    containers["config"] = config_root
-    folders = H.resolve(containers, env, cfg.get("host_paths") or {}, H.read_mountinfo(MOUNTINFO))
-    return folders, {k: f["host"] for k, f in folders.items() if f["source"] in ("env", "settings")}, problems
+    v = host_view(cfg)
+    return v["folders"], v["configured"], v["problems"]
+
+
+def host_twins(obj, mapping, keys):
+    """A copy of the dict `obj` with `<key>_host` next to each container path that has a host location. The real
+    fields stay as they are (the engine works on container paths); a path without a host location gets no twin,
+    so a caller can tell it is still a container path."""
+    if not mapping or not isinstance(obj, dict):
+        return obj
+    out = dict(obj)
+    for k in keys:
+        host = H.display_path(obj.get(k), mapping)
+        if host:
+            out[k + "_host"] = host
+    return out
+
+
+def text_twin(obj, key, mapping):
+    """`<key>_host`: free text (a reason, a list of lines) with container prefixes swapped, when that changes it."""
+    if not mapping or not isinstance(obj, dict):
+        return obj
+    val = obj.get(key)
+    if isinstance(val, str):
+        host = H.display_text(val, mapping)
+    elif isinstance(val, list):
+        host = [H.display_text(x, mapping) if isinstance(x, str) else x for x in val]
+    else:
+        return obj
+    return dict(obj, **{key + "_host": host}) if host != val else obj
 
 
 def update_cfg(mutate):
@@ -232,7 +257,10 @@ def status():
     pid = engine_pid()
     info = E.load_cfg_info()
     cfg = info.cfg
-    folders, configured, host_problems = folders_info(cfg)
+    host = host_view(cfg)
+    folders, configured, host_problems, mapping = host["folders"], host["configured"], host["problems"], host["mapping"]
+    if mapping and isinstance(st, dict) and isinstance(st.get("results"), list):   # reasons mention container paths
+        st = dict(st, results=[text_twin(r, "why", mapping) for r in st["results"]])
     disks = {}
     for k, f in folders.items():
         try:
@@ -241,7 +269,8 @@ def status():
         except Exception:
             disks[k] = dict(path=f["container"], error="not available")
     plan = read_json(STATE / "plan.json", [])
-    return dict(engine_running=bool(pid), engine_pid=pid, scan=dict(_scan), run=dict(_run), clock=S.clock_info(),
+    return dict(engine_running=bool(pid), engine_pid=pid, clock=S.clock_info(),
+                scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
                 status=st if pid else dict(st, live=False),
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
@@ -254,7 +283,19 @@ def status():
 
 @app.get("/api/plan")
 def plan():
-    return read_json(STATE / "plan.json", [])
+    """plan.json with `source_host` / `patch_host` / `verify_archive_host`, `candidates[].source_host` and
+    `skipped_duplicates_host` where the folder has a host location."""
+    data, mapping = read_json(STATE / "plan.json", []), host_view(load_cfg())["mapping"]
+    if not mapping or not isinstance(data, list):
+        return data
+    out = []
+    for p in data:
+        p = host_twins(p, mapping, ("source", "patch", "verify_archive"))
+        p = text_twin(text_twin(p, "skipped_duplicates", mapping), "why", mapping)
+        if isinstance(p, dict) and isinstance(p.get("candidates"), list):
+            p = dict(p, candidates=[host_twins(c, mapping, ("source",)) for c in p["candidates"]])
+        out.append(p)
+    return out
 
 
 @app.get("/api/setup")
@@ -324,9 +365,16 @@ async def put_config(req: Request):
     return {k: cfg.get(k) for k in SETTINGS}
 
 
+def overrides_with_hosts(ovs, mapping):
+    if not isinstance(ovs, dict):
+        return ovs
+    return {tid: host_twins(ov, mapping, ("source", "patch")) for tid, ov in ovs.items()}
+
+
 @app.get("/api/overrides")
 def get_overrides():
-    return load_cfg().get("overrides", {})
+    cfg = load_cfg()
+    return overrides_with_hosts(cfg.get("overrides", {}), host_view(cfg)["mapping"])
 
 
 @app.put("/api/overrides/{tid}")
@@ -335,9 +383,12 @@ async def put_override(tid: str, req: Request):
         raise HTTPException(400, "bad title id")
     body = await req.json()
     ov = {}
+    mapping = host_view(load_cfg())["mapping"]
     for k in ("source", "patch", "note"):
         if body.get(k):
             ov[k] = str(body[k])
+            if k != "note":                   # a path typed as it is on the host is stored as the container path
+                ov[k] = H.to_container(ov[k], mapping) or ov[k]
     if body.get("modified_exec") in ("image", "original"):
         ov["modified_exec"] = body["modified_exec"]
     if body.get("skip"):
@@ -350,12 +401,18 @@ async def put_override(tid: str, req: Request):
             raw["overrides"][tid] = ov
         else:
             raw["overrides"].pop(tid, None)
-    return update_cfg(apply).get("overrides", {}).get(tid, {})
+    cfg = update_cfg(apply)
+    return host_twins(cfg.get("overrides", {}).get(tid, {}), host_view(cfg)["mapping"], ("source", "patch"))
 
 
 @app.get("/api/ledger")
 def ledger():
-    return read_json(STATE / "ledger.json", {})
+    """ledger.json with `output_host` (the package) and `source_host`. Entries written by older versions (other
+    field names, missing fields) pass through untouched."""
+    data, mapping = read_json(STATE / "ledger.json", {}), host_view(load_cfg())["mapping"]
+    if not mapping or not isinstance(data, dict):
+        return data
+    return {tid: host_twins(v, mapping, ("output", "source")) for tid, v in data.items()}
 
 
 SAFE_LOG = re.compile(r"^(pkg/)?[\w.\-]+\.log$")
@@ -371,7 +428,9 @@ def logs():
 
 
 @app.get("/api/logs/{name:path}")
-def log_tail(name: str, lines: int = 400):
+def log_tail(name: str, lines: int = 400, host: int = 0):
+    """The end of a log. With host=1 container folder prefixes are shown as their host locations (display only:
+    the file is never changed, and without host=1 the text is exactly what is on disk)."""
     if not SAFE_LOG.match(name):
         raise HTTPException(400, "bad log name")
     p = LOGS / name
@@ -381,7 +440,8 @@ def log_tail(name: str, lines: int = 400):
         fh.seek(max(0, p.stat().st_size - (2 << 20)))
         txt = fh.read().decode("utf-8", "replace").replace("\r", "\n")
     keep = [ln for ln in txt.split("\n") if ln.strip()]
-    return PlainTextResponse("\n".join(keep[-max(10, min(lines, 5000)):]))
+    out = "\n".join(keep[-max(10, min(lines, 5000)):])
+    return PlainTextResponse(H.display_text(out, host_view(load_cfg())["mapping"]) if host else out)
 
 
 @app.get("/api/health")

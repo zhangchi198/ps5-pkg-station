@@ -19,7 +19,9 @@ Where a folder's host path comes from, first match wins:
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 
 FOLDERS = ("library", "downloads", "output", "temp", "config")      # "temp" is the work folder, as in config.json
 MOUNTS = {"library": "/library", "downloads": "/downloads", "output": "/output", "temp": "/work", "config": "/config"}
@@ -197,3 +199,100 @@ def resolve(containers, env, settings, mounts):
                         mismatch=bool(det and source in ("env", "settings") and not same_tail(host, det["tail"])),
                         setting=settings.get(key, ""))
     return out
+
+
+# ------------------------------------------------------------------ the whole picture, and path translation
+
+def config_root(state, logs):
+    """The folder mounted at /config: the parent that the state and logs folders share."""
+    try:
+        return os.path.commonpath([str(state), str(logs)])
+    except ValueError:
+        return str(Path(str(state)).parent)
+
+
+def path_map(folders, env):
+    """[(container prefix, host prefix)], longest container prefix first, for display_path & co. Only folders
+    whose host location is configured count: a detected hint is partial and must never stand in for a path.
+    The volume behind a PS5PKG_HOST_<FOLDER> variable (/work) is included next to the folder (/work/tmp)."""
+    pairs = {}
+    for key, f in folders.items():
+        if f["source"] not in ("env", "settings"):
+            continue
+        pairs[f["container"].rstrip("/") or "/"] = f["host"]
+        e = env.get(key)
+        if e and e["mount"]:
+            pairs[MOUNTS[key]] = e["path"]
+    return sorted(pairs.items(), key=lambda kv: -len(kv[0]))
+
+
+def folders_for(cfg, *, state, logs, environ, mountinfo="/proc/self/mountinfo"):
+    """Everything the web server and the engine need to know about folder locations: {folders (see resolve),
+    configured ({folder: host path} where one is configured), problems (what is wrong with the environment),
+    mapping (see path_map)}."""
+    env, problems = read_env(environ)
+    containers = {k: cfg[k] for k in FOLDERS if k != "config"}
+    containers["config"] = config_root(state, logs)
+    folders = resolve(containers, env, cfg.get("host_paths") or {}, read_mountinfo(mountinfo))
+    return dict(folders=folders, problems=problems, mapping=path_map(folders, env),
+                configured={k: f["host"] for k, f in folders.items() if f["source"] in ("env", "settings")})
+
+
+def _under(path, prefix):
+    """"" when path is prefix itself, "/rest" when it is below it, None otherwise: whole segments only, so
+    /output doesn't match /output2/x."""
+    prefix = prefix.rstrip("/") or "/"
+    if path == prefix:
+        return ""
+    if prefix == "/":
+        return path
+    return path[len(prefix):] if path.startswith(prefix + "/") else None
+
+
+def _join(host, rest):
+    if not rest:
+        return host
+    if "\\" in host:                              # a Windows host: its separator, not ours
+        return host.rstrip("\\/") + rest.replace("/", "\\")
+    return host.rstrip("/") + rest
+
+
+def display_path(path, mapping):
+    """The host form of a container path, or None when its folder has no configured host location (so a
+    caller shows the container path, marked as one). The longest matching prefix wins."""
+    if not isinstance(path, str) or not path:
+        return None
+    p = path.rstrip("/") or "/"
+    for container, host in mapping:
+        rest = _under(p, container)
+        if rest is not None:
+            return _join(host, rest)
+    return None
+
+
+def to_container(path, mapping):
+    """A path someone typed, as a container path: unchanged when it already is one, translated when it is
+    below a configured host location, None when it maps to neither (it is then kept as typed)."""
+    q = (path or "").strip()
+    if not q:
+        return None
+    n = q.replace("\\", "/").rstrip("/") or "/"
+    for container, _ in mapping:
+        if _under(n, container) is not None:
+            return q
+    for container, host in sorted(mapping, key=lambda m: -len(m[1])):
+        h = host.replace("\\", "/").rstrip("/") or "/"
+        windows = "\\" in host or bool(re.match(r"^[A-Za-z]:", host))
+        if (_under(n.lower(), h.lower()) if windows else _under(n, h)) is not None:
+            return container.rstrip("/") + n[len(h):] if h != "/" else container.rstrip("/") + n
+    return None
+
+
+def display_text(text, mapping):
+    """Free text (a log line, a failure reason) with every container folder prefix swapped for its host
+    location. Display only: callers never write the result back. Whole segments only, longest prefix first."""
+    if not mapping or not text:
+        return text
+    hosts = dict(mapping)
+    pat = re.compile(r"(?<![\w./\-])(" + "|".join(re.escape(c) for c, _ in mapping) + r")(?![\w\-])(?!\.\w)")
+    return pat.sub(lambda m: hosts[m.group(1)], text)

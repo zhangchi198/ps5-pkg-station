@@ -122,6 +122,16 @@ Where a folder's location comes from, first match wins:
    API marks it `partial`, with a leading `…`, so it can't be mistaken for a full path). A btrfs subvolume prefix
    such as Synology's `@syno` is left out, since it isn't part of any path you can open.
 
+Once a folder has a host location (steps 1 to 3; the partial hint in step 4 is never used for this), it is shown
+wherever a path appears, each with a **copy** button that copies the host path: the Library (the source of each
+game, the choices under Options), History (the package's location and its source), the reasons under "This run",
+the Options of a game (the patch folder, with where it is on your NAS, and a path typed in as it is on the NAS is
+stored as the container path), push notifications (a built package says which folder it is in), and the Logs tab
+(the "show NAS paths" box, on by default; it only changes what is displayed: the log files, and the text
+`/api/logs/<name>` returns without `?host=1`, stay exactly as written). A path in a folder with no host location is shown as the container path, tagged "in
+container", so it is never mistaken for one on your NAS. The API keeps the container path in the field you know
+and adds a `*_host` twin (`source_host`, `output_host`, `why_host`, ...) only when there is one.
+
 The hint is also compared with what you configured: if the tail doesn't match, the folder gets a note. That
 is only a hint, since overlay and other set-ups can add prefixes. A malformed variable (bad JSON,
 an unknown folder name, a relative path) is shown in an amber banner and ignored, not dropped silently. Until

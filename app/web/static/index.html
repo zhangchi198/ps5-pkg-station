@@ -28,6 +28,7 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
 .banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}.banner pre{color:var(--fg);max-height:14em;margin:8px 0}
 .lv-ok{color:var(--ok)}.lv-warn{color:var(--warn)}.lv-fail{color:var(--bad);font-weight:700}.setup td:first-child{width:3.5em;white-space:nowrap}
 a{color:var(--acc)}
+.path code{word-break:break-all}.copy{font:inherit;font-size:11px;padding:0 6px;margin-left:4px;border:1px solid var(--line);border-radius:4px;background:none;color:var(--muted);cursor:pointer}
 @media (max-width:640px){label.f{grid-template-columns:1fr}main{padding:10px}td,th{padding:5px 4px}}
 </style>
 </head>
@@ -74,14 +75,23 @@ a{color:var(--acc)}
   <div class="row"><button class="btn pri" id="bSave">Save settings</button><button class="btn" id="bSetupSet">Check setup</button><span id="setMsg" class="small"></span></div>
 </section>
 <section id="logs"><div class="card"><div class="row"><select id="logSel"></select><button class="btn" id="bLog">Refresh</button>
-  <label class="small"><input type="checkbox" id="logFollow" checked> follow</label></div></div>
+  <label class="small"><input type="checkbox" id="logFollow" checked> follow</label>
+  <label class="small" title="Shows /library/... as the folder is on your NAS. The log files themselves are not changed."><input type="checkbox" id="logHost" checked> show NAS paths</label></div></div>
   <div class="card"><pre id="logTxt"></pre></div></section>
 </main>
 <script>
 const $=s=>document.querySelector(s), esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const gib=b=>b==null?"—":(b/2**30).toFixed(b>2**40?0:1)+" GiB", ago=t=>{if(!t)return"—";const s=Date.now()/1000-t;return s<90?Math.round(s)+" s":s<5400?Math.round(s/60)+" min":(s/3600).toFixed(1)+" h"};
 async function api(p,o={}){const r=await fetch(p,{headers:{"Content-Type":"application/json"},...o});if(!r.ok)throw new Error((await r.json().catch(()=>({detail:r.statusText}))).detail);return r.headers.get("content-type")?.includes("json")?r.json():r.text()}
-let tab="dash",plan=[],overrides={};
+let tab="dash",plan=[],overrides={},libCfgHost=null;
+// A path for display: its place on the host when the server knows it (the container path goes into the tooltip), else
+// the container path with an "in container" tag, so it is never taken for a path on the NAS. Copy takes what is shown.
+function pathHtml(host,container){const shown=host||container||"";if(!shown)return"";
+  return `<span class="path"><code title="${esc(host?"in the container: "+container:"a path inside the container: no host location is set for this folder")}">${esc(shown)}</code>${host?"":` <span class="tag small">in container</span>`}<button type="button" class="copy" data-copy="${esc(shown)}" title="Copy this path">copy</button></span>`}
+async function copyText(t){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(t);return true}}catch(e){}
+  const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand("copy")}catch(e){}a.remove();return ok}   // plain http on a LAN has no clipboard API
+document.addEventListener("click",e=>{const b=e.target.closest("[data-copy]");if(!b)return;e.preventDefault();
+  copyText(b.dataset.copy).then(ok=>{const t=b.textContent;b.textContent=ok?"copied":"select + Ctrl+C";setTimeout(()=>{b.textContent=t},1500)})});
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
 function say(t,bad){$("#msg").textContent=t;$("#msg").className="small "+(bad?"err":"muted")}
 $("#bRun").onclick=()=>api("/api/run",{method:"POST",body:"{}"}).then(()=>say("Run started")).catch(e=>say(e.message,1)).finally(()=>{refresh();loadSetup()});
@@ -122,7 +132,7 @@ function renderFolders(s){const F=s.folders||{},d=s.disks||{};
   const any=Object.values(F).some(f=>f.source==="env"||f.source==="settings");
   $("#hostBanner").innerHTML=Object.keys(F).length&&!any&&!hostDismissed()?`<div class="banner warn">Folder locations are shown as paths inside the container. <a href="#" data-goto="host_paths.library">Tell the app where they are on your NAS</a>.<a href="#" data-dismiss class="small" style="float:right">Dismiss</a></div>`:""}
 function failBox(s){const ev=[["scan",s.scan],["run",s.run]].filter(([k,x])=>x&&x.finished).sort((a,b)=>b[1].finished-a[1].finished)[0];
-  $("#failBox").innerHTML=ev&&ev[1].error&&!s.engine_running&&!s.scan.running?`<div class="banner bad"><b>The ${ev[0]==="scan"?"scan":"run"} failed.</b> ${esc(ev[1].error)}${ev[1].log_tail?.length?`<pre class="small">${esc(ev[1].log_tail.join("\n"))}</pre>`:""}<a href="#" data-log="${esc(ev[1].log)}">Open the log</a></div>`:""}
+  $("#failBox").innerHTML=ev&&ev[1].error&&!s.engine_running&&!s.scan.running?`<div class="banner bad"><b>The ${ev[0]==="scan"?"scan":"run"} failed.</b> ${esc(ev[1].error)}${ev[1].log_tail?.length?`<pre class="small">${esc((ev[1].log_tail_host||ev[1].log_tail).join("\n"))}</pre>`:""}<a href="#" data-log="${esc(ev[1].log)}">Open the log</a></div>`:""}
 let cfgRev,cfgLoadedAt=0,setDirty=false,bannerHtml="";   // cfgRev: version of config.json the Settings form shows
 function banners(s){const e=s.config_error,p=s.config_problems||[];let h="";
   if(e)h+=`<div class="banner bad"><b>Settings file could not be read</b> (${e.line?`line ${e.line}: `:""}${esc(e.message)}). ${e.using==="last_good"?"Using the last working settings.":"Using the default settings."} Fix the file or restore a backup.</div>`;
@@ -148,36 +158,45 @@ async function refresh(){
   $("#builds").innerHTML=b.length?b.map(x=>`<div style="margin:8px 0"><div class="row"><b>${esc(x.name)}</b><span class="muted small">stage ${x.stage}/5 ${esc(x.stage_text)} · ${esc(x.part)} ${x.pct}% · ${ago(x.since)}</span></div><div class="bar"><i style="width:${((x.stage-1)*20+x.pct/5)}%"></i></div></div>`).join(""):"Nothing building.";
   $("#preparing").innerHTML=(s.engine_running&&st.preparing?.length)?st.preparing.map(x=>`<div>${esc(x.name)} <span class="muted small">copying &amp; verifying · ${ago(x.since)}</span></div>`).join(""):"—";
   $("#queue").innerHTML=(s.engine_running&&st.queue?.length)?st.queue.map(x=>`<div>${esc(x.name)} <span class="muted small">${gib(x.size)}</span></div>`).join(""):"—";
-  const r=st.results||[];$("#results").innerHTML=r.length?`<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${x.status}">${x.status}</span></td><td class="small muted">${esc(x.why||x.validate||"")} ${x.build_min?`· build ${x.build_min} min`:""}</td></tr>`).join("")}</table>`:"—";
+  const r=st.results||[];$("#results").innerHTML=r.length?`<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${x.status}">${x.status}</span></td><td class="small muted">${esc(x.why_host||x.why||x.validate||"")} ${x.build_min?`· build ${x.build_min} min`:""}</td></tr>`).join("")}</table>`:"—";
 }
+// under the patch folder input: where that folder is on the NAS, or where to put the files
+function patchHint(o,tid,cfgHost){
+  if(o.patch)return o.patch_host?`On your NAS: ${pathHtml(o.patch_host,o.patch)}`:`${pathHtml(null,o.patch)} (no host location is set for this folder)`;
+  return cfgHost?`Put the files in <code>${esc(cfgHost.replace(/[\\/]+$/,"")+"/patches/"+tid)}</code> on your NAS and enter <code>/config/patches/${esc(tid)}</code> here (a path on the NAS works too).`
+    :`Inside the container. Say where /config is on your NAS (Settings > Folders) to see the real location.`}
 async function loadLib(){
   let s;[plan,overrides,s]=await Promise.all([api("/api/plan"),api("/api/overrides"),api("/api/status")]);
   const f=$("#libFilter").value.toLowerCase(),a=$("#libAct").value;
   const rows=plan.filter(p=>(!a||p.action===a)&&(!f||(p.title+p.title_id).toLowerCase().includes(f)));
   $("#libSum").textContent=`${plan.length} titles · ${plan.filter(p=>p.action==="build").length} to build`;
-  const empty=t=>`<tr><td colspan="4">${t}</td></tr>`;
+  const empty=t=>`<tr><td colspan="4">${t}</td></tr>`,cf=s.folders?.config,cfgHost=cf&&cf.host&&!cf.partial?cf.host:null;libCfgHost=cfgHost;
   $("#libRows").innerHTML=!plan.length?empty(!s.plan_time?`<b>No scan yet.</b> <span class="muted">Press Scan to look through your game library for games to build.</span> <button class="btn" onclick="doScan();goTab('dash')">Scan for new games</button>`
       :`<b>The last scan found no games.</b> <span class="muted">Nothing usable was found in <code>${esc(s.disks.library?.path||"")}</code>${s.disks.downloads?.error?"":` or <code>${esc(s.disks.downloads?.path||"")}</code>`}. Check the folders on the Dashboard, then scan again.</span>`)
     :!rows.length?empty('<span class="muted">No titles match the filter.</span>'):rows.map(p=>{const o=overrides[p.title_id]||{};const c=p.candidates||[];
     return `<tr><td><b>${esc(p.title||p.title_id)}</b><div class="small muted">${p.title_id}${p.fw?" · fw "+p.fw:""}</div>
     <details><summary class="small">Options${Object.keys(o).length?" (overridden)":""}</summary><div class="ovr" data-tid="${p.title_id}">
-     <label class="small">Source <select data-k="source"><option value="">automatic</option>${c.map(x=>`<option value="${esc(x.source)}" ${o.source===x.source?"selected":""}>${esc(x.kind)} v${esc(x.version)}${x.packed?" ["+x.packed+"]":""} · ${esc(x.source.split("/").slice(-2).join("/"))}</option>`).join("")}</select></label>
+     <label class="small">Source <select data-k="source"><option value="">automatic</option>${c.map(x=>`<option value="${esc(x.source)}" ${o.source===x.source?"selected":""}>${esc(x.kind)} v${esc(x.version)}${x.packed?" ["+x.packed+"]":""} · ${esc(x.source_host||x.source+" (container path)")}</option>`).join("")}</select></label>
      <label class="small">Modified executables <select data-k="modified_exec"><option value="">by console firmware</option><option value="image" ${o.modified_exec==="image"?"selected":""}>keep image (backport)</option><option value="original" ${o.modified_exec==="original"?"selected":""}>use original</option></select></label>
      <label class="small">Patch folder (files overlaid) <input type="text" data-k="patch" value="${esc(o.patch||"")}" placeholder="/config/patches/…"></label>
+     <div class="small muted" data-patchhint>${patchHint(o,p.title_id,cfgHost)}</div>
      <label class="small">Note <input type="text" data-k="note" value="${esc(o.note||"")}"></label>
      <label class="small"><input type="checkbox" data-k="skip" ${o.skip?"checked":""}> skip this title</label>
      <div class="row"><button class="btn" onclick="saveOv(this)">Save options</button>${p.action==="build"?`<button class="btn" onclick="buildOne('${p.title_id}')">Build only this</button>`:""}<span class="small muted"></span></div></div></details></td>
-    <td>${esc(p.version)}</td><td class="small">${esc(p.kind||"")}<div class="muted">${esc((p.source||"").split("/").slice(-1)[0])}</div></td>
-    <td><span class="tag t-${p.action}">${p.action}</span><div class="small muted">${esc(p.why)}</div></td></tr>`}).join("");
+    <td>${esc(p.version)}</td><td class="small">${esc(p.kind||"")}<div>${pathHtml(p.source_host,p.source)}</div></td>
+    <td><span class="tag t-${p.action}">${p.action}</span><div class="small muted">${esc(p.why_host||p.why)}</div></td></tr>`}).join("");
   $("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
 }
 $("#libFilter").oninput=loadLib;$("#libAct").onchange=loadLib;
 async function saveOv(btn){const box=btn.closest(".ovr"),o={};box.querySelectorAll("[data-k]").forEach(e=>o[e.dataset.k]=e.type==="checkbox"?e.checked:e.value);
-  const m=btn.parentElement.querySelector("span");try{await api("/api/overrides/"+box.dataset.tid,{method:"PUT",body:JSON.stringify(o)});m.textContent="Saved — rescan to apply"}catch(e){m.textContent=e.message;m.className="small err"}}
+  const m=btn.parentElement.querySelector("span");try{const r=await api("/api/overrides/"+box.dataset.tid,{method:"PUT",body:JSON.stringify(o)});m.textContent="Saved — rescan to apply";m.className="small muted";
+    const pi=box.querySelector('[data-k="patch"]');if(pi)pi.value=r.patch||"";   // a path typed as on the NAS is stored as the container path
+    const h=box.querySelector("[data-patchhint]");if(h)h.innerHTML=patchHint(r,box.dataset.tid,libCfgHost)}catch(e){m.textContent=e.message;m.className="small err"}}
 async function buildOne(t){try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
 function alertBox(m){say(m,1)}
-async function loadHist(){const l=await api("/api/ledger");const rows=Object.entries(l).sort((a,b)=>(b[1].built||"").localeCompare(a[1].built||""));
-  $("#histRows").innerHTML=!rows.length?`<tr><td colspan="5"><b>Nothing built yet.</b> <span class="muted">Finished packages are listed here, with their checks, once a run has built one.</span></td></tr>`:rows.map(([t,v])=>`<tr><td><b>${esc((v.output||"").split("/").pop())}</b><div class="small muted">${esc(v.source||"")}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min · L${v.level??""}</td><td class="small">${esc(v.validate||"")}${v.sha256?`<div class="muted">sha256 ${v.sha256.slice(0,16)}…</div>`:""}</td></tr>`).join("")}
+async function loadHist(){const l=await api("/api/ledger");   // entries from older versions have other field names and gaps
+  const rows=Object.entries(l||{}).filter(([t,v])=>v&&typeof v==="object").sort((a,b)=>String(b[1].built||"").localeCompare(String(a[1].built||"")));
+  $("#histRows").innerHTML=!rows.length?`<tr><td colspan="5"><b>Nothing built yet.</b> <span class="muted">Finished packages are listed here, with their checks, once a run has built one.</span></td></tr>`:rows.map(([t,v])=>`<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">${v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${(v.seconds/60).toFixed(1)} min`:`prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`).join("")}
 const FIELDS={fConv:[["compression_level","Kraken level (1-9; 4 = fast, 7 = smaller)","n"],["cpu_count","Workers per build","n"],["max_compress","Builds compressing at once","n"],["max_builds","Builds alive at once","n"],["nice","CPU priority (nice 0-19)","n"],["ssd_reserve_gb","Keep free on work drive (GB)","n"],["build_on_ssd","Write package on work drive, then copy","b"],["console_fw","Console firmware (picks original vs backport)"],["skip_download_prefixes","Skip download folders starting with (comma separated)","l"],["junk_file_patterns","Delete files whose name matches (regex, comma separated)","l"],["junk_title_patterns","Cut from game titles (regex, comma separated)","l"]],
  fSched:[["schedule.enabled","Run automatically","b"],["schedule.times","At (HH:MM, comma separated)","l"],["notify_url","Notification URL (ntfy topic, optional)"]]};
 let cfg={};
@@ -200,8 +219,10 @@ $("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]")
   const [a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});
   try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved";$("#setMsg").className="small muted";loadSet();loadSetup()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};
 async function loadLogs(){const l=await api("/api/logs");const cur=wantLog||$("#logSel").value;wantLog=null;$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
-async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600");const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
-$("#logSel").onchange=showLog;$("#bLog").onclick=loadLogs;
+async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600"+($("#logHost").checked?"&host=1":""));const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
+$("#logSel").onchange=showLog;$("#logHost").onchange=()=>{try{localStorage.setItem("ps5pkg.logHost",$("#logHost").checked?"1":"0")}catch(e){}showLog().catch(()=>{})};
+try{if(localStorage.getItem("ps5pkg.logHost")==="0")$("#logHost").checked=false}catch(e){}
+$("#bLog").onclick=loadLogs;
 function load(){({dash:refresh,lib:loadLib,hist:loadHist,set:loadSet,logs:loadLogs})[tab]().catch(e=>say(e.message,1));if(tab==="dash")loadSetup();if(tab!=="dash"&&tab!=="set")poll().catch(()=>{})}
 load();setInterval(()=>{(tab==="dash"?refresh():poll()).catch(()=>{});if(tab==="logs"&&$("#logFollow").checked)showLog().catch(()=>{})},5000);
 </script>

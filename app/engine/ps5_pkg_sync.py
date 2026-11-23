@@ -881,6 +881,27 @@ def clean(app: Path, patch: str | None, log):
     return dict(removed=removed, titles_fixed=fixed, patched=patched)
 
 
+def host_mapping(cfg):
+    """[(container prefix, host prefix)] for the folders whose host location is configured (see ps5_hostpaths);
+    empty when none is, or when it can't be worked out (a notification must never fail over this)."""
+    try:
+        return ps5_hostpaths.folders_for(cfg, state=STATE, logs=LOGS, environ=os.environ)["mapping"]
+    except Exception:
+        return []
+
+
+def notification_text(cfg, name, status, why=None, output=None):
+    """What a push notification says: the package, the reason when there is one, and for a built package the
+    folder it is in, on the host when that is known (never a container path nobody could find)."""
+    mapping = host_mapping(cfg)
+    text = ps5_hostpaths.display_text(f"{name}" + (f": {why}" if why else ""), mapping)
+    if status == "built" and output:
+        folder = ps5_hostpaths.display_path(str(Path(output).parent), mapping)
+        if folder:
+            text += f"\nSaved in {folder}"
+    return text
+
+
 def notify(cfg, title, msg):
     url = (cfg.get("notify_url") or "").strip()
     if not url:
@@ -1163,7 +1184,8 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
                 (out / ".staging").rmdir()
             except OSError:
                 pass
-        notify(cfg, f"PS5 pkg: {res['status']}", f"{job['name']}" + (f": {res.get('why')}" if res.get("why") else ""))
+        notify(cfg, f"PS5 pkg: {res['status']}",
+               notification_text(cfg, job["name"], res["status"], res.get("why"), res.get("output")))
         log(f"  -> {job['title']}: {res['status']} (prep {res.get('prep_min')} min, build {res.get('build_min')} min). "
             f"{res.get('why', '')} {res.get('validate', '')}  SSD free {shutil.disk_usage(temp_root).free / 2**30:.0f} GiB")
 
@@ -1264,7 +1286,7 @@ def run_queue(cfg, todo, log, ledger_p, ledger):
                 guarded_rmtree(jd, Path(cfg["temp"]))
             results.append(dict(job, status="failed", why=f"prepare: {type(ex).__name__}: {ex}"))
             log(f"  -> {job['title']}: failed while preparing: {type(ex).__name__}: {ex}")
-            notify(cfg, "PS5 pkg: failed", f"{job['name']}: {type(ex).__name__}: {ex}")
+            notify(cfg, "PS5 pkg: failed", notification_text(cfg, job["name"], "failed", f"{type(ex).__name__}: {ex}"))
             continue
         # wait for a free compression slot (max_compress) and a free process slot (max_builds)
         while True:
