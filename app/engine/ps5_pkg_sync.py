@@ -513,6 +513,22 @@ def parse_param(raw: bytes) -> dict:
                 fw=fw_from_param(j.get("requiredSystemSoftwareVersion")))
 
 
+PATCHED_PARAM = "sce_sys/param.json"
+
+
+def patched_identity(patch):
+    """What a patch folder's sce_sys/param.json makes of the game (title id, title, version, firmware), or None when
+    the patch has none, it can't be read, or it says no version (then the name is not taken from it). The patch is
+    copied over the game's files, so this is the file the package is built from, and the one its name must come from."""
+    if not patch:
+        return None
+    try:
+        ident = parse_param((Path(patch) / PATCHED_PARAM).read_bytes())
+    except (OSError, ValueError, AttributeError):
+        return None
+    return ident if ident["version"] else None
+
+
 def clean_title(t: str) -> str:
     t = (JUNK_TITLE.sub(" ", t) if JUNK_TITLE else t).replace("™", "").replace("®", "")
     t = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", t)
@@ -1019,7 +1035,12 @@ def choose(cfg, cands, ledger, failures=None):
             usable = [c for c in lst if not c.get("packed")] or lst
             pick = sorted(usable, key=lambda c: (tuple(-x for x in vkey(c["version"])), KIND_PREF.get(c["kind"], 9)))[0]
         done = ledger.get(tid)
-        name = pkg_name(pick)
+        shown = pick                                                         # what the package will say: the patch's param.json wins
+        if not pick.get("ps4") and ov.get("patch"):
+            pi = patched_identity(ov["patch"])
+            if pi and pi["title_id"] == tid:
+                shown = dict(pick, title=pi["title"] or pick["title"], version=pi["version"], fw=pi["fw"])
+        name = pkg_name(shown)
         ps4 = bool(pick.get("ps4"))
         if ov.get("skip"):                                                  # an override always wins
             action, why = "skip", "skipped by override"
@@ -1031,7 +1052,7 @@ def choose(cfg, cands, ledger, failures=None):
             action, why = "skip", "PS4 title that is not a set of packages: not handled"
         elif pick.get("packed"):
             action, why = "skip", f"only {pick['packed']}-packed sources"
-        elif done and vkey(done["version"]) >= vkey(pick["version"]) and nas_exists(done["output"]):
+        elif done and vkey(done.get("source_version") or done["version"]) >= vkey(pick["version"]) and nas_exists(done["output"]):
             action, why = "done", f"built {done.get('built', '')}: {Path(done['output']).name}"
         elif ps4:
             action, why = "copy", "PS4: copy packages as they are" + (" (newer version)" if done else "")
@@ -1039,12 +1060,14 @@ def choose(cfg, cands, ledger, failures=None):
             action, why = "build", "newer version" if done else "new"
         twin = next((c for c in lst if c["kind"] in ("rar", "zip", "7z") and c["version"] == pick["version"]
                      and not c.get("packed") and c["source"] != pick["source"]), None)
-        plan.append(dict(title_id=tid, title=clean_title(pick["title"]), version=pick["version"], fw=pick.get("fw", ""),
+        plan.append(dict(title_id=tid, title=clean_title(shown["title"]), version=shown["version"], fw=shown.get("fw", ""),
                          source=pick["source"], kind=pick["kind"], size=pick.get("size", 0),
+                         **(dict(patched=True, source_version=pick["version"], source_fw=pick.get("fw", ""), source_name=pkg_name(pick))
+                            if shown is not pick else {}),
                          verify_archive=twin["source"] if twin and pick["kind"] not in ("rar", "zip", "7z", "folder") else None,
                          verify_root=twin.get("archive_root") if twin else None,
                          archive_root=pick.get("archive_root"), inner=pick.get("inner"), patch=ov.get("patch"),
-                         name=name if pick["version"] else f"{clean_title(pick['title'])} [{tid}] (version read after extraction)",
+                         name=name if shown["version"] else f"{clean_title(shown['title'])} [{tid}] (version read after extraction)",
                          action=action, why=why,
                          candidates=[dict(source=c["source"], kind=c["kind"], version=c["version"],
                                           packed=c.get("packed", ""), size=c.get("size", 0)) for c in lst],
@@ -1360,6 +1383,33 @@ def usable_ssd(cfg):
     return shutil.disk_usage(cfg["temp"]).free - (cfg["ssd_reserve_gb"] << 30)
 
 
+def name_after_patch(job, app, cleaned, log):
+    """A patch that replaces sce_sys/param.json can change the firmware, version or title the package carries (the
+    usual way to lower requiredSystemSoftwareVersion for an older console). The package is named from what the
+    work copy says after the patch, because the [fwNN.NN] tag is what people read to know whether it runs on their
+    console. Returns {key: (before, after)} of what changed in the name's parts; {} when nothing did."""
+    if PATCHED_PARAM not in [str(x).replace("\\", "/").lower() for x in (cleaned or {}).get("patched") or []]:
+        return {}
+    ident = parse_param((app / "sce_sys" / "param.json").read_bytes())
+    if ident["title_id"] != job["title_id"]:
+        raise ps5_failures.GameError("title_mismatch", f"after the patch the game is {ident['title_id']}, expected {job['title_id']}",
+                                     found=ident["title_id"], expected=job["title_id"], patch=True)
+    if not ident["version"]:                                           # a param.json that says no version: the name is kept
+        log(f"  the patch's sce_sys/param.json has no contentVersion: the name stays {job.get('name')}")
+        return {}
+    ident = dict(ident, title=ident["title"] or job.get("title") or "")
+    new = dict(version=ident["version"], fw=ident["fw"], title=clean_title(ident["title"]), name=pkg_name(ident))
+    changed = {k: (job.get(k), new[k]) for k in ("fw", "version", "title") if job.get(k) != new[k]}
+    if new["name"] == job.get("name") and not changed:
+        return {}
+    old_name = job.get("name")
+    job.setdefault("source_version", job.get("version"))             # what the source said: a newer source is what makes it a rebuild
+    job.update(new)
+    if new["name"] != old_name:
+        log(f"  name after patch: {new['name']}" + (f" ({', '.join(f'{k} {a} -> {b}' for k, (a, b) in changed.items())})" if changed else ""))
+    return changed
+
+
 def prepare(cfg, job, log, headroom=0):
     """Extract + clean the game on the SSD. headroom = bytes the running build may still grow."""
     log = job_log(log, job["title_id"])
@@ -1374,7 +1424,8 @@ def prepare(cfg, job, log, headroom=0):
             if m.get("source") == job["source"] and (m["app"] and (Path(m["app"]) / "sce_sys" / "param.json").exists()):
                 log(f"PREPARE {job['name']}: reusing verified copy on SSD from {m.get('at')}")
                 if not job.get("version") and m.get("job"):
-                    job.update({k: m["job"][k] for k in ("version", "fw", "title", "name") if k in m["job"]})
+                    job.update({k: m["job"][k] for k in ("version", "fw", "title", "name", "source_version") if k in m["job"] and m["job"][k] is not None})
+                name_after_patch(job, Path(m["app"]), m.get("clean"), log)         # a copy prepared before this was done: its marker may have the old name
                 return dict(app=Path(m["app"]), clean=m.get("clean"), prep_min=m.get("prep_min"))
         except Exception as ex:
             log(f"  ignoring unusable prepare marker: {ex}")
@@ -1397,8 +1448,9 @@ def prepare(cfg, job, log, headroom=0):
         job.update(version=ident["version"], fw=ident["fw"], title=clean_title(ident["title"]), name=pkg_name(ident))
         log(f"  identified after extraction: {job['name']}")
     res = dict(app=app, clean=clean(app, job.get("patch"), log), prep_min=round((time.time() - t0) / 60, 1))
+    name_after_patch(job, app, res["clean"], log)
     marker.write_text(json.dumps(dict(res, app=str(app), source=job["source"], at=time.strftime("%Y-%m-%d %H:%M"),
-                                      job={k: job.get(k) for k in ("version", "fw", "title", "name")}),
+                                      job={k: job.get(k) for k in ("version", "fw", "title", "name", "source_version")}),
                                  ensure_ascii=False, default=str))
     return res
 
@@ -1474,7 +1526,7 @@ def adopt_build(cfg, job, log):
     prep = info.get("prep") or {}
     if prep.get("app"):
         prep["app"] = Path(prep["app"])
-    job.update({k: v for k, v in (info.get("job") or {}).items() if k in ("version", "fw", "title", "name", "source")})
+    job.update({k: v for k, v in (info.get("job") or {}).items() if k in ("version", "fw", "title", "name", "source", "source_version") and v is not None})
     log(f"ADOPT running build of {job['name']} (pid {pid}); log {logf.name}")
     t0 = float(info.get("t0") or bf.stat().st_mtime)
     return dict(job=job, prep=prep, proc=PidProc(pid, logf), logf=logf,
@@ -1639,6 +1691,7 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             secs = {}
         with ledger_lock:
             ledger[job["title_id"]] = dict(version=job["version"], output=str(final), source=job["source"],
+                                           source_version=job.get("source_version") or job["version"],
                                            built=time.strftime("%Y-%m-%d %H:%M"), built_ts=time.time(), prep_min=prep.get("prep_min"),
                                            build_min=res["build_min"], bytes=final.stat().st_size, source_bytes=job.get("size"),
                                            level=cfg["compression_level"], validate=summ, clean=prep.get("clean"),

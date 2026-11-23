@@ -225,7 +225,10 @@ All settings live in `/config/state/config.json` and can be changed from the Set
   name. Both are empty by default.
 - `overrides`: per title ID, `source`, `patch` (a folder, for example under `/config/patches`, whose files are
   copied over the game; it must be inside `/config/patches`), `modified_exec` (`image` or `original`), `skip_verify` (don't check the copy against the
-  original archive: "keep this copy anyway"), `skip`. Usually set from the Library page.
+  original archive: "keep this copy anyway"), `skip`. Usually set from the Library page. A patch that contains
+  `sce_sys/param.json` (the usual way to lower `requiredSystemSoftwareVersion` for an older console) names the package:
+  the `[fwNN.NN]` tag, the version and the title come from that file, in the Library, the file name, the history and
+  the notification. A package built before that, under the old name, still counts as done and is not renamed.
 
 ### Editing `config.json` by hand
 
