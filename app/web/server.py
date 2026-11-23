@@ -35,6 +35,7 @@ import ps5_failures as FL  # noqa: E402  (games that failed: why, and when anoth
 import ps5_progress as PG  # noqa: E402  (what earlier builds say about how long a game takes)
 import ps5_settingsmeta as M  # noqa: E402  (what the Settings page shows and checks)
 import ps5_runctl as RC  # noqa: E402  (stop, cancel and pause requests: the files the engine and the scheduler read)
+import ps5_history as PH  # noqa: E402  (what runs did: history.jsonl, ledger entries of every version, logs, replaced packages)
 import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
 import ps5_settingsio as IO  # noqa: E402  (export / import of the settings)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
@@ -1263,32 +1264,321 @@ def ledger():
 
 
 SAFE_LOG = re.compile(r"^(pkg/)?[\w.\-]+\.log$")
+RUN_ID = re.compile(r"^\d{8}-\d{6}$")
+LOG_KEEP = dict(build=500, run=100, activity_old=100)       # of each kind, the newest are listed (the files stay until retention removes them)
 
 
-@app.get("/api/logs")
-def logs():
+def title_lookup(cfg):
+    """tid -> the game's title: from the plan, else from what a past run or a failure recorded, else what the scans learned, else the name of
+    its package. A game that is no longer in the library is still named by the history."""
+    plan = {p.get("title_id"): p.get("title") for p in plan_entries(cfg) if p.get("title")}
+    titles = E.load_titles()
+    seen = {}
+    for rec in FL.Store(STATE / "failures.json").load().values():
+        if rec.get("title") and rec.get("title_id"):
+            seen[rec["title_id"]] = rec["title"]
+    for r in PH.read_rows(STATE):
+        if r.get("k") == "job" and r.get("tid") and r.get("title"):
+            seen[r["tid"]] = r["title"]                                 # later runs win
+
+    def title(tid, name=None):
+        return (plan.get(tid) or seen.get(tid) or (titles.get(tid) if isinstance(titles, dict) else None)
+                or (str(name).split(" [")[0] if name else None) or tid)
+    return title
+
+
+def job_view(j, mapping):
+    """A job row of history.jsonl for the page: host twins of its paths, and a log only when it is a log the Logs page can open."""
+    j = dict(text_twin(host_twins(j, mapping, ("output", "source")), "why", mapping))
+    if not (isinstance(j.get("log"), str) and SAFE_LOG.match(j["log"]) and (LOGS / j["log"]).exists()):
+        j.pop("log", None)
+    j["checks"] = PH.parse_checks(j.get("validate"))
+    return j
+
+
+def run_output_log(items, started):
+    """The raw output file of a run (run_<time>.stdout.log), found by when it started."""
+    best = None
+    for d in items:
+        m = PH.RUN_LOG_RE.match(Path(d["name"]).name) if d["kind"] == "run" else None
+        if not m or started is None:
+            continue
+        try:
+            gap = abs(time.mktime(time.strptime(m.group("ts"), "%Y%m%d-%H%M%S")) - started)
+        except ValueError:
+            continue
+        if gap <= 120 and (best is None or gap < best[0]):
+            best = (gap, d["name"])
+    return best[1] if best else None
+
+
+@app.get("/api/history/runs")
+def history_runs(limit: int = 30, offset: int = 0):
+    """The runs recorded in history.jsonl, newest first: when, how it started, how long, the counts of what happened. A run's jobs are
+    in /api/history/runs/{run}. Runs before the app kept this history are not in it (their packages are in /api/history/packages)."""
+    runs = PH.runs(PH.read_rows(STATE))
+    items = PH.list_logs(LOGS)
     out = []
-    for p in sorted(LOGS.glob("*.log"), key=lambda p: -p.stat().st_mtime)[:30] + \
-            sorted((LOGS / "pkg").glob("*.log"), key=lambda p: -p.stat().st_mtime)[:60]:
-        out.append(dict(name=str(p.relative_to(LOGS)), size=p.stat().st_size, mtime=p.stat().st_mtime))
+    for r in runs[max(0, offset):max(0, offset) + max(1, min(limit, 200))]:
+        out.append(dict(run=r["run"], trigger=r["trigger"], started=r["started"], finished=r["finished"], seconds=r["seconds"], interrupted=r["interrupted"],
+                        counts=r["counts"], jobs=len(r["jobs"]), bytes=sum(int(j.get("bytes") or 0) for j in r["jobs"] if j.get("status") in ("built", "copied")),
+                        output_log=run_output_log(items, r["started"])))
+    return dict(total=len(runs), runs=out, since=runs[-1]["started"] if runs else None)
+
+
+@app.get("/api/history/runs/{run}")
+def history_run(run: str):
+    if not RUN_ID.match(run):
+        raise HTTPException(400, "not a run")
+    found = next((r for r in PH.runs(PH.read_rows(STATE)) if r["run"] == run), None)
+    if found is None:
+        raise HTTPException(404, "no such run")
+    mapping = host_view(load_cfg())["mapping"]
+    return dict(run=found["run"], trigger=found["trigger"], started=found["started"], finished=found["finished"], seconds=found["seconds"],
+                interrupted=found["interrupted"], counts=found["counts"], jobs=[job_view(j, mapping) for j in found["jobs"]])
+
+
+def replaced_view(cfg, mapping):
+    out = Path(cfg["output"])
+    items = []
+    for d in PH.replaced_files(out):
+        items.append(host_twins(dict(d, path=str(out / d["name"])), mapping, ("path",)))
+    return dict(items=items, count=len(items), bytes=sum(d["bytes"] for d in items))
+
+
+@app.get("/api/history/packages")
+def history_packages():
+    """The packages the ledger remembers (one per game, the latest build), each as one set of fields whatever version of the app wrote
+    it (None: not recorded), with whether its file is still there, its build log, and a rebuild mark; totals; and the packages that were
+    replaced by a newer build and are still in the output folder."""
+    cfg = load_cfg()
+    mapping = host_view(cfg)["mapping"]
+    data = read_json(STATE / "ledger.json", {})
+    items = PH.list_logs(LOGS)
+    last = {}
+    for r in PH.read_rows(STATE):
+        if r.get("k") == "job" and r.get("status") in ("built", "copied") and r.get("tid"):
+            if r["tid"] not in last or (r.get("at") or 0) >= (last[r["tid"]].get("at") or 0):
+                last[r["tid"]] = r
+    marked = set(FL.Store(STATE / "rebuild.json").load())
+    title_of = title_lookup(cfg)
+    out = []
+    for tid, v in (data.items() if isinstance(data, dict) else []):
+        p = PH.package(tid, v)
+        if p is None:
+            continue
+        exists = bool(p["output"]) and E.nas_exists(p["output"])
+        size = p["bytes"]
+        if size is None and exists and not p["ps4"]:
+            try:
+                size = float(os.stat(p["output"]).st_size)
+            except OSError:
+                pass
+        log, guessed = None, False
+        job = last.get(tid)
+        if job and job.get("output") == p["output"] and isinstance(job.get("log"), str) and SAFE_LOG.match(job["log"]) and (LOGS / job["log"]).exists():
+            log = job["log"]
+        elif not p["ps4"]:
+            log = PH.log_for_package(items, tid, p["built_ts"])
+            guessed = log is not None
+        out.append(host_twins(dict(p, title=title_of(tid, p["name"]), bytes=size, exists=exists, log=log, log_guessed=guessed, marked=tid in marked,
+                                   minutes=PH.minutes_of(p)), mapping, ("output", "source")))
+    known = [p for p in out if p["minutes"] is not None]
+    return dict(packages=out, replaced=replaced_view(cfg, mapping),
+                totals=dict(count=len(out), present=sum(1 for p in out if p["exists"]), bytes=int(sum(p["bytes"] or 0 for p in out if p["exists"])),
+                            minutes=round(sum(p["minutes"] for p in known), 1), minutes_known=len(known)))
+
+
+@app.get("/api/replaced")
+def replaced_list():
+    cfg = load_cfg()
+    return replaced_view(cfg, host_view(cfg)["mapping"])
+
+
+@app.delete("/api/replaced/{name}")
+def replaced_delete(name: str):
+    """Delete one package that was moved aside when its game was built again. Only a file of that exact name shape, directly in the output folder."""
+    try:
+        freed = PH.delete_replaced(load_cfg()["output"], name)
+    except ValueError:
+        raise HTTPException(400, "that is not a replaced package")
+    except FileNotFoundError:
+        raise HTTPException(404, "that file is not there")
+    return {"ok": True, "freed": freed}
+
+
+def ledger_entry(tid):
+    if not E.valid_title_id(tid):
+        raise HTTPException(400, "not a title ID")
+    data = read_json(STATE / "ledger.json", {})
+    if not isinstance(data, dict) or not isinstance(data.get(tid), dict):
+        raise HTTPException(404, "that game has no package in the history")
+    return data
+
+
+@app.post("/api/history/{tid}/rebuild")
+def history_rebuild(tid: str):
+    """Mark a game to be built again by the next run (its package is replaced only after the new one has validated)."""
+    ledger_entry(tid)
+    FL.Store(STATE / "rebuild.json").update(lambda d: d.__setitem__(tid, dict(at=time.time())))
+    when = request_replan()
+    return {"ok": True, "message": "Marked: the next run builds it again" + (" (the Library shows it as to build after the scan that follows)" if when != "now" else ""), "replan": when}
+
+
+@app.delete("/api/history/{tid}/rebuild")
+def history_rebuild_undo(tid: str):
+    if not E.valid_title_id(tid):
+        raise HTTPException(400, "not a title ID")
+    FL.Store(STATE / "rebuild.json").clear(tid)
+    request_replan()
+    return {"ok": True}
+
+
+@app.post("/api/history/{tid}/forget")
+async def history_forget(tid: str, req: Request):
+    """Remove a game's entry from the ledger (the package file stays where it is). The planner then treats the game as never built: it
+    is built again unless `skip` is true, which also sets the game's "never build" option. Not while a run may be writing the ledger."""
+    body = await req.json() if (await req.body()) else {}
+    data = ledger_entry(tid)
+    if engine_pid():
+        raise HTTPException(409, "A run is active: try again when it has ended.")
+    del data[tid]
+    E.write_json_atomic(STATE / "ledger.json", data)
+    FL.Store(STATE / "rebuild.json").clear(tid)
+    if isinstance(body, dict) and body.get("skip") is True:
+        def apply(raw):
+            if not isinstance(raw.get("overrides"), dict):
+                raw["overrides"] = {}
+            raw["overrides"][tid] = dict(raw["overrides"].get(tid) or {}, skip=True)
+        update_cfg(apply)
+    request_replan()
+    return {"ok": True}
+
+
+def log_items(cfg):
+    """The logs for the Logs page, newest first, builds with the game's title and what became of the build."""
+    items = PH.list_logs(LOGS)
+    title_of = title_lookup(cfg)
+    outcome = {}
+    for r in PH.read_rows(STATE):
+        if r.get("k") == "job" and isinstance(r.get("log"), str):
+            outcome[r["log"]] = r.get("status")
+    for rec in FL.Store(STATE / "failures.json").load().values():
+        if isinstance(rec.get("log"), str) and rec["log"] not in outcome:
+            outcome[rec["log"]] = "failed"
+    seen = {k: 0 for k in LOG_KEEP}
+    out = []
+    for d in items:
+        if d["kind"] in LOG_KEEP:
+            seen[d["kind"]] += 1
+            if seen[d["kind"]] > LOG_KEEP[d["kind"]]:
+                continue
+        if d["kind"] == "build":
+            d = dict(d, title=title_of(d["tid"]), outcome=outcome.get(d["name"]))
+        out.append(d)
     return out
 
 
+@app.get("/api/logs")
+def logs(info: int = 0):
+    """The log files. With info=1 also how much room they take and the retention settings."""
+    cfg = load_cfg()
+    items = log_items(cfg)
+    if not info:
+        return items
+    return dict(items=items, usage=PH.usage(LOGS), retention=dict(days=int(cfg.get("keep_logs_days") or 0), gb=int(cfg.get("keep_logs_gb") or 0)))
+
+
+@app.post("/api/logs/prune")
+async def logs_prune(req: Request):
+    """Remove the logs the retention settings say are too old or too many now (dry_run: only say which)."""
+    body = await req.json() if (await req.body()) else {}
+    cfg = load_cfg()
+    days, gb = int(cfg.get("keep_logs_days") or 0), int(cfg.get("keep_logs_gb") or 0)
+    if not days and not gb:
+        return {"ok": True, "removed": [], "freed": 0, "note": "No retention is set (Settings > Cleanup): nothing is removed."}
+    res = PH.prune_logs(LOGS, days, gb, protect=PH.failure_logs(FL.Store(STATE / "failures.json").load()),
+                        dry_run=bool(isinstance(body, dict) and body.get("dry_run")))
+    return dict(res, ok=True)
+
+
+SEG = re.compile(rb"[^\r\n]+")                  # a line of a log: UltraPack ends its progress lines with a carriage return, the rest with a newline
+
+
+def log_lines_before(fh, end, n, max_bytes=16 << 20):
+    """(byte offset where they start, text) of the last n non-empty lines that end at byte `end`, reading from the end in blocks."""
+    pos, data = end, b""
+    while pos > 0 and len(data) < max_bytes:
+        step = min(1 << 20, pos)
+        pos -= step
+        fh.seek(pos)
+        data = fh.read(step) + data
+        if len(SEG.findall(data)) > n + 1:
+            break
+    segs = list(SEG.finditer(data))
+    if pos > 0 and segs:
+        segs = segs[1:]                           # its first line may be cut
+    segs = segs[-n:]
+    if not segs:
+        return end, ""
+    return pos + segs[0].start(), b"\n".join(m.group() for m in segs).decode("utf-8", "replace")
+
+
+def log_chunk(fh, size, offset, limit):
+    """(next offset, text) of the bytes after `offset`: at most `limit`, ending at a line end when the file goes on, and never inside
+    a multi-byte character."""
+    end = min(size, offset + limit)
+    fh.seek(offset)
+    data = fh.read(end - offset)
+    if end < size:
+        cut = max(data.rfind(b"\n"), data.rfind(b"\r"))
+        if cut >= 0:
+            data = data[:cut + 1]
+    for _ in range(4):
+        try:
+            data.decode("utf-8")
+            break
+        except UnicodeDecodeError as ex:
+            if ex.start < len(data) - 3:
+                break                                # a bad byte in the middle: shown as a replacement character
+            data = data[:ex.start]
+    segs = [m.group() for m in SEG.finditer(data)]
+    return offset + len(data), ("\n".join(s.decode("utf-8", "replace") for s in segs) + "\n") if segs else ""
+
+
 @app.get("/api/logs/{name:path}")
-def log_tail(name: str, lines: int = 400, host: int = 0):
-    """The end of a log. With host=1 container folder prefixes are shown as their host locations (display only:
-    the file is never changed, and without host=1 the text is exactly what is on disk)."""
+def log_tail(name: str, lines: int = 400, host: int = 0, offset: int = -1, before: int = -1, limit: int = 1 << 20, download: int = 0):
+    """A log, as text. Without more: its last `lines` lines. `offset=N`: what was written after byte N (at most `limit` bytes; the
+    headers X-Log-Next / X-Log-Size say where to go on, X-Log-Reset when the file is shorter than N, then the last lines come instead).
+    `before=N`: the `lines` lines before byte N (what "load earlier" asks for; X-Log-Start says where the text begins). `download=1`: the file
+    exactly as it is on disk. With host=1 container folder prefixes are shown as their host locations (display only: the file is never
+    changed, and without host=1 the text is exactly what is on disk, carriage returns apart)."""
     if not SAFE_LOG.match(name):
         raise HTTPException(400, "bad log name")
     p = LOGS / name
-    if not p.exists():
+    if not p.is_file():
         raise HTTPException(404)
+    if offset >= 0 and before >= 0:
+        raise HTTPException(400, "offset and before can't be combined")
+    if download:
+        return FileResponse(p, media_type="text/plain; charset=utf-8", filename=p.name)
+    n = max(10, min(lines, 5000))
+    size = p.stat().st_size
+    heads, start, reset = {}, 0, False
     with open(p, "rb") as fh:
-        fh.seek(max(0, p.stat().st_size - (2 << 20)))
-        txt = fh.read().decode("utf-8", "replace").replace("\r", "\n")
-    keep = [ln for ln in txt.split("\n") if ln.strip()]
-    out = "\n".join(keep[-max(10, min(lines, 5000)):])
-    return PlainTextResponse(H.display_text(out, host_view(load_cfg())["mapping"]) if host else out)
+        if offset >= 0 and offset <= size:
+            nxt, text = log_chunk(fh, size, offset, max(4096, min(limit, 8 << 20)))        # never smaller than a line and a character: it always moves on
+            start = offset
+        else:
+            reset = offset > size
+            start, text = log_lines_before(fh, min(before, size) if before >= 0 else size, n)
+            nxt = size
+    heads = {"X-Log-Size": str(size), "X-Log-Start": str(start), "X-Log-Next": str(nxt)}
+    if reset:
+        heads["X-Log-Reset"] = "1"
+    if host:
+        text = H.display_text(text, host_view(load_cfg())["mapping"])
+    return PlainTextResponse(text, headers=heads)
 
 
 @app.get("/api/health")

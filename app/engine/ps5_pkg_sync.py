@@ -54,6 +54,7 @@ import ps5_ps4pkg  # noqa: E402  (PS4 package headers: name and classify package
 import ps5_hostpaths  # noqa: E402  (where the container's folders are on the host: validated here, shown by the server)
 import ps5_setup  # noqa: E402  (first-run setup checks, shared with the web server)
 import ps5_runctl as RC  # noqa: E402  (stop, cancel, pause: the files and flags that control a run)
+import ps5_history as PH  # noqa: E402  (what runs did: history.jsonl, old ledger entries, logs, replaced packages)
 from ps5_runctl import Cancelled  # noqa: E402
 
 ROOT = HERE.parent
@@ -85,6 +86,9 @@ DEFAULT_CFG = {
     "overrides": {},
     "host_paths": {},              # folder -> where it is on the host, for display only (see ps5_hostpaths)
     "ps4_mode": "copy",            # PS4 titles (CUSA...): "copy" their ready-made packages as they are, or "skip" them
+    "keep_replaced": "all",        # when a game is built again, its older package ("(replaced ...)") is kept: "all", the newest "1", or "never"
+    "keep_logs_days": 0,           # build logs and run output older than this many days are deleted (0: never)
+    "keep_logs_gb": 0,             # ...and the oldest of them while they take more than this many GiB (0: no limit)
 }
 SEVENZ = ps5_setup.SEVENZ
 JUNK_FILE = JUNK_TITLE = None   # compiled from cfg junk_file_patterns / junk_title_patterns by load_cfg()
@@ -132,7 +136,8 @@ SETTINGS = {  # key: (type, min, max) - everything the Settings page may change
     "max_compress": (int, 1, 4), "max_builds": (int, 1, 6), "ssd_reserve_gb": (int, 0, 10000),
     "build_on_ssd": (bool,), "console_fw": (str,), "notify_url": (str,),
     "skip_download_prefixes": (list,), "junk_file_patterns": (list,), "junk_title_patterns": (list,),
-    "schedule": (dict,), "host_paths": (dict,), "ps4_mode": (str,),
+    "schedule": (dict,), "host_paths": (dict,), "ps4_mode": (str,), "keep_replaced": (str,),
+    "keep_logs_days": (int, 0, 3650), "keep_logs_gb": (int, 0, 1000),
 }
 PS4_MODES = ("copy", "skip")
 NOTIFY_URL_RE = re.compile(r"https?://[^\s/?#]+", re.I)     # a push notification goes to a web address, never to file:// and the like
@@ -212,6 +217,8 @@ def validate_setting(key, v):
                     raise ValueError(f"{key}: bad pattern {x!r}: {ex}")
     if key == "ps4_mode" and v not in PS4_MODES:
         raise ValueError(f"ps4_mode must be {' or '.join(PS4_MODES)}")
+    if key == "keep_replaced" and v not in PH.KEEP_REPLACED:
+        raise ValueError(f"keep_replaced must be {', '.join(PH.KEEP_REPLACED)}")
     if key == "host_paths":
         v = ps5_hostpaths.validate_setting(v)
     if key == "schedule":
@@ -1190,11 +1197,13 @@ def unrecognised(cands):
     return sorted(out, key=lambda x: x["source"])
 
 
-def choose(cfg, cands, ledger, failures=None, titles=None):
+def choose(cfg, cands, ledger, failures=None, titles=None, rebuild=None):
     """The plan: one entry per title. `failures` (state/failures.json) makes a title that failed, with nothing
     changed since, action "failed" instead of "build": preparing it again would copy the same hundreds of GiB
-    to fail the same way. `titles` (state/titles.json) names the games whose scan only found a folder name."""
+    to fail the same way. `titles` (state/titles.json) names the games whose scan only found a folder name.
+    `rebuild` (state/rebuild.json): titles someone asked to have built again, whatever the ledger says."""
     failures = failures or {}
+    rebuild = rebuild or ()
     by = {}
     for c in cands:
         if c.get("error") or not c.get("title_id"):
@@ -1232,6 +1241,8 @@ def choose(cfg, cands, ledger, failures=None, titles=None):
         elif pick.get("packed"):
             action, why = "skip", (f"only {pick['packed']}-packed copies: UltraPack builds from unpacked files, so this game is skipped "
                                    f"until an unpacked copy is found")
+        elif tid in rebuild:
+            action, why = ("copy", "PS4: copy packages again (asked for)") if ps4 else ("build", "rebuild requested")
         elif done and vkey(done.get("source_version") or done.get("version")) >= vkey(pick["version"]) and done.get("output") and nas_exists(done["output"]):
             action, why = "done", f"built {done.get('built', '')}: {Path(done['output']).name}"
         elif ps4:
@@ -1945,7 +1956,7 @@ def _finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             make_room()
             pkgs[0].rename(final)
         res.update(status="built", output=str(final), gib=round(final.stat().st_size / 2**30, 2), build_secs=round(time.time() - b["t0"], 1),
-                   backport=job.get("backport_outcome"))
+                   backport=job.get("backport_outcome"), bytes=final.stat().st_size, level=cfg["compression_level"])
         secs = tr.stage_secs() if tr is not None else {}
         if all(str(n) in secs for n in range(1, 6)):         # a build seen from its first line: its stage times teach the next estimate
             secs.update(validate=round(validate_secs, 1), copy=round(copy_secs, 1))
@@ -1960,6 +1971,11 @@ def _finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
                                            sha256=res.get("sha256"), **({"stage_secs": secs} if secs else {}),
                                            **({"backport": job["backport_outcome"]} if job.get("backport_outcome") else {}))
             ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
+        try:
+            ps5_failures.Store(STATE / "rebuild.json").clear(tid)                 # asked for, and done
+            PH.prune_replaced(out, final.stem, PH.keep_count(cfg.get("keep_replaced")))
+        except Exception as ex:                                                  # the build is done: tidying up must not make it a failure
+            log(f"  could not tidy up replaced packages: {type(ex).__name__}: {ex}")
         return res
     except Exception as ex:
         if isinstance(ex, Cancelled) or RC.cancel_requested(tid):
@@ -2090,6 +2106,7 @@ def copy_ps4(cfg, job, log):
 
 # ------------------------------------------------------------------ what the page shows of a run
 
+LOG_ROTATE_BYTES = int(os.environ.get("PS5PKG_LOG_ROTATE_BYTES") or 16 << 20)     # the engine's own log is renamed and restarted past this size
 STATUS_INTERVAL = float(os.environ.get("PS5PKG_STATUS_INTERVAL") or 5)    # seconds between writes of status.json
 FINISH = {}          # title_id -> {phase: validating|copying|verifying, frac, done, total}: a build UltraPack is done with
 
@@ -2137,6 +2154,8 @@ class RunStatus:
         self.state = STATE                  # the folder it writes to: fixed now, so a writer that outlives its run can never write into another one
         self.stop_evt, self.thread, self.finished, self.last_error = threading.Event(), None, False, None
         self.lock = threading.Lock()
+        self.run = PH.run_id(self.started)  # names the run in history.jsonl, and its logs
+        self.recorded = set()               # the results already written to history.jsonl, by (title, time)
         self.cancelling = set()             # games a cancel was asked for (shown until they are out of the run)
         self.say = lambda msg: None         # the engine's log, when main() gives it
         self.control_thread = None
@@ -2156,7 +2175,36 @@ class RunStatus:
         self.ps4_current = None
         self.ps4_results.append(res)
 
+    def raw_results(self):
+        q = self.q
+        results = list(q["results"]) if q else list(self.ps4_results)
+        for f in q.get("finishing", []):
+            try:
+                if f.done():
+                    results.append(dict(f.result()))
+            except Exception:
+                pass
+        return results
+
+    def record_new(self, results, before=(), after=()):
+        """Write the results that are not in history.jsonl yet, between `before` (a run's start) and `after` (its end). Never raises: a
+        history that can't be written must not stop a run."""
+        try:
+            new = []
+            for r in results:
+                key = (r.get("title_id"), r.get("at"))
+                if key not in self.recorded and r.get("status"):
+                    self.recorded.add(key)
+                    new.append(PH.job_row(r, self.run, self.cfg.get("compression_level")))
+            PH.append(self.state, list(before) + new + list(after))
+        except Exception as ex:
+            msg = f"history.jsonl could not be written: {type(ex).__name__}: {ex}"
+            if msg != self.last_error:
+                self.last_error = msg
+                print(msg, flush=True)
+
     def start(self):
+        self.record_new([], before=[dict(k="run", run=self.run, trigger=self.trigger, started=self.started, v=1)])
         self.write()
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -2420,6 +2468,7 @@ class RunStatus:
                 tmp = self.state / "status.json.part"
                 tmp.write_text(json.dumps(self.snapshot(), ensure_ascii=False, default=str))
                 tmp.replace(self.state / "status.json")
+                self.record_new(self.raw_results())
         except Exception as ex:                                 # a run must not stop over its status; but say so, once per kind of error
             msg = f"status.json could not be written: {type(ex).__name__}: {ex}"
             if msg != self.last_error:
@@ -2436,6 +2485,7 @@ class RunStatus:
                        total=max(len(results), len(self.jobs) + len(self.ps4_jobs)), done=len(results), progress=1.0, **run_counts(results))
             if interrupted:
                 run["interrupted"] = True
+            self.record_new(results, after=[dict(k="end", run=self.run, finished=now, interrupted=bool(interrupted))])
             tmp = self.state / "status.json.part"
             tmp.write_text(json.dumps(dict(updated=now, pid=None, finished=True, run=run,
                                            results=[{k: r.get(k) for k in RESULT_KEYS} for r in results]), ensure_ascii=False, default=str))
@@ -2469,6 +2519,7 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger, rs=None):
                                built_ts=time.time(), bytes=r["bytes"], ps4=True, kind="ps4", files=r["files"], validate=r["validate"],
                                source_bytes=job.get("size"), copy_secs=round(time.time() - t_copy, 1))
             ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
+            ps5_failures.Store(STATE / "rebuild.json").clear(tid)
             res.update(status="copied", output=str(Path(r["output"]) / r["files"][0]) if r["files"] else r["output"],
                        gib=round(r["bytes"] / 2**30, 2), validate=r["validate"], copy_secs=round(time.time() - t_copy, 1))
             try:
@@ -2740,7 +2791,10 @@ def main():
     ap.add_argument("--trigger", choices=["manual", "scheduled"], default="manual", help="why this run was started (for the status)")
     a = ap.parse_args()
     LOGS.mkdir(parents=True, exist_ok=True)
+    rotated = PH.rotate(LOGS / "pkg_sync.log", LOG_ROTATE_BYTES)
     log = log_to(open(LOGS / "pkg_sync.log", "a", encoding="utf-8"))
+    if rotated:
+        log(f"=== the log had grown past {LOG_ROTATE_BYTES >> 20} MiB: the earlier part is in {rotated}")
     info = load_cfg_info()
     if info.error:       # no last good settings to fall back on in a fresh process: say why and stop
         log(f"=== not starting: {CFG_PATH.name} can't be used ({info.error.describe()}). "
@@ -2771,6 +2825,14 @@ def main():
             sys.exit(EXIT_LOCKED)
         lock.write_text(str(os.getpid()))
         RC.clear_requests(STATE)
+        try:
+            days, gb = int(cfg.get("keep_logs_days") or 0), int(cfg.get("keep_logs_gb") or 0)
+            if days or gb:
+                gone = PH.prune_logs(LOGS, days, gb, protect=PH.failure_logs(failure_store().load()))
+                if gone["removed"]:
+                    log(f"=== old logs removed ({len(gone['removed'])} files, {gone['freed'] / 2**20:.1f} MiB): keep_logs_days {days}, keep_logs_gb {gb}")
+        except Exception as ex:
+            log(f"=== could not remove old logs: {type(ex).__name__}: {ex}")
     try:
         cache_p = STATE / "ident_cache.json"
         cache = {} if a.rescan or not cache_p.exists() else json.loads(cache_p.read_text())
@@ -2786,7 +2848,7 @@ def main():
         cands = discover(cfg, log, cache)
         cache_p.write_text(json.dumps(cache, indent=1, ensure_ascii=False))
         failures = failure_store().load()
-        plan = choose(cfg, cands, ledger, failures, titles=load_titles())
+        plan = choose(cfg, cands, ledger, failures, titles=load_titles(), rebuild=set(ps5_failures.Store(STATE / "rebuild.json").load()))
         write_json_atomic(STATE / "unrecognised.json", unrecognised(cands))
         for j in plan:                                  # built since (by hand, or by another copy): nothing to remember
             if j["action"] == "done" and j["title_id"] in failures:

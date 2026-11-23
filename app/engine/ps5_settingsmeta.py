@@ -56,6 +56,15 @@ FIELDS = [
               "building (release-group watermarks, .url and .txt files). Your source folders are never changed."),
     dict(key="junk_title_patterns", group="cleanup", kind="regex", subject="title", label="Cut from game titles", example=r"\[.*?\]",
          help="Regular expressions, one per line. Matching text is cut out of the title in param.json and out of the package name."),
+    dict(key="keep_replaced", group="cleanup", kind="choice", label="Packages replaced by a newer build",
+         choices=[("all", "Keep them all"), ("1", "Keep only the newest one"), ("never", "Delete it as soon as the new package is complete")],
+         help="When a game is built again, its older package is renamed \"... (replaced 202611221430).pkg\" and stays in the output folder. "
+              "History lists them with their size and a Delete button. The older package is only ever touched after the new one is complete."),
+    dict(key="keep_logs_days", group="cleanup", kind="int", label="Delete old logs after", unit="days",
+         help="Build logs, each run's raw output and rotated activity logs older than this are deleted when a run starts, or when you press "
+              "Remove now on the Logs page. 0 keeps them for ever. The log of a game that is still failing is always kept."),
+    dict(key="keep_logs_gb", group="cleanup", kind="int", label="Keep the logs under", unit="GB",
+         help="The oldest of those logs are deleted while they take more than this. 0 means no limit."),
     dict(key="schedule.enabled", group="schedule", kind="bool", label="Run automatically",
          help="Start a run at the times below, on this server's clock."),
     dict(key="schedule.times", group="schedule", kind="times", label="Run at", example="03:00",
@@ -154,6 +163,8 @@ def friendly(key, value, tech):
         return [_err(key, "Enter a web address that starts with http:// or https://, or leave it empty.")]
     if key == "ps4_mode":
         return [_err(key, "Choose copy or skip.")]
+    if key == "keep_replaced":
+        return [_err(key, "Choose keep all, keep the newest one, or delete.")]
     if spec and spec[0] is int:
         return [_err(key, f"{label} must be a whole number from {spec[1]} to {spec[2]}.")]
     if spec and spec[0] is bool:

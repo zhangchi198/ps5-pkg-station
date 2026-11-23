@@ -40,6 +40,13 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
 .banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}.banner pre{color:var(--fg);max-height:14em;margin:8px 0}
 .lv-ok{color:var(--ok)}.lv-warn{color:var(--warn)}.lv-fail{color:var(--bad);font-weight:700}.setup td:first-child{width:3.5em;white-space:nowrap}
 a{color:var(--acc)}
+.seg{display:inline-flex;gap:0}.seg .btn{border-radius:0}.seg .btn:first-child{border-radius:6px 0 0 6px}.seg .btn:last-child{border-radius:0 6px 6px 0}.seg .btn.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.run>summary{cursor:pointer;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}.run .runbody{margin-top:8px}.run table td{padding:5px 6px}
+.pkg{padding:10px 0;border-top:1px solid var(--line)}.pkg:first-child{border-top:0}.pkg .btnrow{margin:6px 0 0}.pkg code{word-break:break-all}
+.logwrap{display:grid;grid-template-columns:minmax(260px,340px) minmax(0,1fr);gap:14px;align-items:start}#logList{max-height:84vh;overflow:auto}
+.lg{display:block;padding:4px 6px;border-radius:6px;text-decoration:none;color:inherit;cursor:pointer}.lg:hover{background:var(--bg)}.lg.on{background:var(--bar)}.lgh{margin:10px 0 2px;font-weight:600}.lgh+.small{margin-bottom:4px}
+.logbar{margin-top:6px;gap:8px}#logTxt{margin-top:8px;min-height:240px}#logTxt.nowrap{white-space:pre;word-break:normal;overflow:auto}#logTxt mark{background:#fde68a;color:#111;border-radius:2px}#logTxt mark.cur{outline:2px solid var(--acc)}#logTxt .pg{color:var(--muted)}#logTxt .lvl{color:var(--bad)}
+@media (max-width:860px){.logwrap{grid-template-columns:1fr}#logList{max-height:40vh}}
 button.dng{background:var(--bad);border-color:var(--bad);color:#fff}
 .dlgback{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:20;padding:16px}.dlgback[hidden]{display:none}
 .dlg{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:12px;padding:18px 20px;max-width:520px;width:100%;max-height:92vh;overflow:auto;box-shadow:0 10px 40px rgba(0,0,0,.35)}
@@ -95,8 +102,19 @@ button.dng{background:var(--bad);border-color:var(--bad);color:#fff}
   <div class="card"><table><thead><tr><th>Game</th><th>Version</th><th>Copy used</th><th>Status</th></tr></thead><tbody id="libRows"></tbody></table></div>
   <div id="libUnrec"></div>
 </section>
-<section id="hist"><div class="card row"><select id="histFilter"><option value="">All attempts</option><option value="built">Built</option><option value="failed">Failed</option></select><span class="muted small">Failed attempts are listed with the reason and what to do; the log has the details.</span></div>
-  <div class="card"><table><thead><tr><th>Package</th><th>Built</th><th>Size</th><th>Times</th><th>Checks</th></tr></thead><tbody id="histRows"></tbody></table></div></section>
+<section id="hist">
+  <div class="card row"><span class="seg"><button class="btn on" data-hv="runs">Runs</button><button class="btn" data-hv="pkgs">Packages</button></span>
+    <span class="muted small" id="histNote">What each run did, and the packages it made.</span></div>
+  <div id="histRuns"></div>
+  <div id="histPkgs" hidden>
+    <div class="card"><div class="row"><b id="pkgSum">Packages</b>
+      <input id="pkgFind" type="search" placeholder="Search by title, ID or file name…" style="max-width:260px;margin-left:auto">
+      <select id="pkgStatus" title="Show"><option value="">All</option><option value="ok">Built</option><option value="ps4">PS4 copies</option><option value="missing">File missing</option><option value="marked">Rebuild requested</option><option value="failed">Failed</option></select>
+      <select id="pkgSort" title="Sort by"><option value="new">Newest first</option><option value="old">Oldest first</option><option value="size">Largest first</option><option value="time">Longest first</option><option value="name">Name</option></select></div>
+      <div class="small muted" id="pkgTotals"></div></div>
+    <div class="card" id="pkgList"></div>
+    <div class="card" id="replCard"></div>
+  </div></section>
 <section id="set">
   <div class="banner warn" id="cfgChanged" hidden>Settings file changed on disk. <button class="btn" id="bReload">Reload from the file</button> <span class="small">(what you edited on this page and haven't saved is discarded)</span></div>
   <div class="card small" id="setNotes"><b>When a change applies.</b> Build settings are read when a run starts, so a change applies from the next run, not to games already in progress.
@@ -109,10 +127,27 @@ button.dng{background:var(--bad);border-color:var(--bad);color:#fff}
   <div class="savebar" id="saveBar" hidden><span id="barText"><b>Unsaved changes</b></span><span id="setMsg" class="small"></span>
     <span style="margin-left:auto" class="row"><button class="btn pri" id="bSave">Save settings</button><button class="btn" id="bDiscard">Discard</button></span></div>
 </section>
-<section id="logs"><div class="card"><div class="row"><select id="logSel"></select><button class="btn" id="bLog">Refresh</button>
-  <label class="small"><input type="checkbox" id="logFollow" checked> follow</label>
-  <label class="small" title="Shows /library/... as the folder is on your NAS. The log files themselves are not changed."><input type="checkbox" id="logHost" checked> show NAS paths</label></div></div>
-  <div class="card"><pre id="logTxt"></pre></div></section>
+<section id="logs"><div class="logwrap">
+  <div class="card" id="logList">
+    <input id="logFind" type="search" placeholder="Find a game or a log…">
+    <div id="logGroups"></div>
+    <div class="small muted" id="logUsage" style="margin-top:8px"></div>
+    <div class="row" style="margin-top:6px"><button class="btn sm" id="bLogPrune" hidden>Remove old logs now</button><button class="btn sm" id="bLog">Refresh the list</button></div>
+  </div>
+  <div class="card" id="logView">
+    <div class="row"><b id="logTitle">Pick a log</b><span class="muted small" id="logMeta"></span></div>
+    <div class="row logbar">
+      <a class="btn sm" id="logDl" href="#" hidden>Download</a>
+      <input id="logSearch" type="search" placeholder="Search in this log" style="max-width:220px"><button class="btn sm" id="logPrev" title="Previous match">&uarr;</button><button class="btn sm" id="logNext" title="Next match">&darr;</button><span class="small muted" id="logHits"></span>
+      <label class="small"><input type="checkbox" id="logWarn"> only warnings and errors</label>
+      <label class="small"><input type="checkbox" id="logCollapse" checked> collapse progress lines</label>
+      <label class="small"><input type="checkbox" id="logWrap" checked> wrap lines</label>
+      <label class="small"><input type="checkbox" id="logFollow" checked> follow</label>
+      <label class="small" title="Shows /library/... as the folder is on your NAS. The log files themselves are not changed."><input type="checkbox" id="logHost" checked> show NAS paths</label>
+    </div>
+    <div class="row logbar"><button class="btn sm" id="logEarlier" hidden>Load earlier</button><button class="btn sm" id="logAll" hidden>Load the whole file</button><span class="small muted" id="logNote"></span></div>
+    <pre id="logTxt"></pre>
+  </div></div></section>
 </main>
 <footer class="small muted" style="text-align:center;padding:14px"><div id="ver"></div><div id="accessNote">No login: anyone who can open this page can use it. Keep it on your home network or behind a VPN.</div></footer>
 <div class="dlgback" id="dlg" hidden><div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle" tabindex="-1">

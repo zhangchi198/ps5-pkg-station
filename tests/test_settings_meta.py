@@ -39,7 +39,8 @@ class Definition(unittest.TestCase):
     def test_every_setting_the_old_page_edited_is_still_on_it(self):
         edited = {f["key"].split(".")[0] for f in M.FIELDS}
         self.assertEqual(edited, {"console_fw", "ps4_mode", "max_builds", "max_compress", "cpu_count", "compression_level", "nice", "ssd_reserve_gb", "build_on_ssd",
-                                  "skip_download_prefixes", "junk_file_patterns", "junk_title_patterns", "schedule", "notify_url"})
+                                  "skip_download_prefixes", "junk_file_patterns", "junk_title_patterns", "schedule", "notify_url",
+                                  "keep_replaced", "keep_logs_days", "keep_logs_gb"})
         for key in edited:
             self.assertIn(key, E.SETTINGS)
 

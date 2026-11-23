@@ -301,8 +301,8 @@ class Page(LibraryCase):
         self.assertLess(body.index("askConfirm("), body.index('api("/api/run"'))                                   # asked before anything starts
 
     def test_history_shows_what_a_build_did_about_a_backport(self):
-        body = self.body("function builtRow", "async function loadHist")
-        self.assertIn("v.backport", body)
+        body = self.body("function pkgRow", "function failedPkgRow")
+        self.assertIn("p.backport", body)
         self.assertIn("was used", body)
 
     def test_the_wording(self):

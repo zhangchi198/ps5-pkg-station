@@ -15,7 +15,7 @@ async function copyText(t){try{if(navigator.clipboard&&window.isSecureContext){a
   const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand("copy")}catch(e){}a.remove();return ok}   // plain http on a LAN has no clipboard API
 document.addEventListener("click",e=>{const b=e.target.closest("[data-copy]");if(!b)return;e.preventDefault();
   copyText(b.dataset.copy).then(ok=>{const t=b.textContent;b.textContent=ok?"copied":"select + Ctrl+C";setTimeout(()=>{b.textContent=t},1500)})});
-document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{if(tab==="set"&&b.dataset.tab!=="set"&&settingsDirty()&&!(await askConfirm({title:"Discard your changes?",html:"<p>You have unsaved changes on the Settings page.</p>",ok:"Discard them",cancel:"Keep editing",danger:true})))return;tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
+document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{if(tab==="set"&&b.dataset.tab!=="set"&&settingsDirty()&&!(await askConfirm({title:"Discard your changes?",html:"<p>You have unsaved changes on the Settings page.</p>",ok:"Discard them",cancel:"Keep editing",danger:true})))return;tab=b.dataset.tab;if(tab!=="logs"&&location.hash.startsWith("#logs"))try{history.replaceState(null,"",location.pathname+location.search)}catch(x){}document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
 function say(t,bad){$("#msg").textContent=t;$("#msg").className="small "+(bad?"err":"muted")}
 // A question in the page, not window.confirm: a browser dialog can block an automation, and on a phone it is small and ugly. Everything in `html` is
 // escaped by the caller. Resolves {key, checked} for the button pressed, or null for Escape / a click outside.
@@ -324,7 +324,7 @@ function libRow(p,cfgHost){const o=libData.overrides[p.title_id]||{},tid=esc(p.t
     <details class="why" data-tid="${tid}"><summary class="small">Why this copy · Options${Object.keys(o).length?" (changed)":""}</summary>${candList(p)}${backportText(p)}${optionsForm(p,o,cfgHost)}</details></td>
     <td>${esc(p.version)}</td><td class="small">${esc(((p.candidates||[]).find(x=>x.source===p.source)||{}).kind_label||p.kind||"")}<div>${pathHtml(p.source_host,p.source)}</div></td>
     <td>${p.failure?failTag(p.failure.state==="waiting"||p.action==="failed"?p.failure:{state:"failed"}):`<span class="tag t-${cls(p.action)}">${esc(p.action)}</span>`}${p.failure&&p.failure.state==="failed"&&p.action==="build"?` <span class="tag t-build">will retry</span>`:""}
-     <div class="small muted">${esc(p.why_host||p.why)}</div>${why&&p.action==="skip"?why:""}${p.ps4&&p.files?ps4Files(p):""}${p.failure?`${failureButtons(p.failure,false)}<details><summary class="small">Why, and the log</summary>${failureBody(p.failure)}</details>`:""}</td></tr>`}
+     <div class="small muted">${esc(p.why_host||p.why)}</div><div class="small"><a href="#logs?game=${tid}">Logs</a></div>${why&&p.action==="skip"?why:""}${p.ps4&&p.files?ps4Files(p):""}${p.failure?`${failureButtons(p.failure,false)}<details><summary class="small">Why, and the log</summary>${failureBody(p.failure)}</details>`:""}</td></tr>`}
 function unrecBox(un,s){if(!un.length){$("#libUnrec").innerHTML="";return}
   $("#libUnrec").innerHTML=`<details class="card" id="unrecDetails"><summary><b>Not recognised (${un.length})</b> <span class="muted small">looked at, but not usable</span></summary>
     <div class="small muted" style="margin:6px 0">These files were scanned and could not be identified as a game. A patch, an add-on or an unrelated archive is not listed here, only what failed. Fix or remove the file and scan again.</div>
@@ -382,14 +382,83 @@ async function buildOne(t){const p=libData.plan.find(x=>x.title_id===t)||{},free
 function alertBox(m){say(m,1)}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-do]");if(!b)return;e.preventDefault();
   if(b.dataset.do==="scan"){doScan();goTab("dash")}else if(b.dataset.do==="rescan")doScan();else if(b.dataset.do==="saveov")saveOv(b);else if(b.dataset.do==="buildone")buildOne(b.dataset.tid)});
-function builtRow(t,v){return `<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.ps4?` <span class="tag">PS4</span>${Array.isArray(v.files)?` <span class="muted small">${num(v.files.length)} package${v.files.length===1?"":"s"}</span>`:""}`:""}${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${esc(gib(v.bytes))}</td><td class="small">${v.ps4?"copied as they are":v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${esc((num(v.seconds)/60).toFixed(1))} min`:`prep ${esc(v.prep_min??"—")} · build ${esc(v.build_min??"—")} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${v.backport&&v.backport.differs?`<div class="muted">image differed from the original in ${num(v.backport.files)} file(s): the ${esc(v.backport.used)} was used</div>`:""}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`}
-function failedRow(f){return `<tr><td><b>${esc(f.name||f.title||f.title_id)}</b> ${failTag(f)}<div class="small">${esc(f.summary)}</div><div class="small muted">${esc(f.next||"")}</div>${failureButtons(f,false)}<details><summary class="small">Details and the log of this attempt</summary>${failureBody(f)}</details></td><td class="small">${esc(f.at_text||"")}</td><td>—</td><td class="small">attempt ${esc(f.attempts||1)} · ${esc(f.phase||"")}</td><td class="small">${esc(f.code||"")}</td></tr>`}
-async function loadHist(){const [l,fl]=await Promise.all([api("/api/ledger"),api("/api/failures")]);   // ledger entries from older versions have other field names and gaps
-  const flt=$("#histFilter").value;
-  const rows=[...Object.entries(l||{}).filter(([t,v])=>v&&typeof v==="object").map(([t,v])=>({k:"built",t,v,when:String(v.built||"")})),
-    ...(fl||[]).map(f=>({k:"failed",f,when:String(f.at_text||"")}))].filter(r=>!flt||r.k===flt).sort((a,b)=>b.when.localeCompare(a.when));
-  $("#histRows").innerHTML=!rows.length?`<tr><td colspan="5"><b>${flt==="failed"?"No failed attempts.":"Nothing built yet."}</b> <span class="muted">Finished packages are listed here, with their checks, once a run has built one; games that failed are listed with the reason.</span></td></tr>`:rows.map(r=>r.k==="failed"?failedRow(r.f):builtRow(r.t,r.v)).join("")}
-$("#histFilter").onchange=loadHist;
+// ---- History: what each run did, and the packages it made. Two views of the same facts; the Runs view is history.jsonl, the Packages
+// view is the ledger (one row per game: the latest package) with what each entry says normalised, and "not recorded" where it doesn't.
+const whenText=ts=>{if(!ts)return"not recorded";const a=srvAt(ts),dt=new Date(Date.UTC(a.y,a.mo,a.d));return`${WD[dt.getUTCDay()]} ${a.d} ${MON[a.mo]} ${p2(a.h)}:${p2(a.mi)}`};
+const minText=m=>m==null?"not recorded":m<1?"under a minute":dur(m*60);
+const sizeText=b=>b==null?"not recorded":b<1024?b+" B":b<2**20?Math.round(b/1024)+" KiB":b<2**30?(b/2**20).toFixed(1)+" MiB":bytesText(b);
+const JOB_TAG={built:"built",copied:"copied",failed:"failed",cancelled:"cancelled",deferred:"waiting for space"};
+const runCountsText=c=>{const o=[];for(const k of["built","copied","failed","cancelled","deferred"])if(num((c||{})[k]))o.push(`${num(c[k])} ${k==="deferred"?"waiting for space":k}`);return o.join(" · ")||"nothing to do"};
+const checksText=(c,raw)=>c?`${num(c.passed)} checks passed${num(c.warned)?`, ${num(c.warned)} warned`:""}${num(c.failed)?`, <b class="err">${num(c.failed)} failed</b>`:""}`:raw?esc(raw):"";
+let histView="runs",runList=[],runsTotal=0,runOpen=new Set(),runJobs={},pkgData=null,failData=[];
+try{histView=localStorage.getItem("ps5pkg.histView")==="pkgs"?"pkgs":"runs"}catch(e){}
+function setHistView(v){histView=v;try{localStorage.setItem("ps5pkg.histView",v)}catch(e){}
+  document.querySelectorAll("[data-hv]").forEach(b=>b.classList.toggle("on",b.dataset.hv===v));$("#histRuns").hidden=v!=="runs";$("#histPkgs").hidden=v!=="pkgs"}
+document.querySelectorAll("[data-hv]").forEach(b=>b.onclick=()=>{setHistView(b.dataset.hv);loadHist().catch(e=>say(e.message,1))});
+function jobRow(j){const t=j.title||j.name||j.tid,ok=j.status==="built"||j.status==="copied";
+  const what=ok?[j.bytes?sizeText(j.bytes):null,j.prep_min!=null?`prepared in ${minText(j.prep_min)}`:null,j.build_min!=null?`built in ${minText(j.build_min)}`:null,j.level!=null?`compression level ${j.level}`:null].filter(Boolean).map(esc).join(" · ")+(checksText(j.checks,j.validate)?` · ${checksText(j.checks,j.validate)}`:"")
+    :esc(j.summary||j.why_host||j.why||"");
+  return `<tr><td><b>${esc(t)}</b><div class="small muted">${esc(j.tid||"")}${j.name?` · ${esc(j.name)}`:""}</div></td><td><span class="tag t-${cls(j.status)}">${esc(JOB_TAG[j.status]||j.status||"?")}</span><div class="small muted">${esc(whenText(j.at))}</div></td>
+    <td class="small">${what}${j.status==="failed"&&j.code?`<div class="muted">${esc(j.code)}${j.phase?` · while ${esc(j.phase)}`:""}</div>`:""}</td><td class="small">${j.log?`<a href="#logs/${esc(j.log)}">Build log</a>`:""}</td></tr>`}
+function runBody(r){const jobs=runJobs[r.run];if(!jobs)return`<span class="muted small">Loading…</span>`;
+  return `${jobs.length?`<table><thead><tr><th>Game</th><th>Result</th><th>What happened</th><th></th></tr></thead><tbody>${jobs.map(jobRow).join("")}</tbody></table>`:`<div class="muted small">This run did not build anything.</div>`}${r.output_log?`<div class="small" style="margin-top:6px"><a href="#logs/${esc(r.output_log)}">Raw output of this run</a></div>`:""}`}
+const runCard=r=>`<details class="card run" data-run="${esc(r.run)}" ${runOpen.has(r.run)?"open":""}><summary><b>${esc(whenText(r.started))}</b><span class="muted small">${esc(r.trigger||"run")} · ${r.seconds!=null?esc(dur(r.seconds)):"duration not recorded"}${r.interrupted?" · did not finish":""}</span>
+  <span class="small">${esc(runCountsText(r.counts))}</span>${r.bytes?`<span class="muted small">${esc(sizeText(r.bytes))}</span>`:""}</summary><div class="runbody">${runOpen.has(r.run)?runBody(r):""}</div></details>`;
+function renderRuns(){const el=$("#histRuns");
+  el.innerHTML=!runList.length?`<div class="card"><b>No run has been recorded yet.</b> <span class="muted">Every run from now on is listed here with its games, including failures and cancellations. Packages built before that are under Packages.</span></div>`
+    :runList.map(runCard).join("")+(runList.length<runsTotal?`<div class="card"><button class="btn" id="runsMore">Show older runs (${runsTotal-runList.length} more)</button></div>`:"")}
+async function loadRuns(more){const r=await api(`/api/history/runs?limit=30&offset=${more?runList.length:0}`);runsTotal=r.total;runList=more?runList.concat(r.runs):r.runs;
+  renderRuns();for(const id of runOpen)if(!runJobs[id])fetchRun(id)}
+async function fetchRun(id){try{runJobs[id]=(await api("/api/history/runs/"+encodeURIComponent(id))).jobs}catch(e){runJobs[id]=[]}
+  const d=document.querySelector(`#histRuns [data-run="${CSS.escape(id)}"]`),r=runList.find(x=>x.run===id);if(d&&r)d.querySelector(".runbody").innerHTML=runBody(r)}
+$("#histRuns").addEventListener("toggle",e=>{const d=e.target.closest&&e.target.closest("[data-run]");if(!d||e.target!==d)return;const id=d.dataset.run;
+  if(d.open){runOpen.add(id);if(runJobs[id])d.querySelector(".runbody").innerHTML=runBody(runList.find(x=>x.run===id));else{d.querySelector(".runbody").innerHTML=`<span class="muted small">Loading…</span>`;fetchRun(id)}}else runOpen.delete(id)},true);
+$("#histRuns").addEventListener("click",e=>{if(e.target.id==="runsMore")loadRuns(true).catch(err=>say(err.message,1))});
+// packages
+function pkgRow(p){const tid=esc(p.tid),bits=p.ps4?[`copied as they are${p.files?` · ${plural(p.files.length,"package")}`:""}`]
+    :[p.prep_min!=null?`prepared in ${minText(p.prep_min)}`:"preparation time not recorded",p.build_min!=null?`built in ${minText(p.build_min)}`:p.total_min!=null?`took ${minText(p.total_min)} in total (an older record)`:"build time not recorded",p.level!=null?`compression level ${p.level}`:"compression level not recorded"];
+  const tags=[p.ps4?`<span class="tag">PS4</span>`:"",!p.exists?`<span class="tag t-waiting" title="The package is not where the history says it is: the next scan plans it again">file missing</span>`:"",p.marked?`<span class="tag t-build">rebuild requested</span>`:""].filter(Boolean).join(" ");
+  return `<div class="pkg" data-tid="${tid}"><div class="row"><b>${esc(p.title||p.tid)}</b><span class="muted small">${tid}${p.version?` · v${esc(p.version)}`:""}</span>${tags}<span class="small" style="margin-left:auto">${p.bytes!=null?esc(sizeText(p.bytes)):"size not recorded"} · built ${esc(whenText(p.built_ts))}</span></div>
+    <div class="small muted">${bits.map(esc).join(" · ")} · ${checksText(p.checks,p.validate)||"checks not recorded"}</div>
+    ${p.output?`<div class="small">${p.ps4?"Folder":"Package"}: ${pathHtml(p.output_host,p.output)}</div>`:`<div class="small muted">Location not recorded</div>`}
+    <div class="small muted">Source: ${p.source?pathHtml(p.source_host,p.source):"not recorded"}</div>
+    ${p.backport&&p.backport.differs?`<div class="small muted">The image differed from the original in ${num(p.backport.files)} file(s): the ${esc(p.backport.used)} was used.</div>`:""}
+    <div class="btnrow">${p.log?`<a class="btn sm" href="#logs/${esc(p.log)}">Build log${p.log_guessed?" (probably)":""}</a>${p.ps4?"":`<a class="btn sm" href="#logs/${esc(p.log)}?find=validate">Validation report</a>`}`:""}
+      ${p.sha256?`<span class="small muted"><code>${esc(p.sha256.slice(0,16))}…</code></span><button class="btn sm" data-copy="${esc(p.sha256)}" title="Copy the whole SHA-256">Copy SHA-256</button>`:""}
+      ${p.marked?`<button class="btn sm" data-unmark="${tid}">Undo rebuild</button>`:`<button class="btn sm" data-rebuild="${tid}">Rebuild</button>`}<button class="btn sm" data-forget="${tid}">Forget</button></div></div>`}
+function failedPkgRow(f){return `<div class="pkg"><div class="row"><b>${esc(f.name||f.title||f.title_id)}</b><span class="muted small">${esc(f.title_id)}</span>${failTag(f)}<span class="small" style="margin-left:auto">${esc(f.at_text||"")}</span></div>
+    <div class="small">${esc(f.summary)}</div><div class="small muted">${esc(f.next||"")} · attempt ${esc(f.attempts||1)} · ${esc(f.phase||"")}</div>${failureButtons(f,false)}<details><summary class="small">Details and the log of this attempt</summary>${failureBody(f)}</details></div>`}
+function renderPkgs(){if(!pkgData)return;const q=$("#pkgFind").value.trim().toLowerCase(),st=$("#pkgStatus").value,so=$("#pkgSort").value,all=pkgData.packages||[];
+  const hay=p=>[p.title,p.tid,p.name].join(" ").toLowerCase();
+  let pk=all.filter(p=>(!q||hay(p).includes(q))&&(!st||(st==="ok"?p.exists&&!p.ps4:st==="ps4"?p.ps4:st==="missing"?!p.exists:st==="marked"?p.marked:false)));
+  let fl=failData.filter(f=>(!st||st==="failed")&&(!q||[f.title,f.title_id,f.name].join(" ").toLowerCase().includes(q)));
+  const key={new:p=>-(p.built_ts||0),old:p=>p.built_ts||0,size:p=>-(p.bytes||0),time:p=>-(p.minutes||0),name:p=>(p.title||p.tid).toLowerCase()}[so];
+  pk=pk.slice().sort((a,b)=>{const x=key(a),y=key(b);return typeof x==="string"?x.localeCompare(y):x-y});
+  const t=pkgData.totals||{};
+  $("#pkgSum").textContent=`Packages (${num(t.count)}${t.bytes?` · ${sizeText(t.bytes)}`:""})`;
+  $("#pkgTotals").textContent=`${plural(num(t.present),"package")} on disk${num(t.count)>num(t.present)?`, ${num(t.count)-num(t.present)} missing`:""}${t.minutes_known?` · ${dur(num(t.minutes)*60)} of work${t.minutes_known<t.count?` (${t.minutes_known} of ${t.count} have a time recorded)`:""}`:""}${failData.length?` · ${plural(failData.length,"game")} failing`:""}${pk.length+fl.length!==num(t.count)+failData.length?` · ${pk.length+fl.length} shown`:""}`;
+  $("#pkgList").innerHTML=(fl.length&&(!st||st==="failed")&&so!=="size"?fl.map(failedPkgRow).join(""):"")+pk.map(pkgRow).join("")+(!pk.length&&!fl.length?`<div class="muted"><b>${all.length||failData.length?"Nothing matches.":"Nothing built yet."}</b> Finished packages are listed here, with their checks, once a run has built one; games that failed are listed with the reason.</div>`:"");
+  const r=pkgData.replaced||{items:[]};
+  $("#replCard").innerHTML=r.items.length?`<h2>Replaced packages (${r.count} · ${esc(sizeText(r.bytes))})</h2><div class="small muted" style="margin-bottom:6px">When a game is built again its older package stays here as "(replaced …)". Settings > Cleanup can keep fewer.</div>
+    <table><tbody>${r.items.map(x=>`<tr><td>${esc(x.name)}<div class="small">${pathHtml(x.path_host,x.path)}</div></td><td class="small">${esc(sizeText(x.bytes))}</td><td class="small">replaced ${esc(whenText(x.replaced_at))}</td><td><button class="btn sm" data-repl-del="${esc(x.name)}">Delete</button></td></tr>`).join("")}</tbody></table>`
+    :`<div class="small muted">No replaced packages: a package that a newer build replaces is kept here until you delete it (Settings > Cleanup).</div>`}
+async function loadPkgs(){const[d,fl]=await Promise.all([api("/api/history/packages"),api("/api/failures")]);pkgData=d;failData=Array.isArray(fl)?fl:[];renderPkgs()}
+$("#pkgFind").oninput=renderPkgs;$("#pkgStatus").onchange=renderPkgs;$("#pkgSort").onchange=renderPkgs;
+async function loadHist(){setHistView(histView);if(histView==="runs")await loadRuns(false);else await loadPkgs()}
+async function rebuildGame(tid){const p=(pkgData.packages||[]).find(x=>x.tid===tid)||{};
+  if(!(await askConfirm({title:`Build ${p.title||tid} again?`,html:`<p>The next run builds it again, from the copy the Library shows. The package you have now is replaced only when the new one is complete and checked.</p><p class="small muted">Nothing starts now: press Run now on the Dashboard, or wait for the schedule. Settings > Cleanup says what happens to the old file.</p>`,ok:"Mark for rebuild"})))return;
+  try{const r=await api(`/api/history/${encodeURIComponent(tid)}/rebuild`,{method:"POST",body:"{}"});toast(r.message||"Marked for rebuild");await loadPkgs()}catch(e){toast(e.message,1)}}
+async function forgetGame(tid){const p=(pkgData.packages||[]).find(x=>x.tid===tid)||{};
+  const r=await showDialog({title:`Forget ${p.title||tid}?`,html:`<p>Remove it from the history. The package file stays where it is.</p><p>The planner then treats the game as never built, so the next run builds it again, unless you tick the box.</p>`,
+    buttons:[{key:"go",label:"Forget it",kind:"danger"},{key:"no",label:"Cancel"}],check:"Also never build this game again"});
+  if(!r||r.key!=="go")return;
+  try{await api(`/api/history/${encodeURIComponent(tid)}/forget`,{method:"POST",body:JSON.stringify({skip:r.checked})});toast(r.checked?"Forgotten, and it will not be built again":"Forgotten");await loadPkgs()}catch(e){toast(e.message,1)}}
+async function deleteReplaced(name){
+  if(!(await askConfirm({title:"Delete this package?",html:`<p><code>${esc(name)}</code></p><p>It was replaced by a newer build of the game. Deleting it frees the space and can't be undone.</p>`,ok:"Delete it",danger:true})))return;
+  try{const r=await api("/api/replaced/"+encodeURIComponent(name),{method:"DELETE"});toast(`Deleted, ${sizeText(r.freed)} freed`);await loadPkgs()}catch(e){toast(e.message,1)}}
+$("#histPkgs").addEventListener("click",e=>{const b=e.target.closest("[data-rebuild],[data-forget],[data-unmark],[data-repl-del]");if(!b)return;
+  if(b.dataset.rebuild)rebuildGame(b.dataset.rebuild);else if(b.dataset.forget)forgetGame(b.dataset.forget);else if(b.dataset.replDel)deleteReplaced(b.dataset.replDel);
+  else api(`/api/history/${encodeURIComponent(b.dataset.unmark)}/rebuild`,{method:"DELETE"}).then(()=>{toast("The rebuild request is withdrawn");return loadPkgs()}).catch(err=>toast(err.message,1))});
 // ---- Settings: built from the server's own definition of every setting (label, help, default, range), checked as you type
 // by the server, saved all at once from a bar that appears when something changed. Nothing is dropped silently.
 let cfg={},setBase="",setMsgTimer=null,valTimer=null,setErrors=[];
@@ -532,10 +601,97 @@ function renderOverrides(){const o=storage.overrides;
 $("#ovrCard").addEventListener("click",async e=>{const b=e.target.closest("[data-ovr-remove]");if(!b)return;const t=b.dataset.ovrRemove;
   if(!(await askConfirm({title:"Remove this override?",html:`<p>Remove the override for ${esc(t)}? Only this entry is deleted.</p>`,ok:"Remove it",danger:true})))return;
   try{await api("/api/overrides/"+encodeURIComponent(t),{method:"DELETE"});toast("Removed the override for "+t);loadStorage()}catch(err){toast(err.message,1)}});
-async function loadLogs(){const l=await api("/api/logs");const cur=wantLog||$("#logSel").value;wantLog=null;if(cur&&!l.some(x=>x.name===cur))l.unshift({name:cur});$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
-async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600"+($("#logHost").checked?"&host=1":""));const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
-$("#logSel").onchange=showLog;$("#logHost").onchange=()=>{try{localStorage.setItem("ps5pkg.logHost",$("#logHost").checked?"1":"0")}catch(e){}showLog().catch(()=>{})};
+// ---- Logs: a list grouped by what it is (and by game), and a viewer that loads what it needs: the end first, earlier on request, new lines by
+// offset when following (so what you scrolled to stays where it is), search with highlights, and a download of the file as it is.
+let logList=[],logInfo=null,logSt={name:null,lines:[],start:0,next:0,size:0,q:"",hit:-1,busy:false,trimmed:false},wantGame=null,wantFind=null;
+const encPath=n=>encodeURIComponent(n).replace(/%2F/g,"/");
+const WARN_RE=/\b(errors?|warn(?:ing|ed)?|fail(?:ed|ure|s)?|fatal|traceback|exception|mismatch|killed)\b|\[(?:ERROR|WARN\w*)\]/i;
+const PROG_RE=/^\s*\[[#\-=. ]{8,}\]\s*\d+%|\d+% [^@]*@ [\d.]+ MB\/s/;
+const OUTCOME={built:"built",copied:"copied",failed:"failed",cancelled:"cancelled",deferred:"waiting for space"};
+const logLabel=d=>d.kind==="build"?`${d.title||d.tid}`:d.kind==="activity"?"Activity log":d.kind==="activity_old"?"Activity log, earlier part":d.kind==="scan"?"Last scan":d.kind==="run"?"Raw output of a run":d.name;
+function logRow(d){const when=d.started||d.mtime;
+  return `<a class="lg ${d.name===logSt.name?"on":""}" href="#logs/${esc(d.name)}" data-lg="${esc(d.name)}">${d.kind==="build"?`<b>${esc(logLabel(d))}</b> `:`${esc(logLabel(d))} `}<span class="small muted">${esc(whenText(when))} · ${esc(sizeText(d.size))}</span>${d.outcome?` <span class="tag t-${cls(d.outcome)}">${esc(OUTCOME[d.outcome]||d.outcome)}</span>`:""}</a>`}
+function renderLogList(){const q=$("#logFind").value.trim().toLowerCase(),ok=d=>!q||[d.name,d.title,d.tid,logLabel(d)].join(" ").toLowerCase().includes(q),g=k=>logList.filter(d=>d.kind===k&&ok(d));
+  const act=[...g("activity"),...g("activity_old")],scan=g("scan"),runs=g("run"),builds=g("build"),allBuilds=logList.filter(d=>d.kind==="build").length;
+  const grp=(t,note,rows)=>rows.length?`<div class="lgh">${t}</div><div class="small muted">${note}</div>${rows.map(logRow).join("")}`:"";
+  $("#logGroups").innerHTML=grp("Activity log","What the engine did: each scan, the plan, every game's steps and the run's summary. The raw output below holds the same lines.",act)
+    +grp("Scans","The output of the last scan.",scan)
+    +grp(`Builds (${builds.length}${q?` of ${allBuilds}`:""})`,"One UltraPack log per attempt, by game. Search a title or ID above.",builds)
+    +grp(`Raw output of runs (${runs.length})`,"What each run printed, line by line, as it ran.",runs)
+    ||`<div class="muted small" style="margin-top:8px">${logList.length?"Nothing matches.":"There are no logs yet."}</div>`;
+  const u=logInfo&&logInfo.usage,r=logInfo&&logInfo.retention;
+  if(u){$("#logUsage").textContent=`${plural(u.files,"log")} use ${sizeText(u.bytes)}. `+(r.days||r.gb?`Old logs are removed ${r.days?`after ${plural(r.days,"day")}`:""}${r.days&&r.gb?" and ":""}${r.gb?`above ${r.gb} GB`:""} (Settings > Cleanup).`:"They are kept for ever; Settings > Cleanup can remove old ones.");$("#bLogPrune").hidden=!(r.days||r.gb)}}
+async function loadLogs(){const r=await api("/api/logs?info=1");logList=r.items;logInfo=r;
+  if(wantGame!==null){$("#logFind").value=wantGame;wantGame=null}
+  renderLogList();
+  const name=wantLog||(logSt.name?null:(logList.find(d=>d.kind==="activity")||logList[0]||{}).name),find=wantFind;wantLog=null;wantFind=null;
+  if(name)await openLog(name,{find})}
+$("#bLog").onclick=()=>loadLogs().catch(e=>say(e.message,1));$("#logFind").oninput=renderLogList;
+async function logGet(name,q){const r=await fetch(`/api/logs/${encPath(name)}?${q}${$("#logHost").checked?"&host=1":""}`,{headers:{"Content-Type":"application/json"}});
+  if(r.status===401){location.reload();throw new Error("Log in first.")}
+  if(!r.ok)throw new Error(r.status===404?"That log is not there (any more): old logs are removed by the retention setting.":"The log could not be read.");
+  return{text:await r.text(),size:num(r.headers.get("X-Log-Size")),start:num(r.headers.get("X-Log-Start")),next:num(r.headers.get("X-Log-Next")),reset:r.headers.get("X-Log-Reset")==="1"}}
+const linesOf=t=>t?t.replace(/\n$/,"").split("\n"):[];
+function logHtml(){const L=logSt.lines,q=logSt.q,warn=$("#logWarn").checked,col=$("#logCollapse").checked,rows=[];
+  if(warn){for(const l of L)if(WARN_RE.test(l))rows.push({t:l,c:"lvl"})}
+  else if(col){for(let i=0;i<L.length;){if(!PROG_RE.test(L[i])){rows.push({t:L[i],c:""});i++;continue}
+    let j=i;while(j<L.length&&PROG_RE.test(L[j]))j++;
+    if(j-i>=3){rows.push({t:`… ${j-i-1} progress lines hidden …`,c:"pg"});rows.push({t:L[j-1],c:"pg"})}else for(let k=i;k<j;k++)rows.push({t:L[k],c:"pg"});i=j}}
+  else for(const l of L)rows.push({t:l,c:""});
+  const hl=t=>{if(!q)return esc(t);const lo=t.toLowerCase(),ql=q.toLowerCase();let out="",i=0,j;while((j=lo.indexOf(ql,i))>=0){out+=esc(t.slice(i,j))+`<mark>${esc(t.slice(j,j+q.length))}</mark>`;i=j+q.length}return out+esc(t.slice(i))};
+  return{html:rows.map(r=>r.c?`<span class="${r.c}">${hl(r.t)}</span>`:hl(r.t)).join("\n"),shown:rows.length}}
+// draw the log; `how`: "bottom" (go to the end), "anchor" (more text was put above: stay where you were), "keep" (stay)
+function renderLog(how="keep"){const p=$("#logTxt"),h0=p.scrollHeight,t0=p.scrollTop,atEnd=h0-p.clientHeight-t0<40,v=logHtml();
+  p.innerHTML=v.html;p.classList.toggle("nowrap",!$("#logWrap").checked);
+  if(how==="bottom"||(how==="keep"&&atEnd&&$("#logFollow").checked))p.scrollTop=p.scrollHeight;else if(how==="anchor")p.scrollTop=t0+(p.scrollHeight-h0);else p.scrollTop=t0;
+  const marks=p.querySelectorAll("mark");
+  $("#logHits").textContent=logSt.q?`${marks.length} match${marks.length===1?"":"es"}${logSt.start>0?" in the part loaded":""}`:"";
+  $("#logEarlier").hidden=!(logSt.start>0&&!logSt.trimmed);$("#logAll").hidden=!(logSt.start>0&&!logSt.trimmed);
+  $("#logNote").textContent=$("#logWarn").checked?`${v.shown} of ${logSt.lines.length} lines`:logSt.start>0?"Showing the end of the log.":"";}
+function gotoHit(d){const marks=[...$("#logTxt").querySelectorAll("mark")];if(!marks.length)return;logSt.hit=(logSt.hit+d+marks.length)%marks.length;
+  marks.forEach(m=>m.classList.remove("cur"));const m=marks[logSt.hit];m.classList.add("cur");m.scrollIntoView({block:"center"})}
+async function openLog(name,o={}){logSt={...logSt,name,lines:[],start:0,next:0,size:0,hit:-1,trimmed:false};
+  try{history.replaceState(null,"","#logs/"+name+(o.find?"?find="+encodeURIComponent(o.find):""))}catch(e){}
+  const meta=logList.find(d=>d.name===name)||{};
+  $("#logTitle").textContent=logLabel(meta.name?meta:{name,kind:"other"});$("#logMeta").textContent=meta.name?`${name} · ${sizeText(meta.size)}`:name;
+  const dl=$("#logDl");dl.hidden=false;dl.href=`/api/logs/${encPath(name)}?download=1`;dl.setAttribute("download",name.split("/").pop());
+  renderLogList();
+  try{const r=await logGet(name,"lines=600");logSt.lines=linesOf(r.text);logSt.start=r.start;logSt.next=r.next;logSt.size=r.size}
+  catch(e){$("#logTxt").textContent=e.message;return}
+  if(o.find){const word=o.find==="validate"?"==== --fpkg-validate ====":o.find;
+    if(!logSt.lines.some(l=>l.includes(word))&&logSt.start>0)await loadAllLog(true);
+    $("#logSearch").value=word;logSt.q=word;renderLog("bottom");gotoHit(1);return}
+  logSt.q=$("#logSearch").value.trim();renderLog("bottom")}
+async function loadAllLog(quiet){if(!logSt.name)return;$("#logNote").textContent="Loading the whole file…";
+  try{let off=0,lines=[],last=null;for(let i=0;i<4;i++){const r=await logGet(logSt.name,`offset=${off}&limit=8388608`);last=r;lines=lines.concat(linesOf(r.text));if(r.next>=r.size||r.next===off)break;off=r.next}
+    logSt.lines=lines;logSt.start=0;logSt.next=last.next;logSt.size=last.size;logSt.trimmed=false;
+    if(!quiet)renderLog("keep");if(last.next<last.size)$("#logNote").textContent="Only the first 32 MiB are loaded: download the file for the rest."}
+  catch(e){$("#logNote").textContent=e.message}}
+async function loadEarlierLog(){if(!logSt.name||logSt.start<=0)return;
+  try{const r=await logGet(logSt.name,`before=${logSt.start}&lines=1000`);logSt.lines=linesOf(r.text).concat(logSt.lines);logSt.start=r.start;renderLog("anchor")}catch(e){$("#logNote").textContent=e.message}}
+async function followLog(){if(!logSt.name||!$("#logFollow").checked||logSt.busy||!logSt.next)return;logSt.busy=true;
+  try{const r=await logGet(logSt.name,`offset=${logSt.next}&limit=1048576`);
+    if(r.reset){logSt.lines=linesOf(r.text);logSt.start=r.start;logSt.next=r.next;logSt.size=r.size;renderLog("bottom");return}
+    logSt.size=r.size;logSt.next=r.next;
+    if(r.text){logSt.lines=logSt.lines.concat(linesOf(r.text));if(logSt.lines.length>60000){logSt.lines.splice(0,logSt.lines.length-60000);logSt.trimmed=true}renderLog("keep")}}   // appended below: what you scrolled to stays put
+  catch(e){}finally{logSt.busy=false}}
+$("#logSearch").oninput=()=>{logSt.q=$("#logSearch").value;logSt.hit=-1;renderLog("keep");if(logSt.q)gotoHit(1)};
+$("#logSearch").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();gotoHit(e.shiftKey?-1:1)}};
+$("#logNext").onclick=()=>gotoHit(1);$("#logPrev").onclick=()=>gotoHit(-1);
+for(const id of["#logWarn","#logCollapse","#logWrap"])$(id).onchange=()=>{try{localStorage.setItem("ps5pkg."+id.slice(1),$(id).checked?"1":"0")}catch(e){}renderLog("keep")};
+try{for(const id of["#logCollapse","#logWrap"]){const v=localStorage.getItem("ps5pkg."+id.slice(1));if(v!==null)$(id).checked=v==="1"}}catch(e){}
+$("#logEarlier").onclick=loadEarlierLog;$("#logAll").onclick=()=>loadAllLog(false);
+$("#logHost").onchange=()=>{try{localStorage.setItem("ps5pkg.logHost",$("#logHost").checked?"1":"0")}catch(e){}if(logSt.name)openLog(logSt.name).catch(()=>{})};
 try{if(localStorage.getItem("ps5pkg.logHost")==="0")$("#logHost").checked=false}catch(e){}
-$("#bLog").onclick=loadLogs;
+$("#bLogPrune").onclick=async()=>{try{const dry=await api("/api/logs/prune",{method:"POST",body:JSON.stringify({dry_run:true})});
+  if(!dry.removed.length){toast(dry.note||"Nothing is old enough to remove");return}
+  if(!(await askConfirm({title:"Remove old logs?",html:`<p>${esc(plural(dry.removed.length,"log"))} (${esc(sizeText(dry.freed))}) are older than the retention allows. Removing them can't be undone.</p><p class="small muted">The log of a game that is still failing is kept.</p>`,ok:"Remove them",danger:true})))return;
+  const r=await api("/api/logs/prune",{method:"POST",body:"{}"});toast(`Removed ${plural(r.removed.length,"log")}, ${sizeText(r.freed)} freed`);await loadLogs()}catch(e){toast(e.message,1)}};
+// a link to a log, or to a game's logs, works from anywhere: #logs/pkg/<file>[?find=validate] and #logs?game=<title ID>
+function routeHash(){const m=/^#logs(?:\/([^?]*))?(?:\?(.*))?$/.exec(location.hash);if(!m)return false;
+  const qs=new URLSearchParams(m[2]||"");wantLog=m[1]?decodeURIComponent(m[1]):null;wantGame=qs.get("game");wantFind=qs.get("find");
+  if(tab!=="logs")goTab("logs");else loadLogs().catch(e=>say(e.message,1));return true}
+window.addEventListener("hashchange",routeHash);
+document.addEventListener("click",e=>{const a=e.target.closest('a[href^="#logs"]');if(!a)return;e.preventDefault();try{history.replaceState(null,"",a.getAttribute("href"))}catch(x){}routeHash()});
 function load(){({dash:refresh,lib:loadLib,hist:loadHist,set:loadSet,logs:loadLogs})[tab]().catch(e=>say(e.message,1));if(tab==="dash")loadSetup();if(tab!=="dash"&&tab!=="set")poll().catch(()=>{})}
-load();setInterval(()=>{(tab==="dash"?refresh():poll()).catch(()=>{});if(tab==="logs"&&$("#logFollow").checked)showLog().catch(()=>{})},5000);
+if(!routeHash())load();setInterval(()=>{(tab==="dash"?refresh():poll()).catch(()=>{});if(tab==="logs")followLog()},5000);

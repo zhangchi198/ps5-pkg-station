@@ -37,9 +37,48 @@ Open `http://<host>:8765`.
 |---|---|
 | Dashboard | the current run first (how far along, about how long it will take, each build's stage), run now (after a summary), stop (after the current games, or now), cancel a single game, pause the schedule, rescan; what is being prepared and what is next; the last run's result when idle; setup checklist; free space; why a scan or run failed |
 | Library | every game found, the copy that will be used and why (each copy with its path, version and what became of it), whether it runs on your console's firmware, the backport decision, files that could not be identified; per-game options: copy to use, keep the backport or the original, extra files folder, never build, build just this one |
-| History | every finished package with its validation result, size and times |
+| History | **Runs**: each run (when, how it started, how long, what it built, failed, cancelled) opening to its games; **Packages**: every package with its size, times, checks and logs, searchable and sortable, with Rebuild, Forget and the replaced packages |
 | Settings | in plain language, with a description and the default of every setting: console firmware, performance (games at once, threads, compression level, priority, free space), cleanup patterns with a test against your last scan, schedule, notifications, folders; mistakes are shown next to the field and nothing is saved until all of it is valid |
-| Logs | the run log and each build's log, live |
+| Logs | a list grouped by what it is and by game, and a viewer with search, download, earlier lines, "only warnings and errors", collapsed progress lines, and follow |
+
+### History
+
+Every job a run finishes is written to `state/history.jsonl` as it happens: built, copied, failed, cancelled, and waiting for space,
+with the run it belongs to. The file is only ever appended to, so nothing is lost when the next run comes; the ledger stays what the
+planner reads (one entry per game, the latest package).
+
+- **Runs** lists the runs newest first: when, scheduled or manual, how long, the counts. Opening one lists its games with the result,
+  what happened (a failure in the words of the failure explanations), the time it took and a link to the build log. A run that was cut
+  short says it did not finish. Runs from before this version aren't in it; their packages are under Packages.
+- **Packages** has one row per game: size, "prepared in 12 min · built in 60 min · compression level 4 · 40 checks passed", where the
+  package is (with a copy button), the source it came from, and **Build log**, **Validation report** (the log, opened at the validator's
+  output) and **Copy SHA-256** (the whole hash). Entries written by any earlier version of the app are read as they are: what an entry
+  does not say is shown as "not recorded", never guessed. Search by title, ID or file name; filter by built, PS4, file missing, rebuild
+  requested, failed; sort by date, size, time or name; the heading has the total size and the time the library took.
+- **Rebuild** marks a game for the next run (`state/rebuild.json`): it is planned as "rebuild requested" without deleting anything, and
+  its package is replaced only after the new one is complete and checked. **Forget** removes the game's entry from the ledger (the
+  package file stays) and can also set "never build this game"; it waits for a run in progress to end. Both ask first.
+- **Replaced packages**: when a game is built again, its older package stays in the output folder as `... (replaced YYYYmmddHHMM).pkg`.
+  They are listed with size and date and can be deleted one by one; Settings > Cleanup keeps all, the newest one, or none.
+
+### Logs
+
+`logs/` holds the engine's own log (`pkg_sync.log`: each scan, the plan, every game's steps; it is renamed `pkg_sync.<date>.log` when it
+passes 16 MiB), the last scan, the raw output of each run (`run_<time>.stdout.log`, which repeats the activity log's lines) and one
+UltraPack log per build attempt, `pkg/<time>_<TITLE ID>.log`. The Logs page lists them by kind, with the game's title, date, size and
+outcome for builds, and finds them by title or ID. **Library** rows link to a game's logs (`#logs?game=<TITLE ID>`), History and the
+Dashboard link to the log of a build (`#logs/pkg/<file>`), so a log has an address you can bookmark or send.
+
+The viewer starts at the end (a log is read from its end, so a huge one opens at once), loads earlier lines on request or the whole file,
+searches with highlights and next / previous, can show only warnings and errors, collapses runs of progress lines, wraps or not, and
+**Download** gives the file exactly as it is on disk. **Follow** asks only for what was written since (`GET /api/logs/<name>?offset=N`
+returns the bytes after N; `before=N` the lines before N; the headers `X-Log-Size`, `X-Log-Start`, `X-Log-Next` say where you are), so
+the text you scrolled to stays where it is; it only follows the end if you are at the end.
+
+Retention (Settings > Cleanup): build logs, run output and rotated activity logs older than *N* days are removed when a run starts, and
+the oldest are removed while they take more than *N* GB (both 0 by default: nothing is removed). The log of a game that is still failing,
+the engine's current log and the last scan are never removed, and nothing written to in the last hour. The Logs page shows how much room
+the logs take and has a "Remove old logs now" button that says what it will remove first.
 
 ### Controlling a run
 
@@ -359,6 +398,7 @@ version of the app and of the bundled UltraPack.
 | `config.json` | your settings and the per-game overrides | back to the defaults; firmware, schedule and every per-game decision are gone |
 | `ledger.json` | what was built (the build history) | the app thinks nothing was built and builds the whole library again |
 | `failures.json` | games that failed or wait for space, and why | they're tried once more |
+| `history.jsonl` | what every run did, job by job | the Runs list starts empty again; packages and the planner are not affected |
 | `../patches/` | the patch folders your overrides point to (if you use any) | the overlay files are gone |
 
 `ledger.json` and `failures.json` are **state**, not settings: an export doesn't contain them. The full backup (.zip)

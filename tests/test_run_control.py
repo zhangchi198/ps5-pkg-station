@@ -21,6 +21,7 @@ from unittest import mock
 from support import ENGINE_DIR, E, StateCase, make_env
 
 import ps5_failures as F  # noqa: E402
+import ps5_history as PH  # noqa: E402
 import ps5_runctl as RC  # noqa: E402
 import test_engine_failures as TEF  # noqa: E402
 
@@ -353,6 +354,38 @@ class Finishing(TEF.EngineCase):
                 self.assertTrue(any("(replaced " in n for n in names))
                 self.assertEqual(kept.stat().st_size, 64)                                # the new package is where the old one was
 
+    def test_a_built_package_carries_what_the_history_needs_and_ends_a_rebuild_request(self):
+        F.Store(self.state / "rebuild.json").update(lambda d: d.__setitem__("PPSA01234", dict(at=1)))
+        F.Store(self.state / "rebuild.json").update(lambda d: d.__setitem__("PPSA05678", dict(at=1)))
+        res, notes, _ = self.finish(in_temp=True)
+        self.assertEqual(res["status"], "built", res)
+        self.assertEqual((res["bytes"], res["level"]), (64, self.cfg["compression_level"]))
+        row = PH.job_row(res, "20261122-030000")
+        self.assertEqual((row["bytes"], row["log"], row["status"]), (64, "pkg/20261122-031000_PPSA01234.log", "built"))
+        self.assertEqual(list(F.Store(self.state / "rebuild.json").load()), ["PPSA05678"])                # asked for, and done: only this game's request is gone
+
+    def test_what_happens_to_the_older_package_follows_the_setting(self):
+        stem = "Example Game [PPSA01234] [v01.002.003]"
+        for setting, want in (("all", 3), ("1", 1), ("never", 0)):
+            with self.subTest(setting):
+                for p in self.out.iterdir():
+                    if p.is_file():
+                        p.unlink()
+                self.finished_package(b"old")
+                for ts in ("202601010000", "202601020000"):
+                    (self.out / f"{stem} (replaced {ts}).pkg").write_bytes(b"older")
+                other = self.out / "Other [PPSA05678] (replaced 202601010000).pkg"
+                other.write_bytes(b"another game's")
+                self.cfg["keep_replaced"] = setting
+                res, _, _ = self.finish(in_temp=True)
+                self.assertEqual(res["status"], "built", res)
+                mine = [d for d in PH.replaced_files(self.out) if d["stem"] == stem]
+                self.assertEqual(len(mine), want, [d["name"] for d in mine])
+                if setting == "1":
+                    self.assertGreater(mine[0]["replaced_at"], time.time() - 3600)                       # the one kept is the one just made
+                self.assertTrue(other.exists())                                                           # another game's is never touched
+                self.assertEqual((self.out / f"{stem}.pkg").stat().st_size, 64)                           # the new package is in place
+
     def test_cancelled_with_the_stage_on_the_work_drive_removes_it_with_the_work_folder(self):
         res, notes, stage = self.finish(in_temp=True, wait=lambda: (RC.cancel_title("PPSA01234"), -15)[1])
         self.assert_not_a_failure(res, notes)
@@ -628,6 +661,14 @@ class WholeEngine(StateCase):
         self.assert_nothing_left(("PPSA05678",))
         last = json.loads((self.state / "last_run.json").read_text())
         self.assertEqual(sorted(r["status"] for r in last), ["built", "built", "cancelled"])
+        rows = PH.read_rows(self.state)                                            # the history has every job of the run, the cancelled one too
+        self.assertEqual([r["k"] for r in rows if r["k"] != "job"], ["run", "end"])
+        self.assertEqual({r["tid"]: r["status"] for r in rows if r["k"] == "job"}, {"PPSA01234": "built", "PPSA05678": "cancelled", "PPSA09999": "built"})
+        built = next(r for r in rows if r.get("tid") == "PPSA01234")
+        self.assertTrue(built["bytes"] > 0 and built["level"] == E.DEFAULT_CFG["compression_level"] and built["log"].startswith("pkg/"))
+        self.assertTrue((self.logs / built["log"]).exists())
+        self.assertEqual(rows[0]["trigger"], "manual")
+        self.assertFalse(rows[-1]["interrupted"])
         # a cancelled game is not remembered as a failure: the next scan plans it as a build, not as "failed"
         plan = subprocess.run([sys.executable, "-I", str(ENGINE_DIR / "ps5_pkg_sync.py"), "plan"], capture_output=True, text=True, timeout=120)
         self.assertEqual(plan.returncode, 0, plan.stdout + plan.stderr)
@@ -718,6 +759,30 @@ class WholeEngine(StateCase):
     def store_failures(self):
         p = self.state / "failures.json"
         return json.loads(p.read_text()) if p.exists() else {}
+
+    def test_the_engines_log_is_rotated_and_old_logs_are_pruned_when_a_run_starts(self):
+        self.config(keep_logs_days=30, keep_logs_gb=0)
+        old = self.logs / "pkg" / "20250101-031500_PPSA00001.log"
+        kept_for_a_failure = self.logs / "pkg" / "20250102-031500_PPSA00002.log"
+        recent = self.logs / "pkg" / "20261120-031500_PPSA00003.log"
+        for p, days in ((old, 200), (kept_for_a_failure, 200), (recent, 2)):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("log")
+            os.utime(p, (time.time() - days * 86400,) * 2)
+        F.Store(self.state / "failures.json").update(lambda d: d.__setitem__("PPSA00002", dict(title_id="PPSA00002", log="pkg/20250102-031500_PPSA00002.log", state="failed")))
+        (self.logs / "pkg_sync.log").write_text("earlier line\n" * 500)
+        env = dict(os.environ, PS5PKG_LOG_ROTATE_BYTES="1000", FAKE_SECS="1")
+        r = subprocess.run([sys.executable, "-I", "-u", str(ENGINE_DIR / "ps5_pkg_sync.py"), "run"], env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(old.exists())
+        self.assertTrue(kept_for_a_failure.exists() and recent.exists())                       # a failing game's log and a recent one stay
+        rotated = [p for p in self.logs.glob("pkg_sync.*.log")]
+        self.assertEqual(len(rotated), 1)
+        self.assertEqual(rotated[0].read_text(), "earlier line\n" * 500)
+        now = (self.logs / "pkg_sync.log").read_text()
+        self.assertIn("the log had grown past", now)
+        self.assertIn("old logs removed (1 files", now)
+        self.assertNotIn("earlier line", now)
 
     def test_requests_left_over_from_before_do_not_affect_the_next_run(self):
         self.config()
