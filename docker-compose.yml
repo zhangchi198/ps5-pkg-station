@@ -16,7 +16,7 @@ services:
     mem_limit: 16g                  # optional: cap what builds may use
     volumes:
       - /path/to/ps5/library:/library:ro      # game images (.exfat/.ffpfsc/...) and/or folders, read-only
-      - /path/to/ps5/downloads:/downloads:ro  # optional second source (RAR/7z/zip sets), read-only
+      - /path/to/ps5/downloads:/downloads:ro  # optional second source (RAR/7z/zip sets), read-only; delete this line if you have none
       - /path/to/ps5/pkg:/output              # finished .pkg files go here
       - /path/to/fast/scratch:/work           # temp space: an SSD with room for your biggest game
       - ./config:/config                      # settings, history, logs

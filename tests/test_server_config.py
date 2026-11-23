@@ -9,27 +9,9 @@ import time
 import unittest
 from unittest import mock
 
-from support import E, StateCase, legacy_config, server_module
+from support import E, ServerCase, legacy_config
 
 BROKEN = '{\n  "compression_level": 5,\n  "nice": 3\n  "max_builds": 2\n}\n'      # missing comma, error on line 4
-
-
-class ServerCase(StateCase):
-    def setUp(self):
-        super().setUp()
-        self.srv = server_module()
-        from fastapi.testclient import TestClient
-        for name, val in (("STATE", self.state), ("LOGS", self.logs)):
-            p = mock.patch.object(self.srv, name, val)
-            p.start()
-            self.addCleanup(p.stop)
-        self.srv._scan.update(running=False, started=None, finished=None, rc=None)
-        self.client = TestClient(self.srv.app)
-
-    def get(self, path):
-        r = self.client.get(path)
-        self.assertEqual(r.status_code, 200, r.text)
-        return r.json()
 
 
 class PollingNeverWrites(ServerCase):
@@ -161,8 +143,8 @@ class BrokenFile(ServerCase):
     def test_an_engine_that_exits_right_away_for_another_reason_is_reported_too(self):
         self.write_cfg(legacy_config(library=str(self.dir / "nowhere")))
         r = self.client.post("/api/run", json={})
-        self.assertEqual(r.status_code, 500, r.text)
-        self.assertIn("exited with code 2", r.json()["detail"])
+        self.assertEqual(r.status_code, 409, r.text)
+        self.assertIn("game library folder", r.json()["detail"])
 
 
 class OutOfRangeValueInTheFile(ServerCase):

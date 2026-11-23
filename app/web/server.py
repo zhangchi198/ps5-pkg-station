@@ -25,6 +25,7 @@ PY = sys.executable
 
 sys.path.insert(0, str(ENGINE.parent))
 import ps5_pkg_sync as E  # noqa: E402  (same defaults/validation as the engine)
+import ps5_setup as S  # noqa: E402  (the first-run checklist)
 
 # optional: where the container's folders are on the host, for display only, e.g.
 #   PS5PKG_HOST_PATHS='{"library": "/srv/games/ps5", "output": "/srv/games/ps5/pkg"}'
@@ -34,7 +35,10 @@ except Exception:
     HOST_PATHS = {}
 
 app = FastAPI(title="PS5 PKG Station", docs_url=None, redoc_url=None)
-_scan = {"running": False, "started": None, "finished": None, "rc": None}
+# What the last scan / run did. rc is the engine's exit code; when it isn't 0, `error` says why in plain words
+# and `log_tail` is the end of that log, so the Dashboard never has to show a bare "Idle" after a failure.
+_scan = {"running": False, "started": None, "finished": None, "rc": None, "error": None, "log": None, "log_tail": []}
+_run = {"pid": None, "started": None, "finished": None, "rc": None, "error": None, "log": None, "log_tail": []}
 _lock = threading.Lock()
 
 # ---------------------------------------------------------------- helpers
@@ -72,6 +76,41 @@ def engine_pid():
         return None
 
 
+def tail_lines(path, n=12):
+    """The last few non-empty lines of a log file."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - 65536))
+            txt = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    return [ln.strip()[:300] for ln in txt.replace("\r", "\n").split("\n") if ln.strip()][-n:]
+
+
+def explain_exit(rc):
+    """An engine exit code in plain words (see the EXIT_ codes in the engine)."""
+    cfg = load_cfg()
+    if rc == E.EXIT_NOT_MOUNTED:
+        return (f"The game library folder ({cfg['library']}) was not found or can't be read. Mount it there in "
+                f"docker-compose.yml, or change the folder under Settings.")
+    if rc == E.EXIT_BAD_CONFIG:
+        return "The settings file (config.json) could not be read. Fix the file and try again."
+    if rc == E.EXIT_SETUP:
+        fails = S.blocking(S.run_checks(cfg, state_dir=STATE, host_paths=HOST_PATHS))
+        return ("Setup problem: " + "; ".join(f"{r['title']}: {r['message']}" for r in fails)) if fails else \
+            "A setup check failed; see the Setup checklist."
+    if rc == E.EXIT_LOCKED:
+        return "Another run is already active."
+    if rc < 0:
+        return f"The engine was stopped (signal {-rc})."
+    return f"The engine stopped unexpectedly (exit code {rc})."
+
+
+def record_exit(rec, rc, logname):
+    rec.update(finished=time.time(), rc=rc, log=logname, error=None if rc == 0 else explain_exit(rc),
+               log_tail=[] if rc == 0 else tail_lines(LOGS / logname))
+
+
 class EngineStartError(Exception):
     def __init__(self, status, message):
         super().__init__(message)
@@ -88,19 +127,26 @@ def start_engine(*args):
         if lock.exists():
             lock.unlink()                     # stale (pid gone)
         LOGS.mkdir(parents=True, exist_ok=True)
-        out = open(LOGS / f"run_{time.strftime('%Y%m%d-%H%M%S')}.stdout.log", "ab")
-        proc = subprocess.Popen([PY, "-I", "-u", str(ENGINE), "run", *args], stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+        logname = f"run_{time.strftime('%Y%m%d-%H%M%S')}.stdout.log"
+        with open(LOGS / logname, "ab") as out:               # the child has its own copy of the descriptor
+            proc = subprocess.Popen([PY, "-I", "-u", str(ENGINE), "run", *args], stdout=out, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+        _run.update(pid=proc.pid, started=time.time(), finished=None, rc=None, error=None, log=logname, log_tail=[])
+
+        def watch():                          # notes how the run ended, whenever that is (and reaps the child)
+            rc = proc.wait()
+            if _run["pid"] == proc.pid:
+                record_exit(_run, rc, logname)
+        threading.Thread(target=watch, daemon=True).start()
         for _ in range(50):                   # wait for the lock so the UI shows "running" at once
             if engine_pid() or proc.poll() is not None:
                 break
             time.sleep(0.1)
         rc = proc.poll()
         if rc not in (None, 0) and not engine_pid():          # exited before it could take the lock
-            if rc == E.EXIT_BAD_CONFIG:
-                raise EngineStartError(409, "The settings file (config.json) could not be read, so the run did "
-                                            "not start. Fix the file and try again.")
-            raise EngineStartError(500, f"The run did not start: the engine exited with code {rc}. See Logs.")
+            record_exit(_run, rc, logname)
+            raise EngineStartError(409 if rc in (E.EXIT_NOT_MOUNTED, E.EXIT_BAD_CONFIG, E.EXIT_SETUP) else 500,
+                                   f"The run did not start. {explain_exit(rc)}")
         return True
 
 
@@ -108,14 +154,24 @@ def run_scan():
     with _lock:
         if _scan["running"] or engine_pid():
             return False
-        _scan.update(running=True, started=time.time(), finished=None, rc=None)
+        _scan.update(running=True, started=time.time(), finished=None, rc=None, error=None, log=None, log_tail=[])
 
     def work():
-        LOGS.mkdir(parents=True, exist_ok=True)
-        with open(LOGS / "scan.stdout.log", "wb") as out:
-            rc = subprocess.run([PY, "-I", "-u", str(ENGINE), "plan"], stdout=out, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, env=os.environ.copy()).returncode
-        _scan.update(running=False, finished=time.time(), rc=rc)
+        rc = 1
+        try:
+            LOGS.mkdir(parents=True, exist_ok=True)
+            with open(LOGS / "scan.stdout.log", "wb") as out:
+                rc = subprocess.run([PY, "-I", "-u", str(ENGINE), "plan"], stdout=out, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, env=os.environ.copy()).returncode
+        except Exception as ex:                   # e.g. the engine can't be started at all
+            try:
+                with open(LOGS / "scan.stdout.log", "a", encoding="utf-8") as fh:
+                    fh.write(f"could not start the scan: {type(ex).__name__}: {ex}\n")
+            except OSError:
+                pass
+        finally:
+            record_exit(_scan, rc, "scan.stdout.log")
+            _scan["running"] = False
     threading.Thread(target=work, daemon=True).start()
     return True
 
@@ -174,7 +230,8 @@ def status():
         except Exception:
             disks[k] = dict(path=cfg.get(k), error="not available")
     plan = read_json(STATE / "plan.json", [])
-    return dict(engine_running=bool(pid), engine_pid=pid, scan=_scan, status=st if pid else dict(st, live=False),
+    return dict(engine_running=bool(pid), engine_pid=pid, scan=dict(_scan), run=dict(_run), clock=S.clock_info(),
+                status=st if pid else dict(st, live=False),
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "done", "skip", "error")},
@@ -186,6 +243,13 @@ def status():
 @app.get("/api/plan")
 def plan():
     return read_json(STATE / "plan.json", [])
+
+
+@app.get("/api/setup")
+def setup():
+    """The first-run checklist: [{id, level ok|warn|fail, title, message, fix, advisory, link}]. Touches the
+    disks (a write test in each folder that must be writable), so the page asks on load and on demand."""
+    return S.run_checks(load_cfg(), state_dir=STATE, plan=read_json(STATE / "plan.json", []), host_paths=HOST_PATHS)
 
 
 @app.post("/api/scan")

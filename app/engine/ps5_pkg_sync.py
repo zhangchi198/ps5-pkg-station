@@ -46,6 +46,7 @@ except ImportError:          # not POSIX: writes stay atomic, only the lock shar
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import ps5_ampr_audit as A  # noqa: E402  (read-only exFAT/PFS/PFSC/UFS2 readers)
+import ps5_setup  # noqa: E402  (first-run setup checks, shared with the web server)
 
 ROOT = HERE.parent
 IN_DOCKER = os.environ.get("PS5PKG_PROFILE") == "docker"
@@ -75,7 +76,7 @@ DEFAULT_CFG = {
     # title_id -> {"source": exact path (optional), "patch": dir of loose files to overlay}
     "overrides": {},
 }
-SEVENZ = "backend/native/7zz"
+SEVENZ = ps5_setup.SEVENZ
 JUNK_FILE = JUNK_TITLE = None   # compiled from cfg junk_file_patterns / junk_title_patterns by load_cfg()
 
 
@@ -106,7 +107,10 @@ SETTINGS = {  # key: (type, min, max) - everything the Settings page may change
     "schedule": (dict,),
 }
 FILE_ONLY = {"ultrapack_src": (str,), "python": (str,)}   # valid in the file, not on the Settings page
+EXIT_NOT_MOUNTED = 2        # exit codes of main(); the web server explains them to the user
+EXIT_LOCKED = 3
 EXIT_BAD_CONFIG = 4
+EXIT_SETUP = 5
 _WORDS = {str: "text", list: "a list", dict: "an object"}
 
 
@@ -565,7 +569,15 @@ def discover(cfg, log, cache):
             continue
         add(p, "library", lambda p=p: ident_image_or_folder(p))
     log("downloads (archive sets and images only):")
-    for top in sorted(Path(cfg["downloads"]).iterdir()):
+    downloads, tops = Path(cfg["downloads"]), []
+    if not downloads.is_dir():                 # optional: a library-only install doesn't mount it
+        log(f"  {downloads} is not mounted (optional); scanning the library only")
+    else:
+        try:
+            tops = sorted(downloads.iterdir())
+        except OSError as ex:
+            log(f"  can't read {downloads}: {ex}; scanning the library only")
+    for top in tops:
         if not top.is_dir() or any(top.name.startswith(x) for x in cfg["skip_download_prefixes"]):
             continue
         heads, images = walk_downloads(top)
@@ -1298,15 +1310,25 @@ def main():
     for note in info.problems:
         log(f"config: {note}")
     cfg = info.cfg
-    for p in (cfg["library"], cfg["downloads"]):
-        if not os.path.isdir(p):
-            log(f"not mounted: {p}" + (f"  (mounted: {', '.join(os.listdir('/Volumes'))})" if os.path.isdir("/Volumes") else ""))
-            sys.exit(2)
+    p = cfg["library"]          # the downloads folder is optional: discover() skips it when it isn't there
+    if not os.path.isdir(p):
+        log(f"not mounted: {p}" + (f"  (mounted: {', '.join(os.listdir('/Volumes'))})" if os.path.isdir("/Volumes") else ""))
+        sys.exit(EXIT_NOT_MOUNTED)
+    try:
+        os.listdir(p)
+    except OSError as ex:
+        log(f"can't read {p}: {ex.strerror or ex}")
+        sys.exit(EXIT_NOT_MOUNTED)
     lock = STATE / "run.lock"
     if a.mode == "run":
+        failing = ps5_setup.blocking(ps5_setup.run_checks(cfg, state_dir=STATE))    # not 30 minutes into a game
+        for row in failing:
+            log(f"setup problem: {row['title']}: {row['message']}. {row['fix']}")
+        if failing:
+            sys.exit(EXIT_SETUP)
         if lock.exists():
             log(f"another run holds {lock}; exiting")
-            sys.exit(3)
+            sys.exit(EXIT_LOCKED)
         lock.write_text(str(os.getpid()))
         (STATE / "stop.request").unlink(missing_ok=True)
     try:

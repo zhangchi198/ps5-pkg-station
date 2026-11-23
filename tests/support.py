@@ -92,3 +92,54 @@ class StateCase(unittest.TestCase):
     def stray_files(self):
         """Anything in state/ other than the settings file and its lock (leftover temp files would show here)."""
         return sorted(p.name for p in self.state.iterdir() if p.name not in ("config.json", "config.json.lock"))
+
+
+GAME_PARAM = {"titleId": "PPSA01234", "contentVersion": "01.002.003", "requiredSystemSoftwareVersion": "0x0900000000000000",
+              "localizedParameters": {"defaultLanguage": "en-US", "en-US": {"titleName": "Example Game"}}}
+
+
+def make_env(base, downloads=True, game=True):
+    """A set-up install under `base`: a library with one extracted game folder, an output and a work folder, an
+    optional downloads folder and fake UltraPack files. Returns the config keys that point at them."""
+    base = Path(base)
+    lib, out, up = base / "library", base / "output", base / "ultrapack"
+    (base / "work").mkdir(parents=True, exist_ok=True)
+    lib.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
+    if game:
+        g = lib / "Example Game [PPSA01234]"
+        (g / "sce_sys").mkdir(parents=True, exist_ok=True)
+        (g / "eboot.bin").write_bytes(b"\0" * 16)
+        (g / "sce_sys" / "param.json").write_text(json.dumps(GAME_PARAM))
+    if downloads:
+        (base / "downloads").mkdir(exist_ok=True)
+    for rel, mode in (("backend/cli.py", 0o644), ("backend/native/7zz", 0o755), ("backend/native/ffpfsc-pkg-tool", 0o755)):
+        f = up / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("#!/bin/sh\n")
+        f.chmod(mode)
+    return dict(library=str(lib), downloads=str(base / "downloads"), output=str(out), temp=str(base / "work" / "tmp"),
+                ultrapack_src=str(up), python=sys.executable, console_fw="9.60")
+
+
+class ServerCase(StateCase):
+    """StateCase plus the web server module pointed at the same folders, and a test client."""
+
+    def setUp(self):
+        super().setUp()
+        self.srv = server_module()
+        from fastapi.testclient import TestClient
+        for name, val in (("STATE", self.state), ("LOGS", self.logs), ("HOST_PATHS", {})):
+            p = mock.patch.object(self.srv, name, val)
+            p.start()
+            self.addCleanup(p.stop)
+        self.srv._scan.update(running=False, started=None, finished=None, rc=None)
+        if hasattr(self.srv, "_run"):
+            self.srv._scan.update(error=None, log=None, log_tail=[])
+            self.srv._run.update(pid=None, started=None, finished=None, rc=None, error=None, log=None, log_tail=[])
+        self.client = TestClient(self.srv.app)
+
+    def get(self, path):
+        r = self.client.get(path)
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()

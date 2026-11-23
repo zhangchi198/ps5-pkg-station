@@ -25,7 +25,9 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;
 input,select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}input[type=text]{width:100%}
 label.f{display:grid;grid-template-columns:220px 1fr;gap:10px;align-items:center;margin:6px 0}label.f span{color:var(--muted)}
 details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{color:var(--bad)}
-.banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}
+.banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}.banner pre{color:var(--fg);max-height:14em;margin:8px 0}
+.lv-ok{color:var(--ok)}.lv-warn{color:var(--warn)}.lv-fail{color:var(--bad);font-weight:700}.setup td:first-child{width:3.5em;white-space:nowrap}
+a{color:var(--acc)}
 @media (max-width:640px){label.f{grid-template-columns:1fr}main{padding:10px}td,th{padding:5px 4px}}
 </style>
 </head>
@@ -41,9 +43,12 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
 <main>
 <div id="cfgBanner"></div>
 <section id="dash" class="on">
+  <div id="failBox"></div>
+  <div id="setupCard"></div>
   <div class="card"><div class="row">
     <button class="btn pri" id="bRun">Run now</button><button class="btn" id="bStop">Stop after current</button>
     <button class="btn" id="bScan">Scan for new games</button><span class="muted small" id="msg"></span>
+    <span class="small err" id="runWhy"></span>
   </div></div>
   <div class="grid" id="kpis"></div>
   <div class="card"><h2>Folders</h2><div id="folders" class="muted">—</div></div>
@@ -64,8 +69,8 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
   <div class="banner warn" id="cfgChanged" hidden>Settings file changed on disk. <button class="btn" id="bReload">Reload from the file</button> <span class="small">(what you edited on this page and haven't saved is discarded)</span></div>
   <div class="card"><h2>Folders</h2><div id="fFolders"></div></div>
   <div class="card"><h2>Conversion</h2><div id="fConv"></div></div>
-  <div class="card"><h2>Schedule &amp; notifications</h2><div id="fSched"></div></div>
-  <div class="row"><button class="btn pri" id="bSave">Save settings</button><span id="setMsg" class="small"></span></div>
+  <div class="card"><h2>Schedule &amp; notifications</h2><div id="fSched"></div><div class="small muted" id="clockNote"></div></div>
+  <div class="row"><button class="btn pri" id="bSave">Save settings</button><button class="btn" id="bSetupSet">Check setup</button><span id="setMsg" class="small"></span></div>
 </section>
 <section id="logs"><div class="card"><div class="row"><select id="logSel"></select><button class="btn" id="bLog">Refresh</button>
   <label class="small"><input type="checkbox" id="logFollow" checked> follow</label></div></div>
@@ -78,9 +83,30 @@ async function api(p,o={}){const r=await fetch(p,{headers:{"Content-Type":"appli
 let tab="dash",plan=[],overrides={};
 document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
 function say(t,bad){$("#msg").textContent=t;$("#msg").className="small "+(bad?"err":"muted")}
-$("#bRun").onclick=()=>api("/api/run",{method:"POST",body:"{}"}).then(()=>say("Run started")).catch(e=>say(e.message,1)).finally(refresh);
+$("#bRun").onclick=()=>api("/api/run",{method:"POST",body:"{}"}).then(()=>say("Run started")).catch(e=>say(e.message,1)).finally(()=>{refresh();loadSetup()});
 $("#bStop").onclick=()=>api("/api/stop",{method:"POST"}).then(()=>say("Stopping after the running builds")).catch(e=>say(e.message,1)).finally(refresh);
-$("#bScan").onclick=()=>api("/api/scan",{method:"POST"}).then(()=>say("Scanning…")).catch(e=>say(e.message,1)).finally(refresh);
+function doScan(){return api("/api/scan",{method:"POST"}).then(()=>say("Scanning…")).catch(e=>say(e.message,1)).finally(refresh)}
+$("#bScan").onclick=doScan;
+function goTab(t){document.querySelector(`nav button[data-tab=${t}]`).click()}
+// first-run checklist: the card stays open while something is wrong, then shrinks to one line
+let setup=[],setupOpen=false,busy=false,lastFin,wantLog=null;
+const setupFails=()=>setup.filter(c=>c.level==="fail");
+async function loadSetup(){try{setup=await api("/api/setup")}catch(e){return}renderSetup()}
+function syncRun(){const f=setupFails();$("#bRun").disabled=busy||f.length>0;
+  $("#runWhy").textContent=f.length?"Run is disabled until the FAIL items under Setup are fixed: "+f.map(c=>c.title).join(", "):""}
+function renderSetup(){const el=$("#setupCard"),w=setup.filter(c=>c.level==="warn"),loud=setupFails().length>0||w.some(c=>!c.advisory);syncRun();
+  if(!setup.length){el.innerHTML="";return}
+  if(!loud&&!setupOpen){el.innerHTML=`<div class="card row small"><b class="lv-ok">Setup OK</b>${w.length?`<span class="muted">· ${w.length} note${w.length>1?"s":""}</span>`:""}<span class="muted" style="margin-left:auto"><a href="#" data-more>Details</a> · <a href="#" data-recheck>Re-check</a></span></div>`;return}
+  el.innerHTML=`<div class="card"><div class="row"><h2 style="margin:0">Setup</h2><span class="small muted">${loud?"Fix the FAIL and warn rows, then re-check.":"Everything needed is in place."}</span><span style="margin-left:auto">${loud?"":`<a href="#" data-more class="small">Hide</a> `}<button class="btn" data-recheck>Re-check</button></span></div>
+   <table class="setup">${setup.map(c=>`<tr><td class="lv-${c.level}">${c.level==="fail"?"FAIL":c.level}</td><td><b>${esc(c.title)}</b></td><td>${esc(c.message)}${c.fix?`<div class="small muted">Fix: ${esc(c.fix)}</div>`:""}</td><td class="small">${c.link?`<a href="#" data-goto="${esc(c.link.field)}">Settings</a>`:""}</td></tr>`).join("")}</table></div>`}
+$("#setupCard").addEventListener("click",e=>{const a=e.target.closest("[data-recheck],[data-more],[data-goto]");if(!a)return;e.preventDefault();
+  if(a.matches("[data-recheck]"))loadSetup();else if(a.matches("[data-more]")){setupOpen=!setupOpen;renderSetup()}
+  else{goTab("set");setTimeout(()=>{const i=document.querySelector(`[data-c="${a.dataset.goto}"]`);if(i){i.scrollIntoView({block:"center"});i.focus()}},500)}});
+$("#bSetupSet").onclick=()=>{setupOpen=true;goTab("dash");loadSetup()};
+// a scan or run that ended badly: say so, with the end of its log
+$("#failBox").addEventListener("click",e=>{const a=e.target.closest("[data-log]");if(!a)return;e.preventDefault();wantLog=a.dataset.log;goTab("logs")});
+function failBox(s){const ev=[["scan",s.scan],["run",s.run]].filter(([k,x])=>x&&x.finished).sort((a,b)=>b[1].finished-a[1].finished)[0];
+  $("#failBox").innerHTML=ev&&ev[1].error&&!s.engine_running&&!s.scan.running?`<div class="banner bad"><b>The ${ev[0]==="scan"?"scan":"run"} failed.</b> ${esc(ev[1].error)}${ev[1].log_tail?.length?`<pre class="small">${esc(ev[1].log_tail.join("\n"))}</pre>`:""}<a href="#" data-log="${esc(ev[1].log)}">Open the log</a></div>`:""}
 let cfgRev,cfgLoadedAt=0,setDirty=false,bannerHtml="";   // cfgRev: version of config.json the Settings form shows
 function banners(s){const e=s.config_error,p=s.config_problems||[];let h="";
   if(e)h+=`<div class="banner bad"><b>Settings file could not be read</b> (${e.line?`line ${e.line}: `:""}${esc(e.message)}). ${e.using==="last_good"?"Using the last working settings.":"Using the default settings."} Fix the file or restore a backup.</div>`;
@@ -90,11 +116,15 @@ async function poll(){const t0=performance.now(),s=await api("/api/status");bann
   // config.json was edited since the form was loaded (a poll that started before the last load says nothing new)
   if(tab==="set"&&!s.config_error&&cfgRev!==undefined&&t0>cfgLoadedAt&&s.config_rev!==cfgRev){
     if(setDirty)$("#cfgChanged").hidden=false;else loadSet("Settings file changed on disk: reloaded.")}
+  if(s.clock)$("#clockNote").textContent=`Server time now ${s.clock.time} (${s.clock.tz}, UTC${s.clock.utc_offset}). Schedule times use this clock.`;
   return s}
 async function refresh(){
   const s=await poll();const st=s.status||{};
   $("#state").textContent=s.engine_running?(s.stop_requested?"Stopping after current":"Running")+` · load ${s.load[0].toFixed(1)}/${s.cpus}`:s.scan.running?"Scanning…":"Idle"+(s.schedule?.enabled?` · next ${s.schedule.times.join(", ")}`:"");
-  $("#bRun").disabled=s.engine_running||s.scan.running;$("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
+  if(s.clock)$("#state").textContent+=` · server time ${s.clock.time} ${s.clock.tz}`;
+  busy=s.engine_running||s.scan.running;syncRun();failBox(s);
+  const fin=[s.scan.finished,s.run?.finished].join("|");if(fin!==lastFin){const first=lastFin===undefined;lastFin=fin;if(!first)loadSetup()}   // a scan changes what the biggest game is
+  $("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
   const d=s.disks;const FL={library:"Library (read-only)",downloads:"Downloads (read-only)",output:"Finished .pkg files",temp:"Work / scratch"};$("#folders").innerHTML=`<table>${Object.entries(FL).map(([k,l])=>{const x=d[k]||{},h=(s.host_paths||{})[k];return `<tr><td>${l}</td><td><code>${esc(h||x.path||"")}</code>${h?` <span class="muted">(in the container: ${esc(x.path||"")})</span>`:""}</td><td>${x.error?esc(x.error):gib(x.free)+" free"}</td></tr>`}).join("")}</table>`;$("#kpis").innerHTML=[["To build",s.plan_counts.build],["Built",s.plan_counts.done],["Work drive free",gib(d.temp?.free)],["Output free",gib(d.output?.free)]].map(([k,v])=>`<div class="kpi"><b>${v??"—"}</b><span>${k}</span></div>`).join("")+`<div class="kpi"><b>${s.plan_time?ago(s.plan_time):"never"}</b><span>Last scan</span></div>`;
   const b=s.engine_running?(st.builds||[]):[];
   $("#builds").innerHTML=b.length?b.map(x=>`<div style="margin:8px 0"><div class="row"><b>${esc(x.name)}</b><span class="muted small">stage ${x.stage}/5 ${esc(x.stage_text)} · ${esc(x.part)} ${x.pct}% · ${ago(x.since)}</span></div><div class="bar"><i style="width:${((x.stage-1)*20+x.pct/5)}%"></i></div></div>`).join(""):"Nothing building.";
@@ -103,11 +133,14 @@ async function refresh(){
   const r=st.results||[];$("#results").innerHTML=r.length?`<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${x.status}">${x.status}</span></td><td class="small muted">${esc(x.why||x.validate||"")} ${x.build_min?`· build ${x.build_min} min`:""}</td></tr>`).join("")}</table>`:"—";
 }
 async function loadLib(){
-  [plan,overrides]=await Promise.all([api("/api/plan"),api("/api/overrides")]);
+  let s;[plan,overrides,s]=await Promise.all([api("/api/plan"),api("/api/overrides"),api("/api/status")]);
   const f=$("#libFilter").value.toLowerCase(),a=$("#libAct").value;
   const rows=plan.filter(p=>(!a||p.action===a)&&(!f||(p.title+p.title_id).toLowerCase().includes(f)));
   $("#libSum").textContent=`${plan.length} titles · ${plan.filter(p=>p.action==="build").length} to build`;
-  $("#libRows").innerHTML=rows.map(p=>{const o=overrides[p.title_id]||{};const c=p.candidates||[];
+  const empty=t=>`<tr><td colspan="4">${t}</td></tr>`;
+  $("#libRows").innerHTML=!plan.length?empty(!s.plan_time?`<b>No scan yet.</b> <span class="muted">Press Scan to look through your game library for games to build.</span> <button class="btn" onclick="doScan();goTab('dash')">Scan for new games</button>`
+      :`<b>The last scan found no games.</b> <span class="muted">Nothing usable was found in <code>${esc(s.disks.library?.path||"")}</code>${s.disks.downloads?.error?"":` or <code>${esc(s.disks.downloads?.path||"")}</code>`}. Check the folders on the Dashboard, then scan again.</span>`)
+    :!rows.length?empty('<span class="muted">No titles match the filter.</span>'):rows.map(p=>{const o=overrides[p.title_id]||{};const c=p.candidates||[];
     return `<tr><td><b>${esc(p.title||p.title_id)}</b><div class="small muted">${p.title_id}${p.fw?" · fw "+p.fw:""}</div>
     <details><summary class="small">Options${Object.keys(o).length?" (overridden)":""}</summary><div class="ovr" data-tid="${p.title_id}">
      <label class="small">Source <select data-k="source"><option value="">automatic</option>${c.map(x=>`<option value="${esc(x.source)}" ${o.source===x.source?"selected":""}>${esc(x.kind)} v${esc(x.version)}${x.packed?" ["+x.packed+"]":""} · ${esc(x.source.split("/").slice(-2).join("/"))}</option>`).join("")}</select></label>
@@ -118,7 +151,7 @@ async function loadLib(){
      <div class="row"><button class="btn" onclick="saveOv(this)">Save options</button>${p.action==="build"?`<button class="btn" onclick="buildOne('${p.title_id}')">Build only this</button>`:""}<span class="small muted"></span></div></div></details></td>
     <td>${esc(p.version)}</td><td class="small">${esc(p.kind||"")}<div class="muted">${esc((p.source||"").split("/").slice(-1)[0])}</div></td>
     <td><span class="tag t-${p.action}">${p.action}</span><div class="small muted">${esc(p.why)}</div></td></tr>`}).join("");
-  const s=await api("/api/status");$("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
+  $("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
 }
 $("#libFilter").oninput=loadLib;$("#libAct").onchange=loadLib;
 async function saveOv(btn){const box=btn.closest(".ovr"),o={};box.querySelectorAll("[data-k]").forEach(e=>o[e.dataset.k]=e.type==="checkbox"?e.checked:e.value);
@@ -126,7 +159,7 @@ async function saveOv(btn){const box=btn.closest(".ovr"),o={};box.querySelectorA
 async function buildOne(t){try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
 function alertBox(m){say(m,1)}
 async function loadHist(){const l=await api("/api/ledger");const rows=Object.entries(l).sort((a,b)=>(b[1].built||"").localeCompare(a[1].built||""));
-  $("#histRows").innerHTML=rows.map(([t,v])=>`<tr><td><b>${esc((v.output||"").split("/").pop())}</b><div class="small muted">${esc(v.source||"")}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min · L${v.level??""}</td><td class="small">${esc(v.validate||"")}${v.sha256?`<div class="muted">sha256 ${v.sha256.slice(0,16)}…</div>`:""}</td></tr>`).join("")}
+  $("#histRows").innerHTML=!rows.length?`<tr><td colspan="5"><b>Nothing built yet.</b> <span class="muted">Finished packages are listed here, with their checks, once a run has built one.</span></td></tr>`:rows.map(([t,v])=>`<tr><td><b>${esc((v.output||"").split("/").pop())}</b><div class="small muted">${esc(v.source||"")}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min · L${v.level??""}</td><td class="small">${esc(v.validate||"")}${v.sha256?`<div class="muted">sha256 ${v.sha256.slice(0,16)}…</div>`:""}</td></tr>`).join("")}
 const FIELDS={fFolders:[["library","Game library (read-only)"],["downloads","Downloads (read-only)"],["output","Output folder"],["temp","Work folder (fast drive)"]],
  fConv:[["compression_level","Kraken level (1-9; 4 = fast, 7 = smaller)","n"],["cpu_count","Workers per build","n"],["max_compress","Builds compressing at once","n"],["max_builds","Builds alive at once","n"],["nice","CPU priority (nice 0-19)","n"],["ssd_reserve_gb","Keep free on work drive (GB)","n"],["build_on_ssd","Write package on work drive, then copy","b"],["console_fw","Console firmware (picks original vs backport)"],["skip_download_prefixes","Skip download folders starting with (comma separated)","l"],["junk_file_patterns","Delete files whose name matches (regex, comma separated)","l"],["junk_title_patterns","Cut from game titles (regex, comma separated)","l"]],
  fSched:[["schedule.enabled","Run automatically","b"],["schedule.times","At (HH:MM, comma separated)","l"],["notify_url","Notification URL (ntfy topic, optional)"]]};
@@ -138,11 +171,11 @@ async function loadSet(note){cfgLoadedAt=performance.now();cfg=await api("/api/c
   return `<label class="f"><span>${esc(l)}</span>${t==="b"?`<input type="checkbox" data-c="${k}" data-t="b" ${v?"checked":""}>`:`<input type="${t==="n"?"number":"text"}" data-c="${k}" data-t="${t||"s"}" value="${esc(Array.isArray(v)?v.join(", "):v)}">`}</label>`}).join("")}}
 $("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]").forEach(e=>{let v=e.dataset.t==="b"?e.checked:e.dataset.t==="n"?Number(e.value):e.dataset.t==="l"?e.value.split(",").map(x=>x.trim()).filter(Boolean):e.value.trim();
   const [a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});
-  try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved";$("#setMsg").className="small muted";loadSet()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};
-async function loadLogs(){const l=await api("/api/logs");const cur=$("#logSel").value;$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
+  try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved";$("#setMsg").className="small muted";loadSet();loadSetup()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};
+async function loadLogs(){const l=await api("/api/logs");const cur=wantLog||$("#logSel").value;wantLog=null;$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
 async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600");const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
 $("#logSel").onchange=showLog;$("#bLog").onclick=loadLogs;
-function load(){({dash:refresh,lib:loadLib,hist:loadHist,set:loadSet,logs:loadLogs})[tab]().catch(e=>say(e.message,1));if(tab!=="dash"&&tab!=="set")poll().catch(()=>{})}
+function load(){({dash:refresh,lib:loadLib,hist:loadHist,set:loadSet,logs:loadLogs})[tab]().catch(e=>say(e.message,1));if(tab==="dash")loadSetup();if(tab!=="dash"&&tab!=="set")poll().catch(()=>{})}
 load();setInterval(()=>{(tab==="dash"?refresh():poll()).catch(()=>{});if(tab==="logs"&&$("#logFollow").checked)showLog().catch(()=>{})},5000);
 </script>
 </body>

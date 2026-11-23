@@ -33,7 +33,7 @@ Open `http://<host>:8765`.
 
 | Page | |
 |---|---|
-| Dashboard | run now, stop after the current games, rescan; live stages and progress; free space |
+| Dashboard | setup checklist; run now, stop after the current games, rescan; live stages and progress; free space; why a scan or run failed |
 | Library | every game found, the copy that will be used and why; per-game options: force a source, keep the backport or the original, overlay a folder of patch files, skip, build just this one |
 | History | every finished package with its validation result, size and times |
 | Settings | folders, compression level, parallel builds, console firmware, junk-file cleanup patterns, schedule, notifications |
@@ -50,8 +50,27 @@ disk (SSD/NVMe) with free space a little larger than your biggest game.
 1. Copy [`docker-compose.yml`](docker-compose.yml) and change the five paths on the left-hand side, plus
    `user:` (run `id` on the host to see the uid:gid that owns your output folder).
 2. `docker compose up -d`
-3. Open `http://<host>:8765`, check **Settings** (set your console firmware) and press **Scan**.
+3. Open `http://<host>:8765`. The **Setup** card at the top of the Dashboard checks your folders and tells you
+   what to fix (see below). Set your console firmware under **Settings**, then press **Scan**.
    The Library page shows what would be built. Nothing is built until you press **Run**.
+
+### The setup check
+
+The Dashboard opens with a **Setup** card: one row for the game library, the downloads folder, the output
+folder, the work drive, `/config`, UltraPack's files, your console firmware and the server's clock, each marked
+`ok`, `warn` or `FAIL` with a one-line fix. It's checked when the page loads and when you press **Re-check**
+(also under Settings, as **Check setup**), and it shrinks to a single "Setup OK" line once nothing needs doing.
+
+- A folder that must be writable (output, work, `/config`) is tested by creating and deleting a small hidden
+  file, so a permission problem shows up now rather than half an hour into the first game. On Synology that's
+  usually the `group_add` line in the compose file.
+- **Run now** is disabled, with the reason, while a row says FAIL, and a run or scheduled run won't start then.
+- `/downloads` is optional: leave that volume out and the scan uses the library only (a note, not an error).
+- The work drive is compared with the biggest game in the last scan plus the "keep free" reserve, because a game
+  that doesn't fit is deferred on every run. The server's time and time zone are shown because schedule times
+  use that clock; set `TZ` in the compose file for your local time.
+- If a scan or run stops with an error, the Dashboard says so in red with the end of its log and a link to the
+  full log. It stays until the next scan or run.
 
 To build the image yourself instead of pulling it, use `build: .` in the compose file or run
 `docker build -t ps5-pkg-station .`. The build downloads UltraPack's release and checks its SHA-256.
@@ -61,7 +80,7 @@ To build the image yourself instead of pulling it, use `build: .` in the compose
 | Path | Use | Mode |
 |---|---|---|
 | `/library` | game images and folders | read-only |
-| `/downloads` | second source, typically archive sets | read-only |
+| `/downloads` | optional second source, typically archive sets | read-only |
 | `/output` | finished `.pkg` files | read-write |
 | `/work` | scratch space for extraction and building | read-write, fast disk |
 | `/config` | `state/config.json`, history, caches, logs, patch folders | read-write |
