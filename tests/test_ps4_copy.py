@@ -219,11 +219,34 @@ class Titles(Ps4Case):
         self.make(asian_pkg(), member=f"{TID}/{ASIAN}-{TID}.v1.0.pkg", folder="Fallback-Folder")
         self.assertEqual(self.named()[0], f"Fallback Folder [{TID}]")                        # a Chinese file name is no English title either
 
+    def test_a_mixed_script_title_is_not_an_english_title(self):
+        """The real one: three Han characters followed by Latin words, TITLE_09 in Hangul, no TITLE_01 / TITLE_18."""
+        mixed = "\u7bc4\u4f8b\u904aGAME EDITION"
+        pkg = make_ps4_pkg(f"UP9000-{TID}_00-EXAMPLEGAME00000", mixed, "01.00", "gd", body=b"B" * 5000, extra={"TITLE_09": KOREAN})
+        self.make(pkg)                                                              # member "Example Game-CUSA12345.v1.0[SiteTag].pkg"
+        folder, game, e = self.named()
+        self.assertEqual((folder, game), (f"Example Game [{TID}]", f"Example Game [{TID}] [v01.00].pkg"))
+        self.assertEqual((e["title"], e["title_source"], e["title_in_package"]), ("Example Game", "file name", mixed))
+
+    def test_a_mixed_title_with_the_latin_part_first_is_no_better(self):
+        mixed = "GAME EDITION \u7bc4\u4f8b\u904a"
+        self.make(make_ps4_pkg(f"UP9000-{TID}_00-EXAMPLEGAME00000", mixed, "01.00", "gd", extra={"TITLE_09": KOREAN}))
+        self.assertEqual(self.named()[2]["title_source"], "file name")
+
+    def test_a_title_with_other_script_letters_falls_back_to_the_folder_when_the_file_name_has_no_title(self):
+        mixed = "\u7bc4\u4f8b\u904aGAME EDITION"
+        self.make(make_ps4_pkg(f"UP9000-{TID}_00-EXAMPLEGAME00000", mixed, "01.00", "gd"), member=f"{TID}/release.pkg")
+        folder, _, e = self.named()
+        self.assertEqual((folder, e["title_source"]), (f"Example Game [{TID}]", "folder name"))
+
     def test_the_helpers(self):
-        for text, want in [("Example Game", True), ("\u00c9cho des \u00c2mes", True), ("1942", True), ("", True), (ASIAN, False), (KOREAN, False),
-                           ("Example \u7bc4\u4f8b\u904a\u6232 Game", True), ("\u7bc4\u4f8b\u904a\u6232 Ex", False)]:
+        for text, want in [("Example Game", True), ("\u00c9cho des \u00c2mes", True), ("Stra\u00dfe \u00e6 \u00f8 \u0131", True), ("1942", True), ("Game 2: Re-Mix!", True), ("Pro Evolution N\u00ba 1", True),
+                           ("", True), ("\uff27\uff21\uff2d\uff25", True),                                    # fullwidth Latin letters
+                           (ASIAN, False), (KOREAN, False), ("\u7bc4\u4f8b\u904aGAME EDITION", False), ("GAME \u7bc4", False),
+                           ("Example \u7bc4\u4f8b\u904a\u6232 Game", False), ("\u30b2\u30fc\u30e0 Game", False), ("\u3042\u3044 Game", False),
+                           ("\u0418\u0433\u0440\u0430", False), ("Game \u03a9", False), ("\u0627\u0644\u0644\u0639\u0628\u0629", False), ("\u0e40\u0e01\u0e21 Game", False)]:
             with self.subTest(text):
-                self.assertEqual(E.mostly_latin(text), want)
+                self.assertEqual(E.latin_only(text), want)
         self.assertEqual(E.ps4_title_from_name(f"{TID}/Example Game-{TID}.v1.0[SiteTag].pkg", TID), "Example Game")
         self.assertEqual(E.ps4_title_from_name("whatever.pkg", TID), "")
         self.assertEqual(E.ps4_title_from_name(f"{TID}.pkg", TID), "")

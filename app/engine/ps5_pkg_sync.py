@@ -886,10 +886,11 @@ def ps4_clean_name(name):
     return t[:150] + ext
 
 
-def mostly_latin(text):
-    """True when most of the letters are Latin script (accents included): digits and punctuation don't count."""
-    letters = [c for c in text if c.isalpha()]
-    return not letters or sum(unicodedata.name(c, "").startswith("LATIN") for c in letters) * 2 >= len(letters)
+def latin_only(text):
+    """True when the title has no letter from another script (Han, kana, Hangul, Cyrillic, Greek, Arabic, Thai, ...):
+    only then can it stand for the English title. Digits, punctuation and Latin letters with accents are fine, so a
+    French title passes and "<3 Han characters>GAME EDITION" does not."""
+    return all(c in "\u00aa\u00ba" or re.search(r"\bLATIN\b", unicodedata.name(c, "")) for c in text if c.isalpha())    # ordinal indicators count as Latin
 
 
 def _plain_title(text):
@@ -930,19 +931,19 @@ def ps4_source_folder(cfg, source):
 
 def ps4_pick_title(cfg, pick, game):
     """(title, where it came from, the title the package itself carries): the PS5 side names games from the English
-    title, so: the package's English title (TITLE_01, then TITLE_18); else its default TITLE when that is mostly
-    Latin script; else the English title in the base game's file name; else the source folder's name; else TITLE."""
+    title, so: the package's English title (TITLE_01, then TITLE_18); else its default TITLE when it has no letter
+    of another script; else the English title in the base game's file name; else the source folder's name; else TITLE."""
     default = (game or {}).get("title") or pick.get("title") or ""
     tid = pick["title_id"]
     if (game or {}).get("title_en"):
         return game["title_en"], "package (English)", default
-    if default and mostly_latin(default):
+    if default and latin_only(default):
         return default, "package", default
     from_name = ps4_title_from_name(pick.get("game_path") or (game or {}).get("path") or "", tid)
-    if from_name and mostly_latin(from_name):
+    if from_name and latin_only(from_name):
         return from_name, "file name", default
     folder = _plain_title(ps4_source_folder(cfg, pick.get("source") or ""))
-    if folder and mostly_latin(folder):
+    if folder and latin_only(folder):
         return folder, "folder name", default
     return default or tid, "package", default
 

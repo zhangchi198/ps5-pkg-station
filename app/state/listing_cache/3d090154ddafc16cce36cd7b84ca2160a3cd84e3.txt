@@ -1,0 +1,5 @@
+Path = CUSA12345/Example Game-CUSA12345.v1.0[SiteTag].pkg
+Folder = -
+Size = 20480
+CRC = 11A69969
+

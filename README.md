@@ -194,8 +194,8 @@ converted. With `ps4_mode` = `copy` (the default, under Settings > Conversion) t
 - Each package is named and classified from **its own header** (the content ID, the title and the version in its
   PARAM.SFO; game / patch / DLC), not from its file name. Only the first few MiB of each package are read.
 - The folder and the base game's file name use the game's **English title**, like the PS5 side: the package's
-  `TITLE_01` (English US), else `TITLE_18` (English UK); if it has none and its `TITLE` isn't mostly Latin script
-  (an Asian release often has a Chinese or Korean `TITLE` only), the English title in the base game's file name next to
+  `TITLE_01` (English US), else `TITLE_18` (English UK); if it has none and its `TITLE` has letters of another script
+  (an Asian release has a Chinese or Korean `TITLE`, sometimes with Latin words after it), the English title in the base game's file name next to
   the title ID (`<Title>-CUSA12345.v1.0[tag].pkg`), else the name of the folder the release was downloaded into,
   else `TITLE`. The title the package itself carries is shown in the Library ("Title in package: ...").
 - A `.pkg` inside a nested archive (`DLC.zip`) is copied too. If it holds no `.pkg`, nothing is copied from it and the
