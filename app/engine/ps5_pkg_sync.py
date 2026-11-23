@@ -1039,6 +1039,21 @@ def backport_decision(image_fw, original_fw, console_fw, override=None):
     return None, ("no console firmware is set (Settings)" if not console else "neither copy is known to run on the console")
 
 
+def backport_state(image_fw, original_fw, console_fw, override=None):
+    """(present, decision, decided_by) for an image and its original archive. A backport is present when the image asks
+    for lower firmware than the original; only then is there a choice between the two. Without one the decision is None
+    and says so, neutrally, unless the user made a choice of their own (it applies if the executables differ anyway)."""
+    present = bool(image_fw and original_fw and vkey(image_fw) < vkey(original_fw))
+    if present or override in ("image", "original"):
+        decision, by = backport_decision(image_fw, original_fw, console_fw, override)
+        return present, decision, by
+    if not image_fw or not original_fw:
+        return False, None, "the firmware of one of the copies is not known: nothing to compare"
+    if vkey(image_fw) == vkey(original_fw):
+        return False, None, "both copies ask for the same firmware: nothing to choose"
+    return False, None, "the image does not ask for lower firmware than the original: nothing to choose"
+
+
 def explain_candidates(lst, pick, ov, twin):
     """Every copy found of one game, with what became of it: [{source, kind, kind_label, version, fw, packed, size, origin,
     verdict, reason}]. verdict: chosen | verifies | older | packed | same_version | not_used (the user chose another)."""
@@ -1090,9 +1105,8 @@ def backport_info(cfg, pick, twin, ov):
     if twin is None or pick["kind"] in ARCHIVE_KINDS + ("folder", "archive-ps4", "ps4-folder"):
         return None
     image_fw, original_fw, console = pick.get("fw", ""), twin.get("fw", ""), (cfg.get("console_fw") or "")
-    decision, by = backport_decision(image_fw, original_fw, console, ov.get("modified_exec"))
-    return dict(present=bool(image_fw and original_fw and vkey(image_fw) < vkey(original_fw)), confirmed=False, image_fw=image_fw,
-                original_fw=original_fw, console_fw=console, decision=decision, decided_by=by)
+    present, decision, by = backport_state(image_fw, original_fw, console, ov.get("modified_exec"))
+    return dict(present=present, confirmed=False, image_fw=image_fw, original_fw=original_fw, console_fw=console, decision=decision, decided_by=by)
 
 
 # ------------------------------------------------------------------ titles learned from extracted games

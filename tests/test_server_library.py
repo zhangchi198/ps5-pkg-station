@@ -103,6 +103,63 @@ class BackportDecision(LibraryCase):
         self.assertEqual((p["fw_check"]["need"], p["fw_check"]["ok"]), ("9.60", False))
 
 
+class NoBackportToDecide(LibraryCase):
+    """A twin with the same firmware has no image-versus-original choice; and a patch's param.json sets the firmware that counts."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_cfg(legacy_config(console_fw="13.20", overrides={}))
+
+    def live(self, **kw):
+        return dict(entry("PPSA00001", "12.00"), patched=True, source_fw="13.60", source_version="01.00", source_name="x",
+                    backport=dict(present=False, confirmed=False, image_fw="13.60", original_fw="13.60", console_fw="", decision=None,
+                                  decided_by="both copies ask for the same firmware: nothing to choose"), **kw)
+
+    def test_the_live_shape_has_no_red_flag_and_no_alarming_words(self):
+        self.put("plan.json", [self.live()], age=60)
+        p = self.plan()["PPSA00001"]
+        self.assertEqual(p["fw_check"], dict(need="12.00", console="13.20", ok=True))                          # the patched firmware, not the source's 13.60
+        self.assertEqual((p["backport"]["present"], p["backport"]["decision"]), (False, None))
+        self.assertEqual(p["backport"]["decided_by"], "both copies ask for the same firmware: nothing to choose")
+        self.assertNotIn("neither", json.dumps(p))
+        self.assertNotIn("won't run", json.dumps(p))
+
+    def test_it_stays_calm_whatever_the_console_and_still_judges_the_patched_firmware(self):
+        self.put("plan.json", [self.live()], age=60)
+        for console, ok in (("13.60", True), ("12.00", True), ("11.00", False), ("", None)):
+            self.client.put("/api/config", json={"console_fw": console})
+            p = self.plan()["PPSA00001"]
+            self.assertEqual((p["fw_check"]["ok"], p["backport"]["decision"]), (ok, None), console)
+            self.assertNotIn("neither", p["backport"]["decided_by"])
+
+    def test_the_stale_text_of_an_older_plan_is_replaced_too(self):
+        stale = self.live()
+        stale["backport"] = dict(stale["backport"], decided_by="neither copy is known to run on the console")
+        self.put("plan.json", [stale], age=60)
+        self.assertEqual(self.plan()["PPSA00001"]["backport"]["decided_by"], "both copies ask for the same firmware: nothing to choose")
+
+    def test_a_real_backport_with_a_patch_is_judged_by_the_patched_firmware(self):
+        p = dict(entry("PPSA00001", "12.00"), patched=True, source_fw="7.00", backport=backport("7.00", "9.60"))
+        self.put("plan.json", [p], age=60)
+        got = self.plan()["PPSA00001"]
+        self.assertEqual((got["backport"]["present"], got["backport"]["decision"]), (True, "original"))          # the copy question is still answered...
+        self.assertEqual(got["fw_check"]["need"], "12.00")                                                      # ...but the package carries the patch's firmware
+        self.client.put("/api/config", json={"console_fw": "6.00"})
+        got = self.plan()["PPSA00001"]
+        self.assertEqual((got["backport"]["decision"], got["fw_check"]["need"], got["fw_check"]["ok"]), (None, "12.00", False))
+        self.assertIn("the patch sets the package's firmware to 12.00", got["backport"]["decided_by"])
+
+    def test_an_unpatched_backport_is_still_judged_by_the_copy_that_will_be_used(self):
+        self.put("plan.json", [dict(entry("PPSA00001", "7.00"), backport=backport("7.00", "9.60"))], age=60)
+        self.assertEqual(self.plan()["PPSA00001"]["fw_check"]["need"], "9.60")                                  # as before
+
+    def test_the_page_shows_no_decision_line_without_a_backport(self):
+        js = (WEB_DIR / "static" / "app.js").read_text()
+        body = js[js.index("function backportText"):js.index("function optionsForm")]
+        self.assertRegex(body, r"(?s)if\(b\.present\).*?else out\.push\(`<b>Checked against the original")
+        self.assertIn("from the patch's param.json", body)
+
+
 class Outcome(LibraryCase):
     def test_what_the_last_build_did_is_shown_on_a_finished_game(self):
         outcome = dict(differs=True, used="original", files=3, image_fw="7.00", original_fw="9.60", decided_by="your console's firmware")

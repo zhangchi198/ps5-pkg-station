@@ -132,6 +132,34 @@ class Backport(PlanCase):
         b = self.plan_with(image_fw="9.60", original_fw="9.60")["backport"]
         self.assertFalse(b["present"])
 
+    def test_when_both_copies_ask_for_the_same_firmware_there_is_nothing_to_choose_and_it_says_so_calmly(self):
+        for console in ("13.20", "10.01", "6.00", ""):
+            b = self.plan_with(console=console, image_fw="13.60", original_fw="13.60")["backport"]
+            self.assertEqual((b["present"], b["decision"]), (False, None), console)
+            self.assertEqual(b["decided_by"], "both copies ask for the same firmware: nothing to choose")
+            self.assertNotIn("neither", b["decided_by"])
+        b = self.plan_with(image_fw="9.60", original_fw="7.00")["backport"]                                        # an image that asks for MORE: no backport either
+        self.assertEqual((b["present"], b["decision"], b["decided_by"]), (False, None, "the image does not ask for lower firmware than the original: nothing to choose"))
+        b = self.plan_with(image_fw="", original_fw="9.60")["backport"]
+        self.assertEqual((b["present"], b["decision"]), (False, None))
+        self.assertIn("not known", b["decided_by"])
+
+    def test_your_own_choice_still_shows_when_there_is_no_backport(self):
+        self.cfg["overrides"] = {TID: {"modified_exec": "original"}}
+        b = self.plan_with(image_fw="13.60", original_fw="13.60")["backport"]
+        self.assertEqual((b["present"], b["decision"], b["decided_by"]), (False, "original", "your option"))
+
+    def test_the_live_shape_equal_firmware_twin_a_console_in_between_and_a_patch_that_lowers_it(self):
+        patch_dir = self.dir / "patches" / TID
+        (patch_dir / "sce_sys").mkdir(parents=True)
+        (patch_dir / "sce_sys" / "param.json").write_text(json.dumps({"titleId": TID, "contentVersion": "01.00", "requiredSystemSoftwareVersion": "0x1200000000000000",
+                                                                      "localizedParameters": {"defaultLanguage": "en-US", "en-US": {"titleName": "Example Game"}}}))
+        self.cfg["overrides"] = {TID: {"patch": str(patch_dir)}}
+        p = self.plan_with(console="13.20", image_fw="13.60", original_fw="13.60")
+        self.assertEqual((p["fw"], p["patched"], p["source_fw"]), ("12.00", True, "13.60"))                         # the package will say 12.00
+        self.assertEqual((p["backport"]["present"], p["backport"]["decision"]), (False, None))
+        self.assertNotIn("neither", json.dumps(p))
+
     def test_no_pair_no_backport(self):
         self.assertIsNone(self.plan([cand("/l/x.exfat", "exfat", "01.00", "7.00")])["backport"])
         self.assertIsNone(self.plan([cand("/d/x.rar", "rar", "01.00", "9.60"), cand("/d/x2.rar", "rar", "01.00", "9.60")])["backport"])

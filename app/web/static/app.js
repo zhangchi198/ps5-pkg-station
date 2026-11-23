@@ -220,7 +220,7 @@ function backportText(p){const b=p.backport,out=[];
     if(b.present)out.push(`<b>Backport:</b> the image needs fw ${esc(b.image_fw)}; the original archive needs fw ${esc(b.original_fw)}. `+(b.decision==="original"?`${b.console_fw?`Your console (${esc(b.console_fw)})`:"Your console"} runs the original, so the original will be used (${esc(b.decided_by)}).`
       :b.decision==="image"?`The original needs newer firmware than ${con}, so the image's modified executables are kept (${esc(b.decided_by)}).`:`Not decided: ${esc(b.decided_by)}. Set your console firmware under Settings, or choose under Options.`)
       +` <span class="muted">The files are compared when the build starts; what it did is shown here afterwards.</span>`);
-    else out.push(`<b>Checked against the original:</b> the image is compared file by file with the original archive (${b.image_fw?`both ask for fw ${esc(b.image_fw)}`:"firmware not known"}).`)}
+    else out.push(`<b>Checked against the original:</b> the image is compared file by file with the original archive (${b.image_fw&&b.image_fw===b.original_fw?`both ask for fw ${esc(b.image_fw)}`:"no lower-firmware backport"}).${p.patched?` The package itself carries fw ${esc(p.fw||"?")}, from the patch's param.json.`:""}`)}
   const l=p.last_backport;if(l)out.push(`<b>Last build:</b> ${l.differs===false?"the image and the original archive matched.":`the image differed from the original in ${num(l.files)} file(s): the ${esc(l.used)} was used (${esc(l.decided_by||"")}).`}`);
   return out.map(t=>`<div class="small" style="margin:4px 0">${t}</div>`).join("")}
 function optionsForm(p,o,cfgHost){const c=p.candidates||[];

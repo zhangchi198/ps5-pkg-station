@@ -277,9 +277,12 @@ def library_extras(p, cfg, ledger):
     if isinstance(bp, dict):
         ov = (cfg.get("overrides") or {}).get(tid) or {}
         image_fw, original_fw = (str(bp.get(k) or "") for k in ("image_fw", "original_fw"))
-        decision, by = E.backport_decision(image_fw, original_fw, console, ov.get("modified_exec") if isinstance(ov, dict) else None)
-        p = dict(p, backport=dict(bp, console_fw=console, decision=decision, decided_by=by))
-        if bp.get("present") and decision:
+        present, decision, by = E.backport_state(image_fw, original_fw, console, ov.get("modified_exec") if isinstance(ov, dict) else None)
+        if present and not decision and p.get("patched"):
+            by = f"the patch sets the package's firmware to {need or '?'}; the copy only matters if the executables differ"
+        p = dict(p, backport=dict(bp, present=present, console_fw=console, decision=decision, decided_by=by))
+        # the firmware the package will carry decides whether it runs: a patch's param.json (already in `fw`) beats the copies' own
+        if present and decision and not p.get("patched"):
             need = (original_fw if decision == "original" else image_fw) or need
     if need:
         p = dict(p, fw_check=dict(need=need, console=console, ok=(E.vkey(need) <= E.vkey(console)) if console else None))
