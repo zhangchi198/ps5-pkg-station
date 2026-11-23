@@ -25,6 +25,7 @@ PY = sys.executable
 
 sys.path.insert(0, str(ENGINE.parent))
 import ps5_pkg_sync as E  # noqa: E402  (same defaults/validation as the engine)
+import ps5_failures as FL  # noqa: E402  (games that failed: why, and when another try can help)
 import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
 
@@ -89,6 +90,106 @@ def text_twin(obj, key, mapping):
     else:
         return obj
     return dict(obj, **{key + "_host": host}) if host != val else obj
+
+
+def failure_store():
+    return FL.Store(STATE / "failures.json")
+
+
+def failures_rev():
+    try:
+        st = (STATE / "failures.json").stat()
+    except OSError:
+        return None
+    return f"{st.st_mtime_ns}-{st.st_size}"
+
+
+LOG_LABEL = {"ultrapack_failed": "View build log", "validate_failed": "View report"}
+
+
+def failure_actions(rec, entry, view):
+    """What can be done about a failure: [{id, label, kind}], kind api (POST .../action), goto (a Settings field),
+    log (open that log) or retry."""
+    code, acts = rec.get("code"), []
+    log = {"id": "view_log", "label": LOG_LABEL.get(code, "View log"), "kind": "log", "log": rec.get("log") or "pkg_sync.log"}
+    retry = {"id": "retry", "label": "Retry", "kind": "retry"}
+    if rec.get("state") == FL.WAITING:
+        return [{"id": "open_settings", "label": "Open Settings", "kind": "goto", "field": "ssd_reserve_gb"}, log]
+    if code == "crc_mismatch":
+        if (entry or {}).get("verify_archive"):
+            acts.append({"id": "use_archive", "label": "Use the archive copy", "kind": "api"})
+        acts += [{"id": "keep_anyway", "label": "Keep this copy anyway", "kind": "api"}, log]
+    elif code == "modified_exec_unknown":
+        acts += [{"id": "set_console_fw", "label": "Set console firmware", "kind": "goto", "field": "console_fw"},
+                 {"id": "keep_backport", "label": "Keep backport", "kind": "api"},
+                 {"id": "use_original", "label": "Use original", "kind": "api"}]
+    elif code == "validate_failed":
+        acts += [log] + ([{"id": "delete_staged", "label": "Delete staged package", "kind": "api"}] if view.get("staged") else []) + [retry]
+    elif code == "title_mismatch":
+        acts += [{"id": "skip_source", "label": "Skip this source", "kind": "api"}, log]
+    else:
+        acts += [log, retry]
+    if not any(a["id"] == "retry" for a in acts):             # every failed game has a one-click Retry
+        acts.append(retry)
+    return acts
+
+
+def failure_view(rec, entry, cfg, mapping):
+    """One stored failure for the API: the record, its explanation in words, whether it will be tried again by
+    itself, the staged package (if any) and what can be done."""
+    ex = FL.explain(rec)
+    state = rec.get("state")
+    changed = bool(entry) and rec.get("fingerprint") != FL.fingerprint(cfg, entry)
+    will_retry = state == FL.WAITING or bool(rec.get("retry")) or changed
+    sp = (rec.get("data") or {}).get("staged")
+    staged = dict(path=sp, bytes=E.dir_size(sp)) if sp and os.path.isdir(sp) else None
+    v = dict(rec, summary=ex["summary"], detail=ex["detail"], will_retry=will_retry, changed=changed, staged=staged,
+             source=(entry or {}).get("source"))
+    v["actions"] = failure_actions(rec, entry, v)
+    if will_retry and state == FL.FAILED:
+        v["next"] = ("Will be tried again with the next run." if rec.get("retry") else
+                     "Something it depends on has changed since: it is eligible for the next run.")
+    elif state == FL.FAILED:
+        v["next"] = ("Not retried by scheduled runs until its source or options change, the app is updated, "
+                     "or you press Retry.")
+    else:
+        v["next"] = "Retried automatically when there is room."
+    v = host_twins(v, mapping, ("source",))
+    if v["staged"]:
+        v["staged"] = host_twins(v["staged"], mapping, ("path",))
+    return text_twin(v, "excerpt", mapping)
+
+
+def explain_result(r):
+    """A result of "This run" with its failure in words (`summary`) when the engine gave it a code."""
+    if isinstance(r, dict) and r.get("code") and r.get("status") in ("failed", "deferred"):
+        return dict(r, summary=FL.explain(dict(code=r["code"], data=r.get("data") or {}, message=r.get("why") or ""))["summary"])
+    return r
+
+
+def plan_entries(cfg):
+    data = read_json(STATE / "plan.json", [])
+    return [p for p in data if isinstance(p, dict)] if isinstance(data, list) else []
+
+
+def plan_with_failures(plan, cfg, mapping):
+    """The plan as the page should show it: a title that failed is `failed` while nothing it depends on has
+    changed and nobody asked for a retry (the engine skips it too), a title waiting for space stays `build` with
+    the numbers, and each carries its `failure`."""
+    store = failure_store().load()
+    out = []
+    for p in plan:
+        rec = store.get(p.get("title_id")) if isinstance(p, dict) else None
+        if isinstance(p, dict) and p.get("action") in ("build", "failed"):
+            if rec:
+                fv = failure_view(rec, p, cfg, mapping)
+                p = dict(p, failure=fv, action="build" if fv["will_retry"] else "failed",
+                         why=(f"failed on {rec.get('at_text', '?')}: {fv['summary']} {fv['next']}" if rec.get("state") == FL.FAILED
+                              else f"waiting for space: {fv['summary']}"))
+            elif p.get("action") == "failed":
+                p = dict(p, action="build", why="new")
+        out.append(p)
+    return out
 
 
 def update_cfg(mutate):
@@ -259,8 +360,8 @@ def status():
     cfg = info.cfg
     host = host_view(cfg)
     folders, configured, host_problems, mapping = host["folders"], host["configured"], host["problems"], host["mapping"]
-    if mapping and isinstance(st, dict) and isinstance(st.get("results"), list):   # reasons mention container paths
-        st = dict(st, results=[text_twin(r, "why", mapping) for r in st["results"]])
+    if isinstance(st, dict) and isinstance(st.get("results"), list):
+        st = dict(st, results=[explain_result(text_twin(r, "why", mapping)) for r in st["results"]])
     disks = {}
     for k, f in folders.items():
         try:
@@ -268,13 +369,18 @@ def status():
             disks[k] = dict(path=f["container"], free=u.free, total=u.total)
         except Exception:
             disks[k] = dict(path=f["container"], error="not available")
-    plan = read_json(STATE / "plan.json", [])
-    return dict(engine_running=bool(pid), engine_pid=pid, clock=S.clock_info(),
+    entries = plan_entries(cfg)
+    plan = plan_with_failures(entries, cfg, mapping)
+    by_id = {p.get("title_id"): p for p in entries}
+    attention = [failure_view(r, by_id.get(t), cfg, mapping) for t, r in failure_store().load().items() if not r.get("dismissed")]
+    return dict(engine_running=bool(pid), engine_pid=pid, clock=S.clock_info(), failures_rev=failures_rev(),
+                attention=[dict(title_id=a["title_id"], name=a.get("name"), state=a["state"], code=a["code"], summary=a["summary"],
+                                at_text=a.get("at_text"), will_retry=a["will_retry"]) for a in attention],
                 scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
                 status=st if pid else dict(st, live=False),
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
-                plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "done", "skip", "error")},
+                plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "failed", "done", "skip", "error")},
                 stop_requested=(STATE / "stop.request").exists(), schedule=cfg.get("schedule"),
                 folders=folders, host_paths=configured, host_problems=host_problems, in_docker=E.IN_DOCKER,
                 config_rev=info.rev, config_problems=info.problems,
@@ -284,8 +390,12 @@ def status():
 @app.get("/api/plan")
 def plan():
     """plan.json with `source_host` / `patch_host` / `verify_archive_host`, `candidates[].source_host` and
-    `skipped_duplicates_host` where the folder has a host location."""
-    data, mapping = read_json(STATE / "plan.json", []), host_view(load_cfg())["mapping"]
+    `skipped_duplicates_host` where the folder has a host location, and `failure` (see /api/failures) on a title
+    that failed or is waiting for space: action `failed` means it is skipped until something changes."""
+    cfg = load_cfg()
+    data, mapping = read_json(STATE / "plan.json", []), host_view(cfg)["mapping"]
+    if isinstance(data, list):
+        data = plan_with_failures(data, cfg, mapping)
     if not mapping or not isinstance(data, list):
         return data
     out = []
@@ -393,6 +503,8 @@ async def put_override(tid: str, req: Request):
         ov["modified_exec"] = body["modified_exec"]
     if body.get("skip"):
         ov["skip"] = True
+    if body.get("skip_verify"):
+        ov["skip_verify"] = True
 
     def apply(raw):
         if not isinstance(raw.get("overrides"), dict):
@@ -403,6 +515,105 @@ async def put_override(tid: str, req: Request):
             raw["overrides"].pop(tid, None)
     cfg = update_cfg(apply)
     return host_twins(cfg.get("overrides", {}).get(tid, {}), host_view(cfg)["mapping"], ("source", "patch"))
+
+
+@app.get("/api/failures")
+def failures():
+    """Every game that failed or is waiting for space, newest first, with the explanation, what can be done
+    and the log excerpt of its last attempt."""
+    cfg = load_cfg()
+    mapping, entries = host_view(cfg)["mapping"], {p.get("title_id"): p for p in plan_entries(cfg)}
+    out = [failure_view(r, entries.get(t), cfg, mapping) for t, r in failure_store().load().items()]
+    return sorted(out, key=lambda v: -(v.get("at") or 0))
+
+
+def _failure(tid):
+    if not re.fullmatch(r"(PPSA|CUSA)\d{5}", tid):
+        raise HTTPException(400, "bad title id")
+    rec = failure_store().load().get(tid)
+    if not rec:
+        raise HTTPException(404, "no stored failure for this title")
+    return rec
+
+
+def retry_title(tid):
+    """Make the title eligible again and start a run for it (or leave it for the next run when one is active)."""
+    failure_store().set_flag(tid, retry=True, dismissed=False)
+    try:
+        started = start_engine("--only", tid)
+    except EngineStartError as ex:
+        raise HTTPException(ex.status, str(ex))
+    return {"ok": True, "started": started,
+            "message": "Retrying." if started else "A run or scan is active: this game is retried by the next run."}
+
+
+@app.post("/api/failures/{tid}/retry")
+def failure_retry(tid: str):
+    _failure(tid)
+    return retry_title(tid)
+
+
+@app.post("/api/failures/{tid}/dismiss")
+def failure_dismiss(tid: str):
+    _failure(tid)
+    failure_store().set_flag(tid, dismissed=True)
+    return {"ok": True}
+
+
+@app.post("/api/failures/{tid}/delete-staged")
+def failure_delete_staged(tid: str):
+    """Delete the package a failed validation left in the staging folder (only inside <output>/.staging)."""
+    rec, cfg = _failure(tid), load_cfg()
+    sp = (rec.get("data") or {}).get("staged")
+    root = (Path(cfg["output"]) / ".staging").resolve()
+    if not sp or not os.path.isdir(sp) or Path(sp).resolve().parent != root:
+        raise HTTPException(404, "there is no staged package to delete")
+    freed = E.dir_size(sp)
+    shutil.rmtree(sp, ignore_errors=True)
+    failure_store().update(lambda all_: all_[tid].update(data=dict(all_[tid].get("data") or {}, staged=None, staged_bytes=0)))
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+    return {"ok": True, "freed": freed}
+
+
+@app.post("/api/failures/{tid}/action")
+async def failure_action(tid: str, req: Request):
+    """The one-click fixes: change the title's override, then retry it."""
+    rec = _failure(tid)
+    action = (await req.json()).get("action")
+    entry = next((p for p in plan_entries(load_cfg()) if p.get("title_id") == tid), {}) or {}
+    changes = {}
+    if action == "use_archive":
+        if not entry.get("verify_archive"):
+            raise HTTPException(400, "there is no archive copy of this game")
+        changes = dict(source=entry["verify_archive"], skip_verify=None)
+    elif action == "keep_anyway":
+        changes = dict(skip_verify=True)
+    elif action in ("keep_backport", "use_original"):
+        changes = dict(modified_exec="image" if action == "keep_backport" else "original")
+    elif action == "skip_source":
+        other = next((c["source"] for c in entry.get("candidates") or []
+                      if isinstance(c, dict) and c.get("source") and c["source"] != entry.get("source")), None)
+        changes = dict(source=other) if other else dict(skip=True)
+    elif action == "delete_staged":
+        return failure_delete_staged(tid)
+    else:
+        raise HTTPException(400, "unknown action")
+
+    def apply(raw):
+        if not isinstance(raw.get("overrides"), dict):
+            raw["overrides"] = {}
+        ov = dict(raw["overrides"].get(tid) or {})
+        for k, v in changes.items():
+            if v is None:
+                ov.pop(k, None)
+            else:
+                ov[k] = v
+        raw["overrides"][tid] = ov
+    update_cfg(apply)
+    return dict(retry_title(tid), changed=changes)
 
 
 @app.get("/api/ledger")

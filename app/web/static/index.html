@@ -19,7 +19,8 @@ button.btn{border:1px solid var(--line);background:var(--card);color:var(--fg);p
 button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button:disabled{opacity:.5;cursor:default}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:12px}
 .tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
-.t-build{color:var(--acc)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred{color:var(--warn)}
+.t-build{color:var(--acc)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred,.t-waiting{color:var(--warn)}.att{padding:10px 0;border-top:1px solid var(--line)}.att:first-of-type{border-top:0}.att pre{max-height:16em;margin:6px 0}.btnrow{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}.btn.sm{padding:2px 9px;font-size:12px}
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;max-width:90vw;z-index:9}
 .bar{height:8px;background:var(--bar);border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
 .muted{color:var(--muted)}.small{font-size:12px}pre{white-space:pre-wrap;word-break:break-all;font:12px/1.4 ui-monospace,Menlo,monospace;max-height:70vh;overflow:auto;margin:0}
 input,select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}input[type=text]{width:100%}
@@ -33,6 +34,7 @@ a{color:var(--acc)}
 </style>
 </head>
 <body>
+<div id="toast" hidden></div>
 <header>
   <h1>PS5 PKG Station</h1>
   <nav>
@@ -45,6 +47,7 @@ a{color:var(--acc)}
 <div id="cfgBanner"></div>
 <section id="dash" class="on">
   <div id="failBox"></div>
+  <div id="attention"></div>
   <div id="setupCard"></div>
   <div id="hostBanner"></div>
   <div class="card"><div class="row">
@@ -62,11 +65,12 @@ a{color:var(--acc)}
 <section id="lib">
   <div class="card"><div class="row"><b id="libSum"></b><span class="muted small" id="libTime"></span>
     <input id="libFilter" placeholder="Filter…" style="max-width:220px;margin-left:auto">
-    <select id="libAct"><option value="">All</option><option>build</option><option>done</option><option>skip</option><option>error</option></select>
+    <select id="libAct"><option value="">All</option><option>build</option><option>failed</option><option>done</option><option>skip</option><option>error</option></select>
   </div></div>
   <div class="card"><table><thead><tr><th>Game</th><th>Version</th><th>Source</th><th>Status</th></tr></thead><tbody id="libRows"></tbody></table></div>
 </section>
-<section id="hist"><div class="card"><table><thead><tr><th>Package</th><th>Built</th><th>Size</th><th>Times</th><th>Checks</th></tr></thead><tbody id="histRows"></tbody></table></div></section>
+<section id="hist"><div class="card row"><select id="histFilter"><option value="">All attempts</option><option value="built">Built</option><option value="failed">Failed</option></select><span class="muted small">Failed attempts are listed with the reason and what to do; the log has the details.</span></div>
+  <div class="card"><table><thead><tr><th>Package</th><th>Built</th><th>Size</th><th>Times</th><th>Checks</th></tr></thead><tbody id="histRows"></tbody></table></div></section>
 <section id="set">
   <div class="banner warn" id="cfgChanged" hidden>Settings file changed on disk. <button class="btn" id="bReload">Reload from the file</button> <span class="small">(what you edited on this page and haven't saved is discarded)</span></div>
   <div class="card"><h2>Folders</h2><div id="fFolders"></div></div>
@@ -131,6 +135,33 @@ function renderFolders(s){const F=s.folders||{},d=s.disks||{};
     return `<tr><td>${FOLDER_LABEL[k]}${f.mode?`<div class="small muted">${f.mode==="ro"?"read-only":"writable"}</div>`:""}</td><td>${hostCell(f)}</td><td>${x.error?esc(x.error):gib(x.free)+" free"}</td></tr>`}).join("")}</table>`;
   const any=Object.values(F).some(f=>f.source==="env"||f.source==="settings");
   $("#hostBanner").innerHTML=Object.keys(F).length&&!any&&!hostDismissed()?`<div class="banner warn">Folder locations are shown as paths inside the container. <a href="#" data-goto="host_paths.library">Tell the app where they are on your NAS</a>.<a href="#" data-dismiss class="small" style="float:right">Dismiss</a></div>`:""}
+// ---- games that failed or wait for space: explained, with what can be done (see /api/failures)
+let failures=[],lastFailRev;
+function toast(m,bad){const t=$("#toast");t.textContent=m;t.hidden=false;t.style.background=bad?"var(--bad)":"";clearTimeout(toast.h);toast.h=setTimeout(()=>{t.hidden=true},6000)}
+const failTag=f=>f.state==="waiting"?`<span class="tag t-waiting">waiting for space</span>`:`<span class="tag t-failed">failed</span>`;
+function failureButtons(f,dismiss){const t=esc(f.title_id);
+  return `<div class="btnrow">${(f.actions||[]).map(a=>a.kind==="retry"?`<button class="btn sm pri" data-fa="retry" data-tid="${t}">Retry</button>`
+    :a.kind==="api"?`<button class="btn sm" data-fa="api" data-act="${esc(a.id)}" data-tid="${t}">${esc(a.label)}</button>`
+    :a.kind==="goto"?`<button class="btn sm" data-fa="goto" data-field="${esc(a.field)}">${esc(a.label)}</button>`
+    :`<button class="btn sm" data-fa="log" data-log="${esc(a.log)}">${esc(a.label)}</button>`).join("")}${dismiss?`<button class="btn sm" data-fa="dismiss" data-tid="${t}">Dismiss</button>`:""}</div>`}
+function failureBody(f){return `${f.detail?.length?`<ul class="small">${f.detail.map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`:""}`
+  +(f.staged?`<div class="small">Staged package: ${pathHtml(f.staged.path_host,f.staged.path)} · ${gib(f.staged.bytes)}</div>`:"")
+  +((f.history||[]).length>1?`<div class="small muted">${f.history.length} attempts, last: ${f.history.slice(-3).map(h=>new Date(h.at*1000).toLocaleString()+" "+esc(h.code)).join(" · ")}</div>`:"")
+  +(f.excerpt?.length?`<pre class="small">${esc((f.excerpt_host||f.excerpt).join("\n"))}</pre>`:"")
+  +`<div class="small muted">Raw message: ${esc(f.message)}</div>`}
+function renderAttention(){const f=failures.filter(x=>!x.dismissed);
+  $("#attention").innerHTML=f.length?`<div class="card"><h2>Needs attention</h2>${f.map(x=>`<div class="att"><b>${esc(x.name||x.title||x.title_id)}</b> ${failTag(x)} <span class="muted small">${esc(x.at_text||"")} · attempt ${x.attempts||1}</span>
+    <div>${esc(x.summary)}</div><div class="small muted">${esc(x.next||"")}</div>${failureButtons(x,true)}
+    <details><summary class="small">Details and the log of this attempt</summary>${failureBody(x)}</details></div>`).join("")}</div>`:""}
+async function loadFailures(){try{failures=await api("/api/failures")}catch(e){return}renderAttention()}
+document.addEventListener("click",async e=>{const b=e.target.closest("[data-fa]");if(!b)return;e.preventDefault();const a=b.dataset.fa,tid=b.dataset.tid;
+  if(a==="log"){wantLog=b.dataset.log;goTab("logs");return}
+  if(a==="goto"){gotoField(b.dataset.field);return}
+  b.disabled=true;
+  try{const r=a==="retry"?await api(`/api/failures/${tid}/retry`,{method:"POST"}):a==="dismiss"?await api(`/api/failures/${tid}/dismiss`,{method:"POST"})
+      :await api(`/api/failures/${tid}/action`,{method:"POST",body:JSON.stringify({action:b.dataset.act})});
+    toast(r?.message||"Done")}catch(err){toast(err.message,1)}
+  b.disabled=false;loadFailures();if(tab==="lib")loadLib();if(tab==="hist")loadHist();refresh().catch(()=>{})});
 function failBox(s){const ev=[["scan",s.scan],["run",s.run]].filter(([k,x])=>x&&x.finished).sort((a,b)=>b[1].finished-a[1].finished)[0];
   $("#failBox").innerHTML=ev&&ev[1].error&&!s.engine_running&&!s.scan.running?`<div class="banner bad"><b>The ${ev[0]==="scan"?"scan":"run"} failed.</b> ${esc(ev[1].error)}${ev[1].log_tail?.length?`<pre class="small">${esc((ev[1].log_tail_host||ev[1].log_tail).join("\n"))}</pre>`:""}<a href="#" data-log="${esc(ev[1].log)}">Open the log</a></div>`:""}
 let cfgRev,cfgLoadedAt=0,setDirty=false,bannerHtml="";   // cfgRev: version of config.json the Settings form shows
@@ -150,6 +181,7 @@ async function refresh(){
   $("#state").textContent=s.engine_running?(s.stop_requested?"Stopping after current":"Running")+` · load ${s.load[0].toFixed(1)}/${s.cpus}`:s.scan.running?"Scanning…":"Idle"+(s.schedule?.enabled?` · next ${s.schedule.times.join(", ")}`:"");
   if(s.clock)$("#state").textContent+=` · server time ${s.clock.time} ${s.clock.tz}`;
   busy=s.engine_running||s.scan.running;syncRun();failBox(s);
+  if(s.failures_rev!==lastFailRev){lastFailRev=s.failures_rev;loadFailures()}
   const fin=[s.scan.finished,s.run?.finished].join("|");if(fin!==lastFin){const first=lastFin===undefined;lastFin=fin;if(!first)loadSetup()}   // a scan changes what the biggest game is
   $("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
   const d=s.disks;renderFolders(s);
@@ -158,7 +190,7 @@ async function refresh(){
   $("#builds").innerHTML=b.length?b.map(x=>`<div style="margin:8px 0"><div class="row"><b>${esc(x.name)}</b><span class="muted small">stage ${x.stage}/5 ${esc(x.stage_text)} · ${esc(x.part)} ${x.pct}% · ${ago(x.since)}</span></div><div class="bar"><i style="width:${((x.stage-1)*20+x.pct/5)}%"></i></div></div>`).join(""):"Nothing building.";
   $("#preparing").innerHTML=(s.engine_running&&st.preparing?.length)?st.preparing.map(x=>`<div>${esc(x.name)} <span class="muted small">copying &amp; verifying · ${ago(x.since)}</span></div>`).join(""):"—";
   $("#queue").innerHTML=(s.engine_running&&st.queue?.length)?st.queue.map(x=>`<div>${esc(x.name)} <span class="muted small">${gib(x.size)}</span></div>`).join(""):"—";
-  const r=st.results||[];$("#results").innerHTML=r.length?`<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${x.status}">${x.status}</span></td><td class="small muted">${esc(x.why_host||x.why||x.validate||"")} ${x.build_min?`· build ${x.build_min} min`:""}</td></tr>`).join("")}</table>`:"—";
+  const r=st.results||[];$("#results").innerHTML=r.length?`<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${x.status}">${x.status==="deferred"?"waiting for space":x.status}</span></td><td class="small muted" title="${esc(x.why_host||x.why||"")}">${esc(x.summary||x.why_host||x.why||x.validate||"")} ${x.build_min?`· build ${x.build_min} min`:""}</td></tr>`).join("")}</table>`:"—";
 }
 // under the patch folder input: where that folder is on the NAS, or where to put the files
 function patchHint(o,tid,cfgHost){
@@ -181,10 +213,12 @@ async function loadLib(){
      <label class="small">Patch folder (files overlaid) <input type="text" data-k="patch" value="${esc(o.patch||"")}" placeholder="/config/patches/…"></label>
      <div class="small muted" data-patchhint>${patchHint(o,p.title_id,cfgHost)}</div>
      <label class="small">Note <input type="text" data-k="note" value="${esc(o.note||"")}"></label>
+     <label class="small"><input type="checkbox" data-k="skip_verify" ${o.skip_verify?"checked":""}> don't check against the original archive (keep this copy anyway)</label>
      <label class="small"><input type="checkbox" data-k="skip" ${o.skip?"checked":""}> skip this title</label>
      <div class="row"><button class="btn" onclick="saveOv(this)">Save options</button>${p.action==="build"?`<button class="btn" onclick="buildOne('${p.title_id}')">Build only this</button>`:""}<span class="small muted"></span></div></div></details></td>
     <td>${esc(p.version)}</td><td class="small">${esc(p.kind||"")}<div>${pathHtml(p.source_host,p.source)}</div></td>
-    <td><span class="tag t-${p.action}">${p.action}</span><div class="small muted">${esc(p.why_host||p.why)}</div></td></tr>`}).join("");
+    <td>${p.failure?failTag(p.failure.state==="waiting"||p.action==="failed"?p.failure:{state:"failed"}):`<span class="tag t-${p.action}">${p.action}</span>`}${p.failure&&p.failure.state==="failed"&&p.action==="build"?` <span class="tag t-build">will retry</span>`:""}
+     <div class="small muted">${esc(p.why_host||p.why)}</div>${p.failure?`${failureButtons(p.failure,false)}<details><summary class="small">Why, and the log</summary>${failureBody(p.failure)}</details>`:""}</td></tr>`}).join("");
   $("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
 }
 $("#libFilter").oninput=loadLib;$("#libAct").onchange=loadLib;
@@ -194,9 +228,14 @@ async function saveOv(btn){const box=btn.closest(".ovr"),o={};box.querySelectorA
     const h=box.querySelector("[data-patchhint]");if(h)h.innerHTML=patchHint(r,box.dataset.tid,libCfgHost)}catch(e){m.textContent=e.message;m.className="small err"}}
 async function buildOne(t){try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
 function alertBox(m){say(m,1)}
-async function loadHist(){const l=await api("/api/ledger");   // entries from older versions have other field names and gaps
-  const rows=Object.entries(l||{}).filter(([t,v])=>v&&typeof v==="object").sort((a,b)=>String(b[1].built||"").localeCompare(String(a[1].built||"")));
-  $("#histRows").innerHTML=!rows.length?`<tr><td colspan="5"><b>Nothing built yet.</b> <span class="muted">Finished packages are listed here, with their checks, once a run has built one.</span></td></tr>`:rows.map(([t,v])=>`<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">${v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${(v.seconds/60).toFixed(1)} min`:`prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`).join("")}
+function builtRow(t,v){return `<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">${v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${(v.seconds/60).toFixed(1)} min`:`prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`}
+function failedRow(f){return `<tr><td><b>${esc(f.name||f.title||f.title_id)}</b> ${failTag(f)}<div class="small">${esc(f.summary)}</div><div class="small muted">${esc(f.next||"")}</div>${failureButtons(f,false)}<details><summary class="small">Details and the log of this attempt</summary>${failureBody(f)}</details></td><td class="small">${esc(f.at_text||"")}</td><td>—</td><td class="small">attempt ${f.attempts||1} · ${esc(f.phase||"")}</td><td class="small">${esc(f.code||"")}</td></tr>`}
+async function loadHist(){const [l,fl]=await Promise.all([api("/api/ledger"),api("/api/failures")]);   // ledger entries from older versions have other field names and gaps
+  const flt=$("#histFilter").value;
+  const rows=[...Object.entries(l||{}).filter(([t,v])=>v&&typeof v==="object").map(([t,v])=>({k:"built",t,v,when:String(v.built||"")})),
+    ...(fl||[]).map(f=>({k:"failed",f,when:String(f.at_text||"")}))].filter(r=>!flt||r.k===flt).sort((a,b)=>b.when.localeCompare(a.when));
+  $("#histRows").innerHTML=!rows.length?`<tr><td colspan="5"><b>${flt==="failed"?"No failed attempts.":"Nothing built yet."}</b> <span class="muted">Finished packages are listed here, with their checks, once a run has built one; games that failed are listed with the reason.</span></td></tr>`:rows.map(r=>r.k==="failed"?failedRow(r.f):builtRow(r.t,r.v)).join("")}
+$("#histFilter").onchange=loadHist;
 const FIELDS={fConv:[["compression_level","Kraken level (1-9; 4 = fast, 7 = smaller)","n"],["cpu_count","Workers per build","n"],["max_compress","Builds compressing at once","n"],["max_builds","Builds alive at once","n"],["nice","CPU priority (nice 0-19)","n"],["ssd_reserve_gb","Keep free on work drive (GB)","n"],["build_on_ssd","Write package on work drive, then copy","b"],["console_fw","Console firmware (picks original vs backport)"],["skip_download_prefixes","Skip download folders starting with (comma separated)","l"],["junk_file_patterns","Delete files whose name matches (regex, comma separated)","l"],["junk_title_patterns","Cut from game titles (regex, comma separated)","l"]],
  fSched:[["schedule.enabled","Run automatically","b"],["schedule.times","At (HH:MM, comma separated)","l"],["notify_url","Notification URL (ntfy topic, optional)"]]};
 let cfg={};
@@ -218,7 +257,7 @@ async function loadSet(note){cfgLoadedAt=performance.now();cfg=await api("/api/c
 $("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]").forEach(e=>{let v=e.dataset.t==="b"?e.checked:e.dataset.t==="n"?Number(e.value):e.dataset.t==="l"?e.value.split(",").map(x=>x.trim()).filter(Boolean):e.value.trim();
   const [a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});
   try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved";$("#setMsg").className="small muted";loadSet();loadSetup()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};
-async function loadLogs(){const l=await api("/api/logs");const cur=wantLog||$("#logSel").value;wantLog=null;$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
+async function loadLogs(){const l=await api("/api/logs");const cur=wantLog||$("#logSel").value;wantLog=null;if(cur&&!l.some(x=>x.name===cur))l.unshift({name:cur});$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
 async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600"+($("#logHost").checked?"&host=1":""));const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
 $("#logSel").onchange=showLog;$("#logHost").onchange=()=>{try{localStorage.setItem("ps5pkg.logHost",$("#logHost").checked?"1":"0")}catch(e){}showLog().catch(()=>{})};
 try{if(localStorage.getItem("ps5pkg.logHost")==="0")$("#logHost").checked=false}catch(e){}

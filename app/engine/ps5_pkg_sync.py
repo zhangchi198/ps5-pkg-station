@@ -46,6 +46,7 @@ except ImportError:          # not POSIX: writes stay atomic, only the lock shar
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import ps5_ampr_audit as A  # noqa: E402  (read-only exFAT/PFS/PFSC/UFS2 readers)
+import ps5_failures  # noqa: E402  (what failed, in words, and whether another try can help)
 import ps5_hostpaths  # noqa: E402  (where the container's folders are on the host: validated here, shown by the server)
 import ps5_setup  # noqa: E402  (first-run setup checks, shared with the web server)
 
@@ -198,7 +199,7 @@ def _clean_overrides(v):
     if not isinstance(v, dict):
         return {}, [f"overrides must be an object (found {_short(v)}); ignoring it"]
     is_str, is_bool = (lambda x: isinstance(x, str)), (lambda x: isinstance(x, bool))
-    fields = (("source", is_str), ("patch", is_str), ("note", is_str), ("skip", is_bool),
+    fields = (("source", is_str), ("patch", is_str), ("note", is_str), ("skip", is_bool), ("skip_verify", is_bool),
               ("modified_exec", lambda x: x in ("", "image", "original")))
     out, notes = {}, []
     for tid, ov in v.items():
@@ -412,7 +413,44 @@ def log_to(fh):
         print(line, flush=True)
         fh.write(line + "\n")
         fh.flush()
+        return line
     return log
+
+
+_JOB_LINES = {}          # title_id -> the log lines of that game's current attempt (for the failure excerpt)
+
+
+def job_log(log, tid):
+    """`log` that also keeps the lines of one game: when it fails, its stored failure carries them."""
+    def jl(m):
+        line = log(m)
+        lines = _JOB_LINES.setdefault(tid, [])
+        lines.append(str(line if line is not None else m))
+        del lines[:-300]
+    return jl
+
+
+def job_excerpt(tid, n=60):
+    return [ln[:300] for ln in _JOB_LINES.get(tid, [])[-n:]]
+
+
+def failure_store():
+    return ps5_failures.Store(STATE / "failures.json")
+
+
+def record_failure(cfg, job, log, *, phase, code, message, data=None, state=ps5_failures.FAILED, logf=None):
+    """Remember why a game failed (or is waiting for space). True when this is a new kind of failure worth a
+    notification; never raises: losing the memory must not stop a run."""
+    try:
+        tid = job["title_id"]
+        fp = job.get("fingerprint") or ps5_failures.fingerprint(cfg, job)
+        return failure_store().record(
+            tid, state=state, title=job.get("title", ""), name=job.get("name", ""), phase=phase, code=code, message=message,
+            data=data, log=(f"pkg/{Path(logf).name}" if logf else "pkg_sync.log"), excerpt=job_excerpt(tid),
+            fingerprint=fp, version=ps5_failures.app_version())
+    except Exception as ex:
+        log(f"  could not store the failure of {job.get('title_id')}: {type(ex).__name__}: {ex}")
+        return True
 
 
 # ------------------------------------------------------------------ discovery
@@ -607,7 +645,11 @@ def nas_exists(p) -> bool:
     return any(Path(unicodedata.normalize(f, str(p))).exists() for f in ("NFC", "NFD"))
 
 
-def choose(cfg, cands, ledger):
+def choose(cfg, cands, ledger, failures=None):
+    """The plan: one entry per title. `failures` (state/failures.json) makes a title that failed, with nothing
+    changed since, action "failed" instead of "build": preparing it again would copy the same hundreds of GiB
+    to fail the same way."""
+    failures = failures or {}
     by = {}
     for c in cands:
         if c.get("error") or not c.get("title_id"):
@@ -647,6 +689,13 @@ def choose(cfg, cands, ledger):
                                           packed=c.get("packed", ""), size=c.get("size", 0)) for c in lst],
                          skipped_duplicates=[f"{c['source']} (v{c['version']}{', ' + c['packed'] if c.get('packed') else ''})"
                                              for c in lst if c["source"] != pick["source"]]))
+        entry = plan[-1]
+        entry["fingerprint"] = ps5_failures.fingerprint(cfg, entry)
+        rec = failures.get(tid)
+        if action == "build" and ps5_failures.blocks(cfg, entry, rec):
+            entry["action"] = "failed"
+            entry["why"] = (f"failed on {rec.get('at_text', '?')}, unchanged: {ps5_failures.short_reason(rec)} "
+                            f"It is retried when its source or options change, the app is updated, or you press Retry.")
     return plan
 
 
@@ -745,13 +794,15 @@ def resolve_modified_exec(cfg, job, want, log):
         job.update(kind="rar", source=job["verify_archive"], archive_root=job.get("verify_root"), verify_archive=None,
                    fw=a["fw"], name=pkg_name(dict(job, fw=a["fw"])))
         return None
-    raise RuntimeError("image has modified executables and neither copy is known to run on the console "
-                       "(set console_fw or overrides.<id>.modified_exec)")
+    raise ps5_failures.GameError(
+        "modified_exec_unknown", "image has modified executables and neither copy is known to run on the console "
+        "(set console_fw or overrides.<id>.modified_exec)", files=(diff + extra)[:10], image_fw=job.get("fw"), original_fw=a["fw"])
 
 
 def extract_image_files(image, app: Path, want: dict, log, against=""):
     """Copy every file out of an image with the read-only readers; CRC32-check against `want` when given."""
     checked = mism = 0
+    differing = []
     uw, base = A.open_game_fs(image)
     try:
         root = uw.root or ""
@@ -776,6 +827,7 @@ def extract_image_files(image, app: Path, want: dict, log, against=""):
                 checked += 1
                 if w != crc:
                     mism += 1
+                    differing.append(rel)
                     log(f"  CRC MISMATCH {rel}: image {crc:08X} vs archive {w:08X}")
     finally:
         if base:
@@ -783,9 +835,10 @@ def extract_image_files(image, app: Path, want: dict, log, against=""):
     if want:
         log(f"  CRC32 check vs {against}: {checked} files matched, {mism} mismatched")
         if mism:
-            raise RuntimeError(f"{mism} extracted file(s) differ from the archive CRCs")
+            raise ps5_failures.GameError("crc_mismatch", f"{mism} extracted file(s) differ from the archive CRCs",
+                                         files=differing[:50], count=mism, checked=checked, against=str(against))
         if checked == 0:
-            raise RuntimeError("CRC check found no common files")
+            raise ps5_failures.GameError("crc_no_common_files", "CRC check found no common files", against=str(against))
 
 
 def materialise(cfg, job, jobdir: Path, log) -> Path:
@@ -794,7 +847,10 @@ def materialise(cfg, job, jobdir: Path, log) -> Path:
     dest.mkdir(parents=True)
     t0 = time.time()
     want = None
-    if job["kind"] not in ("rar", "zip", "7z", "folder", "archive-pkg", "archive-image") and job.get("verify_archive"):
+    skip_verify = (cfg["overrides"].get(job["title_id"]) or {}).get("skip_verify")     # "keep this copy anyway"
+    if job.get("verify_archive") and skip_verify:
+        log("  not checking against the original archive (override skip_verify)")
+    elif job["kind"] not in ("rar", "zip", "7z", "folder", "archive-pkg", "archive-image") and job.get("verify_archive"):
         crcs = {}
         archive_listing(cfg, job["verify_archive"], crcs, timeout=4 * 3600)
         r = job.get("verify_root") or ""
@@ -803,22 +859,24 @@ def materialise(cfg, job, jobdir: Path, log) -> Path:
     if job["kind"] in ("rar", "zip", "7z"):
         r = seven(cfg, ["x", "-y", "-bso0", "-bsp0", f"-o{dest}", job["source"]])
         if r.returncode != 0:
-            raise RuntimeError(f"7zz extract failed ({r.returncode}): {r.stderr.decode(errors='replace')[-400:]}")
+            raise ps5_failures.GameError("extract_failed", f"7zz extract failed ({r.returncode}): {r.stderr.decode(errors='replace')[-400:]}",
+                                         rc=r.returncode, detail=r.stderr.decode(errors="replace")[-300:])
         app = dest / job["archive_root"] if job.get("archive_root") else dest
     elif job["kind"] == "archive-pkg":
         r = seven(cfg, ["x", "-y", "-bso0", "-bsp0", f"-o{jobdir / 'pkg'}", job["source"], job["inner"]])
         if r.returncode != 0:
-            raise RuntimeError(f"7zz extract of {job['inner']} failed ({r.returncode})")
+            raise ps5_failures.GameError("extract_failed", f"7zz extract of {job['inner']} failed ({r.returncode})", rc=r.returncode)
         pkg = next((jobdir / "pkg").rglob("*.pkg"))
         r = subprocess.run([cfg["python"], "-B", "backend/cli.py", "placeholder", str(dest / "pkgx"), "--fpkg-extract", str(pkg)],
                            cwd=cfg["ultrapack_src"], capture_output=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
         if r.returncode != 0:
-            raise RuntimeError(f"--fpkg-extract failed: {(r.stdout + r.stderr).decode(errors='replace')[-400:]}")
+            raise ps5_failures.GameError("extract_failed", f"--fpkg-extract failed: {(r.stdout + r.stderr).decode(errors='replace')[-400:]}",
+                                         rc=r.returncode, detail=(r.stdout + r.stderr).decode(errors="replace")[-300:])
         shutil.rmtree(jobdir / "pkg", ignore_errors=True)
         pjs = sorted((dest / "pkgx").rglob("param.json"), key=lambda q: len(q.parts))
         pjs = [q for q in pjs if q.parent.name.lower() == "sce_sys"]
         if not pjs:
-            raise RuntimeError("extracted .pkg has no sce_sys/param.json")
+            raise ps5_failures.GameError("no_param_json", "extracted .pkg has no sce_sys/param.json")
         app = pjs[0].parent.parent
     elif job["kind"] == "archive-image":
         nas_tmp = Path(cfg["output"]) / ".staging" / f"{job['title_id']}-image"
@@ -829,7 +887,7 @@ def materialise(cfg, job, jobdir: Path, log) -> Path:
             log(f"  extracting wrapped image {job['inner']} to {nas_tmp} (NAS scratch; 7-Zip verifies its CRC)")
             r = seven(cfg, ["x", "-y", "-bso0", "-bsp0", f"-o{nas_tmp}", job["source"], job["inner"]])
             if r.returncode != 0:
-                raise RuntimeError(f"7zz extract of {job['inner']} failed ({r.returncode})")
+                raise ps5_failures.GameError("extract_failed", f"7zz extract of {job['inner']} failed ({r.returncode})", rc=r.returncode)
             img = next(q for q in nas_tmp.rglob("*") if q.is_file() and q.suffix.lower() in (".exfat", ".ffpfsc", ".ffpfs", ".ffpkg"))
             app = dest / "app"
             extract_image_files(str(img), app, {}, log)
@@ -843,7 +901,7 @@ def materialise(cfg, job, jobdir: Path, log) -> Path:
         want = want or {}
         extract_image_files(job["source"], app, want, log, Path(job["verify_archive"]).name if want else "")
     if not (app / "sce_sys" / "param.json").exists():
-        raise RuntimeError(f"no sce_sys/param.json under {app}")
+        raise ps5_failures.GameError("no_param_json", f"no sce_sys/param.json under {app}")
     got = sum(f.stat().st_size for f in app.rglob("*") if f.is_file())
     log(f"  materialised {got / 2**30:.1f} GiB on SSD in {(time.time() - t0) / 60:.1f} min "
         f"({got / 2**20 / max(time.time() - t0, 1):.0f} MiB/s)")
@@ -915,6 +973,7 @@ def notify(cfg, title, msg):
         pass
 
 
+RESULT_KEYS = ("title_id", "name", "title", "status", "why", "validate", "prep_min", "build_min", "gib", "code", "phase", "data")
 PROGRESS_RE = re.compile(rb"(\d+)% (inner image|outer PFS|finalize)[^\n\r]*")
 STAGE_RE = re.compile(rb"\[stage (\d)/5\] ([^\n\r(:]+)")
 
@@ -948,6 +1007,8 @@ def usable_ssd(cfg):
 
 def prepare(cfg, job, log, headroom=0):
     """Extract + clean the game on the SSD. headroom = bytes the running build may still grow."""
+    log = job_log(log, job["title_id"])
+    _JOB_LINES[job["title_id"]] = []
     temp_root = Path(cfg["temp"])
     temp_root.mkdir(parents=True, exist_ok=True)
     jd = jobdir_of(cfg, job)
@@ -965,16 +1026,18 @@ def prepare(cfg, job, log, headroom=0):
     if jd.exists():
         guarded_rmtree(jd, temp_root)
     need = int((job["size"] or 0) * 1.10)
-    if need > usable_ssd(cfg) - headroom:
-        raise MemoryError(f"needs ~{need / 2**30:.0f} GiB on the SSD, "
-                          f"{(usable_ssd(cfg) - headroom) / 2**30:.0f} GiB usable")
+    usable = usable_ssd(cfg) - headroom
+    if need > usable:
+        raise ps5_failures.GameError("no_space", f"needs ~{need / 2**30:.0f} GiB on the SSD, {usable / 2**30:.0f} GiB usable",
+                                     need=need, usable=usable, reserve=int(cfg["ssd_reserve_gb"]) << 30)
     jd.mkdir(parents=True)
     t0 = time.time()
     log(f"PREPARE {job['name']}  <- {job['source']}")
     app = materialise(cfg, job, jd, log)
     ident = parse_param((app / "sce_sys" / "param.json").read_bytes())
     if ident["title_id"] != job["title_id"]:
-        raise RuntimeError(f"extracted game is {ident['title_id']}, expected {job['title_id']}")
+        raise ps5_failures.GameError("title_mismatch", f"extracted game is {ident['title_id']}, expected {job['title_id']}",
+                                     found=ident["title_id"], expected=job["title_id"])
     if not job.get("version"):
         job.update(version=ident["version"], fw=ident["fw"], title=clean_title(ident["title"]), name=pkg_name(ident))
         log(f"  identified after extraction: {job['name']}")
@@ -1123,7 +1186,7 @@ def copy_verified(src: Path, dst: Path, log):
     size = src.stat().st_size
     if h.digest() != h2.digest() or part.stat().st_size != size:
         part.unlink(missing_ok=True)
-        raise RuntimeError(f"NAS copy of {src.name} failed verification")
+        raise ps5_failures.GameError("copy_failed", f"NAS copy of {src.name} failed verification", phase="copy")
     part.rename(dst)
     t2 = time.time()
     log(f"  copied to NAS: {size / 2**30:.1f} GiB, write {size / 2**20 / max(t1 - t0, 1):.0f} MiB/s, "
@@ -1131,8 +1194,30 @@ def copy_verified(src: Path, dst: Path, log):
     return h.hexdigest()
 
 
+def dir_size(path):
+    try:
+        return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
+    except OSError:
+        return 0
+
+
+def ultrapack_failure_data(logf, rc, packages):
+    """What to tell someone whose build stopped: the stage it was in and the error lines of its log."""
+    try:
+        with open(logf, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(logf) - 32768))
+            raw = fh.read().decode("utf-8", "replace").replace("\r", "\n")
+    except OSError:
+        raw = ""
+    lines = [ln.strip()[:300] for ln in raw.split("\n") if ln.strip()]
+    prog = build_progress(logf)
+    return dict(rc=rc, packages=packages, stage=prog.get("stage"), stage_text=prog.get("stage_text"),
+                errors=[ln for ln in lines if re.search(r"\[ERROR\]|Traceback|Error:|No module named", ln)][-5:], tail=lines[-12:])
+
+
 def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
     job, prep, stage, logf = b["job"], b["prep"], b["stage"], b["logf"]
+    log = job_log(log, job["title_id"])
     out = Path(cfg["output"])
     temp_root = Path(cfg["temp"])
     jd = jobdir_of(cfg, job)
@@ -1144,6 +1229,7 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
         pkgs = sorted(stage.glob("*.pkg"), key=lambda p: -p.stat().st_size)
         if rc != 0 or not pkgs:
             res["why"] = f"UltraPack exit {rc}, {len(pkgs)} package(s)"
+            res.update(phase="build", code="ultrapack_failed", data=ultrapack_failure_data(logf, rc, len(pkgs)))
             return res
         v = subprocess.run([cfg["python"], "-B", "backend/cli.py", "--fpkg-validate", str(pkgs[0])],
                            cwd=cfg["ultrapack_src"], capture_output=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
@@ -1154,6 +1240,9 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
         res["validate"] = summ
         if v.returncode != 0:
             res["why"] = f"fpkg-validate failed ({summ}); package left in {stage}"
+            m = re.search(r"(\d+)\s+fail", summ)
+            res.update(phase="validate", code="validate_failed",
+                       data=dict(summary=summ, failed_checks=int(m.group(1)) if m else None, stage=str(stage)))
             return res
         final = out / job["name"]
         if final.exists():
@@ -1172,7 +1261,8 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
         return res
     except Exception as ex:
-        res["why"] = f"{type(ex).__name__}: {ex}"
+        code, phase, data = ps5_failures.classify(ex)
+        res.update(why=f"{type(ex).__name__}: {ex}", code=code, data=data, phase="build" if code == "unknown" else phase)
         return res
     finally:
         if jd.exists():
@@ -1184,10 +1274,25 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
                 (out / ".staging").rmdir()
             except OSError:
                 pass
-        notify(cfg, f"PS5 pkg: {res['status']}",
-               notification_text(cfg, job["name"], res["status"], res.get("why"), res.get("output")))
+        elif res.get("code") == "validate_failed":            # the package is still there, unless it was on the SSD
+            res["data"] = dict(res["data"], staged=str(stage) if stage.exists() else None,
+                               staged_bytes=dir_size(stage) if stage.exists() else 0)
         log(f"  -> {job['title']}: {res['status']} (prep {res.get('prep_min')} min, build {res.get('build_min')} min). "
             f"{res.get('why', '')} {res.get('validate', '')}  SSD free {shutil.disk_usage(temp_root).free / 2**30:.0f} GiB")
+        if res.get("status") == "built":
+            try:
+                failure_store().clear(job["title_id"])
+            except Exception:
+                pass
+            notify(cfg, "PS5 pkg: built", notification_text(cfg, job["name"], "built", None, res.get("output")))
+        else:
+            res.setdefault("code", "unknown")
+            res.setdefault("phase", "build")
+            res.setdefault("data", {})
+            if record_failure(cfg, job, log, phase=res["phase"], code=res["code"], message=res.get("why", ""),
+                              data=res["data"], logf=logf):       # one notification per distinct failure, not per retry
+                notify(cfg, "PS5 pkg: failed", notification_text(
+                    cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=res["code"], data=res["data"], message=res.get("why", "")))))
 
 
 def run_queue(cfg, todo, log, ledger_p, ledger):
@@ -1235,11 +1340,8 @@ def run_queue(cfg, todo, log, ledger_p, ledger):
                           builds=[dict(title_id=b["job"]["title_id"], name=b["job"]["name"], since=b["t0"],
                                        log=Path(b["logf"]).name, **build_progress(b["logf"]))
                                   for b in list(all_builds) if b["proc"].poll() is None],
-                          results=[{k: r.get(k) for k in ("title_id", "name", "title", "status", "why", "validate",
-                                                          "prep_min", "build_min", "gib")} for r in results]
-                                  + [{k: f.result().get(k) for k in ("title_id", "name", "title", "status", "why",
-                                                                     "validate", "prep_min", "build_min", "gib")}
-                                     for f in finishing if f.done()])
+                          results=[{k: r.get(k) for k in RESULT_KEYS} for r in results]
+                                  + [{k: f.result().get(k) for k in RESULT_KEYS} for f in finishing if f.done()])
                 tmp = STATE / "status.json.part"
                 tmp.write_text(json.dumps(st, ensure_ascii=False, default=str))
                 tmp.replace(STATE / "status.json")
@@ -1276,18 +1378,28 @@ def run_queue(cfg, todo, log, ledger_p, ledger):
         fut = prepared.pop(i, None) or prep_pool.submit(prepare, cfg, job, log, in_flight_growth())
         try:
             prep = fut.result()
-        except MemoryError as ex:
-            results.append(dict(job, status="deferred", why=str(ex)))
-            log(f"  -> deferred: {ex}")
-            continue
         except Exception as ex:
+            jlog = job_log(log, job["title_id"])
+            code, phase, data = ps5_failures.classify(ex)
+            if code == "no_space":            # not a failure: it will be tried again when there is room
+                results.append(dict(job, status="deferred", why=str(ex), code=code, phase="prepare", data=data))
+                jlog(f"  -> deferred: {ex}")
+                record_failure(cfg, job, log, phase="prepare", code=code, message=str(ex), data=data,
+                               state=ps5_failures.WAITING)
+                continue
             jd = jobdir_of(cfg, job)
             if jd.exists():
                 guarded_rmtree(jd, Path(cfg["temp"]))
-            results.append(dict(job, status="failed", why=f"prepare: {type(ex).__name__}: {ex}"))
-            log(f"  -> {job['title']}: failed while preparing: {type(ex).__name__}: {ex}")
-            notify(cfg, "PS5 pkg: failed", notification_text(cfg, job["name"], "failed", f"{type(ex).__name__}: {ex}"))
+            results.append(dict(job, status="failed", why=f"prepare: {type(ex).__name__}: {ex}", code=code, phase="prepare", data=data))
+            jlog(f"  -> {job['title']}: failed while preparing: {type(ex).__name__}: {ex}")
+            if record_failure(cfg, job, log, phase="prepare", code=code, message=f"{type(ex).__name__}: {ex}", data=data):
+                notify(cfg, "PS5 pkg: failed", notification_text(
+                    cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))))
             continue
+        try:                                  # it fits now: the wait for space is over
+            failure_store().clear(job["title_id"], only_state=ps5_failures.WAITING)
+        except Exception:
+            pass
         # wait for a free compression slot (max_compress) and a free process slot (max_builds)
         while True:
             active[:] = [b for b in active if b["proc"].poll() is None]
@@ -1312,8 +1424,7 @@ def run_queue(cfg, todo, log, ledger_p, ledger):
     fin_pool.shutdown(wait=True)
     stop_evt.set()
     (STATE / "status.json").write_text(json.dumps(dict(updated=time.time(), pid=None, finished=True, results=[
-        {k: r.get(k) for k in ("title_id", "name", "title", "status", "why", "validate", "prep_min", "build_min", "gib")}
-        for r in final]), ensure_ascii=False, default=str))
+        {k: r.get(k) for k in RESULT_KEYS} for r in final]), ensure_ascii=False, default=str))
     (STATE / "stop.request").unlink(missing_ok=True)
     (STATE / "last_run.json").write_text(json.dumps(final, indent=2, ensure_ascii=False, default=str))
     return final
@@ -1365,7 +1476,11 @@ def main():
         log(f"=== {a.mode}: scanning")
         cands = discover(cfg, log, cache)
         cache_p.write_text(json.dumps(cache, indent=1, ensure_ascii=False))
-        plan = choose(cfg, cands, ledger)
+        failures = failure_store().load()
+        plan = choose(cfg, cands, ledger, failures)
+        for j in plan:                                  # built since (by hand, or by another copy): nothing to remember
+            if j["action"] == "done" and j["title_id"] in failures:
+                failure_store().clear(j["title_id"])
         (STATE / "plan.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False))
         log("=== plan")
         for j in plan:
@@ -1373,7 +1488,13 @@ def main():
                 + (f" [patch {j['patch']}]" if j.get("patch") else ""))
         if a.mode == "plan":
             return
-        todo = [j for j in plan if j["action"] == "build" and (not a.only or j["title_id"] in a.only)]
+        todo = [j for j in plan if (j["action"] == "build" or (j["action"] == "failed" and a.only))     # --only always retries
+                and (not a.only or j["title_id"] in a.only)]
+        for j in plan:
+            if j["action"] == "failed" and not a.only:
+                rec = failures.get(j["title_id"]) or {}
+                log(f"=== skipped: failed on {rec.get('at_text', '?')}, unchanged: {j['title_id']} {j.get('name', '')} - "
+                    f"{ps5_failures.short_reason(rec)} (press Retry in the Library, or change its source or options)")
         todo.sort(key=lambda j: j["size"])            # small first: early results, early failures
         if a.limit:
             todo = todo[: a.limit]

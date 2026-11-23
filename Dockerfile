@@ -31,7 +31,7 @@ RUN python3 /tmp/fetch_ultrapack.py "$ULTRAPACK_VERSION" "$ULTRAPACK_SHA256" "$U
     && /opt/venv/bin/python cli.py --help >/dev/null
 
 COPY app /app
-COPY LICENSE NOTICE.md /app/
+COPY LICENSE NOTICE.md VERSION /app/
 RUN python3 -m compileall -q /app >/dev/null || true
 
 EXPOSE 8765

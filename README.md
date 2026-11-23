@@ -160,7 +160,8 @@ All settings live in `/config/state/config.json` and can be changed from the Set
   deleted from the work copy, and matching text is cut out of the title in `param.json` and the file
   name. Both are empty by default.
 - `overrides`: per title ID, `source`, `patch` (a folder, for example under `/config/patches`, whose files are
-  copied over the game), `modified_exec` (`image` or `original`), `skip`. Usually set from the Library page.
+  copied over the game), `modified_exec` (`image` or `original`), `skip_verify` (don't check the copy against the
+  original archive: "keep this copy anyway"), `skip`. Usually set from the Library page.
 
 ### Editing `config.json` by hand
 
@@ -180,6 +181,30 @@ Keys you leave out use their defaults, and keys this version doesn't know are ke
 - Reading never changes the file. It's written only when you save from Settings or the Library page (and
   once with the defaults if it doesn't exist yet). A save rewrites the whole file (indented JSON), through a
   lock, in one step. `config.json.lock` next to it is that lock; leave it.
+
+## When a game fails
+
+A failed game doesn't just vanish from "This run". It is remembered in `/config/state/failures.json` (so it
+survives the next run and a container restart) and shown in three places: a **Needs attention** card on the
+Dashboard, a red **failed** state in the Library (instead of looking like a game that was never tried), and the
+History page (filter: Built / Failed). Each one says in words what happened, what you can do, and has the lines
+of its log and a link to the build log:
+
+| What happened | What you can do |
+|---|---|
+| The copy differs from the original archive (names up to 5 files) | Use the archive copy, keep this copy anyway, view the log |
+| A backport and the console firmware isn't set | Set the console firmware, keep the backport, use the original |
+| UltraPack stopped (the stage and its error lines are shown) | View the build log, Retry |
+| The package failed validation (it stays in `/output/.staging`; its size is shown) | View the report, delete the staged package, Retry |
+| The source is another title | Skip this source |
+| Not enough room on the work drive | Nothing is wrong: it shows as **waiting for space** with the numbers and is retried automatically |
+
+Preparing a big game copies hundreds of GiB, so a game that failed is **not** tried again on every run. A run
+(scheduled or **Run now**) skips it, and says so in the run log (`skipped: failed on <date>, unchanged`), until
+something it depends on changes: its source file (or the twin archive) is replaced, the options set for it
+change, the console firmware or the junk patterns change, or the app is updated (an image update can fix what
+failed). **Retry** always retries it, and so does "Build only this". A failure that repeats exactly the same way
+is counted, not announced again: you get one notification per distinct failure.
 
 ## Updating
 
