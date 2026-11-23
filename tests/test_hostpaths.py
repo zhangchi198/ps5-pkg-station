@@ -129,8 +129,8 @@ class Precedence(unittest.TestCase):
         self.assertEqual((r["output"]["host"], r["output"]["source"], r["output"]["via"]),
                          ("/from/json/pkg", "env", "PS5PKG_HOST_PATHS"))
         self.assertEqual((r["temp"]["host"], r["temp"]["source"]), ("/from/settings/tmp", "settings"))
-        self.assertEqual((r["config"]["host"], r["config"]["source"], r["config"]["detected"]),
-                         ("/my files/cfg", "detected", "/my files/cfg"))
+        self.assertEqual((r["config"]["host"], r["config"]["source"], r["config"]["detected"], r["config"]["partial"]),
+                         ("…/my files/cfg", "detected", "/my files/cfg", True))
         self.assertEqual((r["downloads"]["host"], r["downloads"]["source"], r["downloads"]["via"]), (None, "none", None))
 
     def test_the_work_variable_is_the_volume_so_the_sub_folder_is_added_but_the_json_value_is_taken_as_is(self):
@@ -143,7 +143,8 @@ class Precedence(unittest.TestCase):
 
     def test_every_entry_has_the_documented_fields(self):
         for f in resolve().values():
-            self.assertEqual(set(f), {"key", "container", "host", "source", "via", "detected", "mismatch", "mode", "setting"})
+            self.assertEqual(set(f), {"key", "container", "host", "source", "via", "partial", "detected", "mismatch", "mode",
+                                      "setting"})
             self.assertIn(f["source"], ("env", "settings", "detected", "none"))
 
     def test_nothing_configured_and_no_mount_table(self):
@@ -172,6 +173,65 @@ class Mismatch(unittest.TestCase):
 
     def test_no_hint_no_mismatch(self):
         self.assertFalse(resolve(env={"PS5PKG_HOST_LIBRARY": "/anything"}, mounts=[])["library"]["mismatch"])
+
+
+# Synology DSM mounts shared folders from btrfs subvolumes: the root in mountinfo starts with the subvolume's own
+# path ("/@syno/..."), which no one can open. (Shapes from a real install, with names and numbers made up.)
+SYNOLOGY = r"""
+111 93 0:74 /@syno/share/games/ps5 /library ro,noatime - btrfs /dev/mapper/pool_1 rw,ssd,synoacl,subvolid=1939,subvol=/@syno/share
+113 93 0:74 /@syno/share/games/ps5/pkg\040files /output rw,nodev,noatime - btrfs /dev/mapper/pool_1 rw,ssd,synoacl,subvolid=1939,subvol=/@syno/share
+109 93 0:36 /@syno/docker/app/work /work rw,nodev,noatime - btrfs /dev/mapper/pool_0 rw,ssd,subvolid=6398,subvol=/@syno/docker
+110 93 0:36 /@syno/docker/app/config /config rw,nodev,noatime - btrfs /dev/mapper/pool_0 rw,ssd,subvolid=6398,subvol=/@syno/docker
+112 93 0:110 /PS5 /downloads ro,relatime - cifs //fileserver/share rw,vers=3.1.1
+"""
+# what a person configured on such a box: the real, openable paths
+SYNOLOGY_ENV = {"PS5PKG_HOST_PATHS": json.dumps({
+    "library": "/mnt/disk1/share/games/ps5", "downloads": "/mnt/disk1/share/PS5",
+    "output": "/mnt/disk1/share/games/ps5/pkg files", "temp": "/mnt/disk2/docker/app/work/tmp"})}
+
+
+class BtrfsSubvolumes(unittest.TestCase):
+    mounts = H.parse_mountinfo(SYNOLOGY)
+
+    def test_the_subvolume_is_not_part_of_the_detected_tail(self):
+        tails = {k: (H.detect(c, self.mounts) or {}).get("tail") for k, c in CONTAINERS.items()}
+        self.assertEqual(tails, {"library": "/share/games/ps5", "downloads": "/PS5",          # cifs: as reported
+                                 "output": "/share/games/ps5/pkg files", "temp": "/docker/app/work/tmp",
+                                 "config": "/docker/app/config"})
+
+    def test_correct_configured_paths_are_not_a_mismatch(self):
+        r = resolve(env=SYNOLOGY_ENV, mounts=self.mounts)
+        self.assertEqual({k: (f["source"], f["mismatch"]) for k, f in r.items() if k != "config"},
+                         {k: ("env", False) for k in ("library", "downloads", "output", "temp")})
+        self.assertEqual(r["library"]["host"], "/mnt/disk1/share/games/ps5")
+
+    def test_a_wrong_path_on_the_same_box_is_still_flagged(self):
+        env = {"PS5PKG_HOST_PATHS": json.dumps({"library": "/mnt/disk1/share/games/ps4", "output": "/mnt/disk1/games/ps5/pkg files"})}
+        r = resolve(env=env, mounts=self.mounts)
+        self.assertEqual((r["library"]["mismatch"], r["output"]["mismatch"]), (True, True))
+
+    def test_a_folder_with_only_the_hint_is_labelled_as_a_partial_path(self):
+        c = resolve(env=SYNOLOGY_ENV, mounts=self.mounts)["config"]                 # no entry for config
+        self.assertEqual((c["source"], c["partial"], c["detected"]), ("detected", True, "/docker/app/config"))
+        self.assertEqual(c["host"], "…/docker/app/config")
+        self.assertFalse(c["host"].startswith("/"))                                  # can't be taken for a real path
+        self.assertNotIn("@", c["host"] + c["detected"])
+        self.assertFalse(c["mismatch"])
+        for k, f in resolve(env=SYNOLOGY_ENV, mounts=self.mounts).items():
+            self.assertEqual(f["partial"], f["source"] == "detected", k)
+
+    def test_the_rule(self):
+        for root, fstype, want in [("/@syno/share/games", "btrfs", "/share/games"), ("/@/var/lib/docker", "btrfs", "/var/lib/docker"),
+                                   ("/@home/user/games", "btrfs", "/user/games"), ("/@syno", "btrfs", "/"),
+                                   ("/@syno/share", "ext4", "/@syno/share"),            # only btrfs has such subvolumes
+                                   ("/share/@recycle/x", "btrfs", "/share/@recycle/x"),  # only the first component
+                                   ("/games/ps5", "btrfs", "/games/ps5"), ("/", "btrfs", "/")]:
+            with self.subTest(root=root, fstype=fstype):
+                self.assertEqual(H.without_subvolume(root, fstype), want)
+
+    def test_a_mount_that_is_a_whole_subvolume_tells_nothing(self):
+        whole = H.parse_mountinfo("30 22 0:74 /@syno /library rw - btrfs /dev/mapper/pool_1 rw,subvol=/@syno\n")
+        self.assertIsNone(H.detect("/library", whole))
 
 
 class SettingValue(StateCase):

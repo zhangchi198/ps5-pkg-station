@@ -85,9 +85,9 @@ class StatusFolders(HostCase):
     def test_with_nothing_configured_the_detected_tail_is_the_hint(self):
         self.mounts()
         f = self.folders()
-        self.assertEqual([(f[k]["source"], f[k]["host"], f[k]["detected"]) for k in ("library", "output", "temp")],
-                         [("detected", "/games/ps5", "/games/ps5"), ("detected", "/games/ps5/pkg", "/games/ps5/pkg"),
-                          ("detected", "/scratch/tmp", "/scratch/tmp")])
+        self.assertEqual([(f[k]["source"], f[k]["host"], f[k]["detected"], f[k]["partial"]) for k in ("library", "output", "temp")],
+                         [("detected", "…/games/ps5", "/games/ps5", True), ("detected", "…/games/ps5/pkg", "/games/ps5/pkg", True),
+                          ("detected", "…/scratch/tmp", "/scratch/tmp", True)])
         self.assertEqual([f[k]["mode"] for k in ("library", "output")], ["ro", "rw"])
         self.assertEqual(f["downloads"]["source"], "none")
 
@@ -119,6 +119,27 @@ class StatusFolders(HostCase):
         self.assertEqual(row()["link"], {"tab": "set", "field": "host_paths.library"})
         self.env(PS5PKG_HOST_LIBRARY="/srv/games/ps5")
         self.assertEqual(row()["level"], "ok")
+
+
+class SynologyBox(HostCase):
+    """The mount table of a DSM box (btrfs subvolumes under /@syno) and the paths a person would configure."""
+    MOUNTS = r"""
+111 93 0:74 /@syno/share/games/ps5 /library ro,noatime - btrfs /dev/mapper/pool_1 rw,ssd,synoacl,subvolid=1939,subvol=/@syno/share
+113 93 0:74 /@syno/share/games/ps5/pkg\040files /output rw,nodev,noatime - btrfs /dev/mapper/pool_1 rw,ssd,synoacl,subvolid=1939,subvol=/@syno/share
+109 93 0:36 /@syno/docker/app/work /work rw,nodev,noatime - btrfs /dev/mapper/pool_0 rw,ssd,subvolid=6398,subvol=/@syno/docker
+112 93 0:110 /PS5 /downloads ro,relatime - cifs //fileserver/share rw,vers=3.1.1
+"""
+
+    def test_correct_paths_are_not_flagged_and_unset_folders_show_a_partial_hint(self):
+        self.mounts(self.MOUNTS)
+        self.env(PS5PKG_HOST_PATHS=json.dumps({"library": "/mnt/disk1/share/games/ps5", "output": "/mnt/disk1/share/games/ps5/pkg files",
+                                               "temp": "/mnt/disk2/docker/app/work/tmp"}))
+        f = self.folders()
+        self.assertEqual([(f[k]["source"], f[k]["mismatch"]) for k in ("library", "output", "temp")], [("env", False)] * 3)
+        self.assertEqual((f["library"]["detected"], f["output"]["detected"]), ("/share/games/ps5", "/share/games/ps5/pkg files"))
+        d = f["downloads"]                                                  # nothing configured for downloads
+        self.assertEqual((d["source"], d["host"], d["partial"], d["mode"]), ("detected", "…/PS5", True, "ro"))
+        self.assertFalse(any("@" in (r["detected"] or "") for r in f.values()))
 
 
 class SettingsFallback(HostCase):

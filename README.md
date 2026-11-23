@@ -118,10 +118,12 @@ Where a folder's location comes from, first match wins:
    container. Used only when the variables above don't cover that folder; a folder set by a variable is shown
    read-only as "set in docker-compose".
 4. A hint read from the container's mount table (`/proc/self/mountinfo`), shown as `…/games/ps5 (detected,
-   volume prefix unknown)`: it knows the end of the host path but not the volume prefix in front of it.
+   volume prefix unknown)`: it knows the end of the host path but not the volume prefix in front of it (the
+   API marks it `partial`, with a leading `…`, so it can't be mistaken for a full path). A btrfs subvolume prefix
+   such as Synology's `@syno` is left out, since it isn't part of any path you can open.
 
 The hint is also compared with what you configured: if the tail doesn't match, the folder gets a note. That
-is only a hint, since btrfs subvolumes and overlay set-ups add prefixes. A malformed variable (bad JSON,
+is only a hint, since overlay and other set-ups can add prefixes. A malformed variable (bad JSON,
 an unknown folder name, a relative path) is shown in an amber banner and ignored, not dropped silently. Until
 at least one location is set, the Dashboard shows a dismissible reminder.
 

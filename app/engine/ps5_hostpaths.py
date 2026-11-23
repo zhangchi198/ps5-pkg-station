@@ -12,9 +12,10 @@ Where a folder's host path comes from, first match wins:
      exactly as the app shows it. The original mechanism, still supported unchanged.
   3. The `host_paths` setting in config.json (Settings > Folders > Shown as): the same as 2.
   4. A hint read from /proc/self/mountinfo: the tail of the host path (what the mount's root is inside its
-     filesystem). Never complete, so it is shown with an ellipsis, and it is also used to flag a configured path
-     whose tail doesn't match ("mismatch"); btrfs subvolumes and overlay set-ups can add prefixes, so a
-     mismatch is a hint, not an error."""
+     filesystem, without a btrfs subvolume like Synology's "@syno"). Never complete, so `host` is then written
+     with a leading "…" (not an absolute path) and `partial` is true, and it is also used to flag a configured
+     path whose tail doesn't match ("mismatch"); overlay set-ups can add prefixes, so a mismatch is a hint, not
+     an error."""
 from __future__ import annotations
 
 import json
@@ -138,10 +139,19 @@ def read_mountinfo(path="/proc/self/mountinfo"):
         return []
 
 
+def without_subvolume(root, fstype):
+    """A btrfs mount's root starts with the subvolume's own path ("/@syno/share/games" on Synology, "/@home/..."
+    on Ubuntu), which is not part of any path a person can open: drop a leading component that starts with @."""
+    parts = root.split("/")
+    if fstype == "btrfs" and len(parts) > 1 and parts[1].startswith("@"):
+        return "/" + "/".join(parts[2:])
+    return root
+
+
 def detect(container_path, mounts):
     """What the mount table says about a folder inside the container: {tail, mode, mount_point} or None. `tail`
     is where the folder is inside the filesystem it lives on (for a bind mount of /srv/games/ps5, "/games/ps5"
-    when /srv is the mount point of the disk)."""
+    when /srv is the mount point of the disk), without a leading btrfs subvolume."""
     p = container_path.rstrip("/") or "/"
     best = None
     for m in mounts:
@@ -152,7 +162,7 @@ def detect(container_path, mounts):
     if best is None or best[0] == "/" or best[1]["fstype"] in NOT_REAL_DISKS:
         return None                                # the container's own filesystem: not a mounted folder
     mp, m = best
-    tail = (m["root"].rstrip("/") + p[len(mp):]) or "/"
+    tail = (without_subvolume(m["root"], m["fstype"]).rstrip("/") + p[len(mp):]) or "/"
     if tail == "/":
         return None                                # a whole filesystem: nothing to tell
     return dict(tail=tail, mode="ro" if "ro" in m["options"] else "rw", mount_point=mp)
@@ -164,7 +174,7 @@ def same_tail(host, tail):
 
 
 def resolve(containers, env, settings, mounts):
-    """One entry per folder: {key, container, host, source, via, detected, mismatch, mode, setting}.
+    """One entry per folder: {key, container, host, source, via, partial, detected, mismatch, mode, setting}.
     `containers` maps folder -> its path in the container, `env` is read_env()'s first result, `settings` the
     `host_paths` setting. source: env / settings / detected / none."""
     out = {}
@@ -180,9 +190,9 @@ def resolve(containers, env, settings, mounts):
                 host = e["path"].rstrip("/") + container[len(mount):]
         elif settings.get(key):
             host, source = settings[key], "settings"
-        elif det:
-            host, source = det["tail"], "detected"
-        out[key] = dict(key=key, container=container, host=host, source=source, via=via,
+        elif det:                                  # only the tail is known: say so, don't pass it off as a path
+            host, source = "…" + det["tail"], "detected"
+        out[key] = dict(key=key, container=container, host=host, source=source, via=via, partial=source == "detected",
                         detected=det["tail"] if det else None, mode=det["mode"] if det else None,
                         mismatch=bool(det and source in ("env", "settings") and not same_tail(host, det["tail"])),
                         setting=settings.get(key, ""))

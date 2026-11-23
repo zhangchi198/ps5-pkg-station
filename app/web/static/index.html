@@ -113,9 +113,9 @@ $("#failBox").addEventListener("click",e=>{const a=e.target.closest("[data-log]"
 const FOLDER_LABEL={library:"Game library",downloads:"Downloads",output:"Finished .pkg files",temp:"Work / scratch",config:"Settings and history"};
 function hostCell(f){let h;
   if(f.source==="env"||f.source==="settings")h=`<code>${esc(f.host)}</code>`;
-  else{h=f.source==="detected"?`<code>…${esc(f.host)}</code> <span class="muted small">(detected, volume prefix unknown)</span>`:`<span class="muted">(not set)</span>`;
+  else{h=f.source==="detected"?`<code>${esc(f.host)}</code> <span class="muted small">(detected, volume prefix unknown)</span>`:`<span class="muted">(not set)</span>`;
     h+=` <a href="#" class="small" data-goto="host_paths.${f.key}">Set location</a>`}
-  return h+`<div class="small muted">in the container: ${esc(f.container)}</div>`+(f.mismatch?`<div class="small" style="color:var(--warn)">The mount reports …${esc(f.detected)}, which doesn't match. Check the compose file (only a hint: btrfs and overlay set-ups add prefixes).</div>`:"")}
+  return h+`<div class="small muted">in the container: ${esc(f.container)}</div>`+(f.mismatch?`<div class="small" style="color:var(--warn)">The mount reports …${esc(f.detected)}, which doesn't match. Check the compose file (only a hint: some set-ups add prefixes).</div>`:"")}
 function renderFolders(s){const F=s.folders||{},d=s.disks||{};
   $("#folders").innerHTML=`<table>${Object.keys(FOLDER_LABEL).filter(k=>F[k]).map(k=>{const x=d[k]||{},f=F[k];
     return `<tr><td>${FOLDER_LABEL[k]}${f.mode?`<div class="small muted">${f.mode==="ro"?"read-only":"writable"}</div>`:""}</td><td>${hostCell(f)}</td><td>${x.error?esc(x.error):gib(x.free)+" free"}</td></tr>`}).join("")}</table>`;
@@ -187,7 +187,7 @@ function foldersForm(){const F=cfg.folders||{},hp=cfg.host_paths||{};
     :`Tell the app where each folder is on the machine you think of as the host, so paths are shown the way you know them. This only changes what is displayed.`;
   const rows=Object.keys(FOLDER_LABEL).filter(k=>F[k]).map(k=>{const f=F[k];
     const val=f.source==="env"?`<span><code>${esc(f.host)}</code> <span class="muted small">set in docker-compose (${esc(f.via)}); Settings can't change it</span></span>`
-      :`<input type="text" data-c="host_paths.${k}" data-t="s" value="${esc(hp[k]||"")}" placeholder="${esc(f.source==="detected"?"…"+f.host:"/path/on/your/nas")}">`;
+      :`<input type="text" data-c="host_paths.${k}" data-t="s" value="${esc(hp[k]||"")}" placeholder="${esc(f.source==="detected"?f.host:"/path/on/your/nas")}">`;
     return `<label class="f"><span>${esc(FOLDER_LABEL[k])} is shown as<div class="small">in the container: ${esc(f.container)}</div></span>${val}</label>`}).join("");
   const adv=cfg.in_docker?"":`<details><summary class="small">Advanced: folder paths as the app uses them</summary>${["library","downloads","output","temp"].map(k=>`<label class="f"><span>${esc(FOLDER_LABEL[k])}</span><input type="text" data-c="${k}" data-t="s" value="${esc(cfg[k])}"></label>`).join("")}</details>`;
   $("#fFolders").innerHTML=`<p class="small muted" style="margin-top:0">${intro}</p>${rows}${adv}`}
