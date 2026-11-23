@@ -5,3 +5,4 @@ __pycache__/
 local/
 vendor/
 .env
+.claude/
