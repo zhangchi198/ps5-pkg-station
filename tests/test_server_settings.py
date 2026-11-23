@@ -274,8 +274,10 @@ class Page(unittest.TestCase):
         for needle in ('id="saveBar"', 'id="bSave"', 'id="bDiscard"'):
             self.assertIn(needle, self.HTML)
         self.assertIn(".savebar{position:sticky;bottom:0", self.HTML)
-        nav = self.body('document.querySelectorAll("nav button")', "\n")
-        self.assertRegex(nav, r'settingsDirty\(\)&&!\(await askConfirm\(\{title:"Discard your changes\?",html:"<p>You have unsaved changes on the Settings page')
+        leave = self.body("const leaveOk", "function showTab")
+        self.assertRegex(leave, r'settingsDirty\(\)\?askConfirm\(\{title:"Discard your changes\?",html:"<p>You have unsaved changes on the Settings page')
+        self.assertIn("leaveOk(", self.body("async function navigate", "const goTab"))                  # a tab and a link ask...
+        self.assertIn("leaveOk(", self.body("async function route", "async function navigate"))         # ...and so does Back
         self.assertIn('window.addEventListener("beforeunload"', self.JS)
         self.assertIn("settingsDirty()", self.body('window.addEventListener("beforeunload"', "\n"))
 

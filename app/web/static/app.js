@@ -2,10 +2,38 @@
 // before it is put into HTML, numbers through num(), and class names through cls(). No handler is written inline: the
 // buttons carry data- attributes and the clicks are handled at the bottom of the page (the CSP forbids inline script).
 const $=s=>document.querySelector(s), esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// morph(el, html): make el's content what `html` says, changing only what differs. The Dashboard refreshes every 5 s; putting new HTML in would throw away the
+// selection, the focus and any open <details> each time. Nodes that are the same stay (so a selected sentence, a focused button survive); text is updated in place.
+function patchAttrs(a,b){for(const n of [...a.attributes].map(x=>x.name))if(!b.hasAttribute(n)&&!(a.tagName==="DETAILS"&&n==="open"))a.removeAttribute(n);
+  for(const {name,value} of b.attributes){if(a.tagName==="DETAILS"&&name==="open")continue;                  // open or closed is the reader's choice
+    if(a.getAttribute(name)!==value)a.setAttribute(name,value)}}
+function patchKids(a,b){const an=[...a.childNodes],bn=[...b.childNodes];
+  for(let i=0;i<Math.max(an.length,bn.length);i++){const x=an[i],y=bn[i];
+    if(!y){a.removeChild(x);continue}if(!x){a.appendChild(y);continue}
+    if(x.nodeType!==y.nodeType||(x.nodeType===1&&x.tagName!==y.tagName)){a.replaceChild(y,x);continue}
+    if(x.nodeType!==1){if(x.nodeValue!==y.nodeValue)x.nodeValue=y.nodeValue;continue}
+    patchAttrs(x,y);if(x!==document.activeElement||!/^(INPUT|TEXTAREA|SELECT)$/.test(x.tagName))patchKids(x,y)}}
+function morph(el,html){const t=document.createElement("template");t.innerHTML=html;stackify(t.content);patchKids(el,t.content)}
+// tables become cards on a narrow screen (CSS, 720 px). The cells then need their column names, and a table drawn as blocks loses its meaning for a screen
+// reader, so the roles are written out. Done for every table that is put in the page (see the observer at the bottom).
+function stackify(root){root.querySelectorAll("table").forEach(t=>{const set=(e,k,v)=>{if(e.getAttribute(k)!==v)e.setAttribute(k,v)};set(t,"role","table");
+  const heads=[...t.querySelectorAll("thead th")].map(h=>h.textContent.trim());
+  t.querySelectorAll("thead,tbody,tfoot").forEach(g=>set(g,"role","rowgroup"));
+  t.querySelectorAll("tr").forEach(r=>{set(r,"role","row");[...r.children].forEach((c,i)=>{if(c.tagName==="TH")set(c,"role","columnheader");else{set(c,"role","cell");if(heads[i]&&c.colSpan<2)set(c,"data-label",heads[i])}})})})}
 const num=v=>Number.isFinite(Number(v))?Number(v):0, cls=v=>String(v??"").replace(/[^\w-]/g,"");
 const README="https://github.com/zhangchi198/ps5-pkg-station#keeping-it-private";
 const gib=b=>b==null?"—":(b/2**30).toFixed(b>2**40?0:1)+" GiB", ago=t=>{if(!t)return"—";const s=Date.now()/1000-t;return s<90?Math.round(s)+" s":s<5400?Math.round(s/60)+" min":(s/3600).toFixed(1)+" h"};
 async function api(p,o={}){const r=await fetch(p,{headers:{"Content-Type":"application/json"},...o});if(r.status===401){location.reload();throw new Error("Log in first.")}if(!r.ok){const d=await r.json().catch(()=>({detail:r.statusText})),e=new Error(d.detail||r.statusText);e.errors=d.errors;throw e}return r.headers.get("content-type")?.includes("json")?r.json():r.text()}
+// ---- colour scheme: follows the system (prefers-color-scheme) until the button in the header chooses light or dark; kept in this browser only
+const THEMES={auto:"follows the system",light:"light",dark:"dark"},THEME_KEY="ps5pkg.theme";
+const themeNow=()=>{try{const v=localStorage.getItem(THEME_KEY);return THEMES[v]?v:"auto"}catch(e){return"auto"}};
+function applyTheme(t){const r=document.documentElement;if(t==="light"||t==="dark")r.dataset.theme=t;else delete r.dataset.theme;
+  const dark=t==="dark"||(t==="auto"&&matchMedia("(prefers-color-scheme: dark)").matches);                       // the colour of the phone's address bar
+  document.querySelectorAll("meta[name=theme-color]").forEach(m=>{if(t==="auto"){if(!m.dataset.media)m.dataset.media=m.getAttribute("media")||"";m.setAttribute("media",m.dataset.media);m.content=m.dataset.media.includes("dark")?"#171c23":"#ffffff"}
+    else{m.removeAttribute("media");m.content=dark?"#171c23":"#ffffff"}});
+  const b=$("#bTheme");if(b){b.setAttribute("aria-label",`Colour scheme: ${THEMES[t]}. Change it.`);b.title=`Colour scheme: ${THEMES[t]}. Click to change.`}}
+applyTheme(themeNow());
+$("#bTheme").onclick=()=>{const order=["auto","light","dark"],n=order[(order.indexOf(themeNow())+1)%3];try{localStorage.setItem(THEME_KEY,n)}catch(e){}applyTheme(n);toast(`Colour scheme: ${THEMES[n]}`)};
 let tab="dash",plan=[],overrides={},libCfgHost=null;
 // A path for display: its place on the host when the server knows it (the container path goes into the tooltip), else
 // the container path with an "in container" tag, so it is never taken for a path on the NAS. Copy takes what is shown.
@@ -15,23 +43,66 @@ async function copyText(t){try{if(navigator.clipboard&&window.isSecureContext){a
   const a=document.createElement("textarea");a.value=t;a.style.position="fixed";a.style.opacity="0";document.body.appendChild(a);a.select();let ok=false;try{ok=document.execCommand("copy")}catch(e){}a.remove();return ok}   // plain http on a LAN has no clipboard API
 document.addEventListener("click",e=>{const b=e.target.closest("[data-copy]");if(!b)return;e.preventDefault();
   copyText(b.dataset.copy).then(ok=>{const t=b.textContent;b.textContent=ok?"copied":"select + Ctrl+C";setTimeout(()=>{b.textContent=t},1500)})});
-document.querySelectorAll("nav button").forEach(b=>b.onclick=async()=>{if(tab==="set"&&b.dataset.tab!=="set"&&settingsDirty()&&!(await askConfirm({title:"Discard your changes?",html:"<p>You have unsaved changes on the Settings page.</p>",ok:"Discard them",cancel:"Keep editing",danger:true})))return;tab=b.dataset.tab;if(tab!=="logs"&&location.hash.startsWith("#logs"))try{history.replaceState(null,"",location.pathname+location.search)}catch(x){}document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
-function say(t,bad){$("#msg").textContent=t;$("#msg").className="small "+(bad?"err":"muted")}
+// ---- tabs and the address. The address names the tab (#dashboard, #library/PPSA01234, #history/packages, #settings, #logs/pkg/<file>): a reload, Back and a
+// link all land where they should. Leaving Settings with unsaved edits asks first; if the answer is no the address goes back to Settings.
+const TAB_HASH={dash:"dashboard",lib:"library",hist:"history",set:"settings",logs:"logs"},HASH_TAB=Object.fromEntries(Object.entries(TAB_HASH).map(([k,v])=>[v,k])),TAB_TITLE={dash:"Dashboard",lib:"Library",hist:"History",set:"Settings",logs:"Logs"};
+const tabButtons=()=>[...document.querySelectorAll("[role=tab]")];
+function parseHash(h){const m=/^#([a-z]+)(?:\/([^?]*))?(?:\?(.*))?$/.exec(h==null?location.hash:h);if(!m||!HASH_TAB[m[1]])return null;let sub="";try{sub=m[2]?decodeURIComponent(m[2]):""}catch(e){sub=m[2]||""}return{tab:HASH_TAB[m[1]],sub,qs:new URLSearchParams(m[3]||"")}}
+const hashOf=(t,sub="",qs="")=>"#"+TAB_HASH[t]+(sub?"/"+String(sub).split("/").map(encodeURIComponent).join("/"):"")+(qs?"?"+qs:"");
+let lastRoute=null,wantRow=null;
+function setHash(h,push){try{(push?history.pushState:history.replaceState).call(history,null,"",h)}catch(e){}lastRoute=location.hash}   // pushState and replaceState fire no event
+const leaveOk=t=>tab==="set"&&t!=="set"&&settingsDirty()?askConfirm({title:"Discard your changes?",html:"<p>You have unsaved changes on the Settings page.</p>",ok:"Discard them",cancel:"Keep editing",danger:true}):Promise.resolve(true);
+function showTab(t){tab=t;tabButtons().forEach(b=>{const on=b.dataset.tab===t;b.setAttribute("aria-selected",on?"true":"false");b.tabIndex=on?0:-1});
+  document.querySelectorAll("section").forEach(x=>x.classList.toggle("on",x.id===t));document.title=`${TAB_TITLE[t]} · PS5 PKG Station`;
+  const ae=document.activeElement,sec=ae&&ae.closest&&ae.closest("section");if(sec&&sec.id!==t)document.getElementById(t).focus({preventScroll:true});   // focus was in the tab just left: it moves to the new one
+  load()}
+async function route(force,asked){const r=parseHash();if(!r)return false;                      // some other address (the skip link): nothing changes
+  if(!force&&location.hash===lastRoute)return true;lastRoute=location.hash;
+  if(r.tab!==tab&&!asked&&!(await leaveOk(r.tab))){setHash(hashOf(tab));return false}          // Back with unsaved changes: the question was answered with "keep editing"
+  const same=r.tab===tab;
+  if(r.tab==="logs"){wantLog=r.sub||null;wantGame=r.qs.get("game");wantFind=r.qs.get("find")}
+  if(r.tab==="lib")wantRow=r.sub||null;
+  if(r.tab==="hist"&&(r.sub==="runs"||r.sub==="packages"))histView=r.sub==="packages"?"pkgs":"runs";
+  if(!same)showTab(r.tab);
+  else if(r.tab==="logs")loadLogs().catch(e=>say(e.message,1));
+  else if(r.tab==="lib")focusRow();
+  else if(r.tab==="hist"&&(r.sub==="runs"||r.sub==="packages"))loadHist().catch(e=>say(e.message,1));
+  return true}
+async function navigate(t,sub="",qs=""){const h=hashOf(t,sub,qs);
+  if(t===tab&&!sub&&!qs)return true;                                                           // the tab you are on: stay as you are (an open log, a typed filter)
+  if(t!==tab&&!(await leaveOk(t)))return false;
+  if(location.hash!==h)setHash(h,true);
+  return route(true,true)}
+const goTab=(t,sub,qs)=>navigate(t,sub,qs);
+window.addEventListener("popstate",()=>route().catch(e=>say(e.message,1)));window.addEventListener("hashchange",()=>route().catch(e=>say(e.message,1)));
+document.addEventListener("click",e=>{const a=e.target.closest('a[href^="#"]');if(!a)return;
+  if(a.classList.contains("skip")){e.preventDefault();$("#main").focus();return}
+  const r=parseHash(a.getAttribute("href"));
+  if(!r){if(a.getAttribute("href")==="#")e.preventDefault();return}                           // a link that does something else is never left to change the address to "#"
+  e.preventDefault();navigate(r.tab,r.sub,r.qs.toString())});
+tabButtons().forEach(b=>b.addEventListener("click",()=>navigate(b.dataset.tab)));
+$("[role=tablist]").addEventListener("keydown",e=>{const t=tabButtons(),i=t.indexOf(document.activeElement);if(i<0)return;let n=null;
+  if(e.key==="ArrowRight"||e.key==="ArrowDown")n=(i+1)%t.length;else if(e.key==="ArrowLeft"||e.key==="ArrowUp")n=(i-1+t.length)%t.length;else if(e.key==="Home")n=0;else if(e.key==="End")n=t.length-1;
+  if(n!==null){e.preventDefault();t.forEach((x,j)=>x.tabIndex=j===n?0:-1);t[n].focus()}});      // arrows move between the tabs; Enter or Space opens the one in focus
+function startRoute(){if(!parseHash())setHash(hashOf("dash"));tab="";route(true,true).catch(e=>say(e.message,1))}
+function say(t,bad){const m=$("#msg");m.textContent=t;m.className="small "+(bad?"err":"muted");if(tab!=="dash")toast(t,bad)}
 // A question in the page, not window.confirm: a browser dialog can block an automation, and on a phone it is small and ugly. Everything in `html` is
 // escaped by the caller. Resolves {key, checked} for the button pressed, or null for Escape / a click outside.
+const setInert=on=>document.querySelectorAll("header,main,footer,.skip").forEach(x=>{x.inert=on});   // the page behind the dialog can't be reached by Tab, a click or a screen reader
 function showDialog({title,html,buttons,check}){return new Promise(resolve=>{
   if(dlgDone)dlgDone(null);
   const back=$("#dlg"),box=back.querySelector(".dlg"),ck=$("#dlgCheck"),prev=document.activeElement;
   $("#dlgTitle").textContent=title;$("#dlgBody").innerHTML=html||"";$("#dlgCheckRow").hidden=!check;ck.checked=false;if(check)$("#dlgCheckText").textContent=check;
   $("#dlgBtns").innerHTML=buttons.map(b=>`<button type="button" class="btn ${b.kind==="pri"?"pri":b.kind==="danger"?"dng":""}" data-dlg="${esc(b.key)}">${esc(b.label)}</button>`).join("");
-  const done=r=>{back.hidden=true;document.body.classList.remove("dlgopen");back.removeEventListener("click",onClick);document.removeEventListener("keydown",onKey,true);dlgDone=null;
+  const done=r=>{setInert(false);back.hidden=true;document.body.classList.remove("dlgopen");back.removeEventListener("click",onClick);document.removeEventListener("keydown",onKey,true);dlgDone=null;
     try{if(prev&&prev.focus)prev.focus()}catch(e){}resolve(r)};
   const onClick=e=>{const b=e.target.closest("[data-dlg]");if(b)return done({key:b.dataset.dlg,checked:ck.checked});if(e.target===back)done(null)};
   const onKey=e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();done(null)}
     else if(e.key==="Tab"){const els=[...box.querySelectorAll("button,input")].filter(x=>!x.disabled&&!x.closest("[hidden]"));if(!els.length)return;
       const i=els.indexOf(document.activeElement);if(i===-1||(e.shiftKey&&i===0)||(!e.shiftKey&&i===els.length-1)){e.preventDefault();els[e.shiftKey?els.length-1:0].focus()}}};
   back.addEventListener("click",onClick);document.addEventListener("keydown",onKey,true);dlgDone=done;
-  back.hidden=false;document.body.classList.add("dlgopen");(box.querySelector("button.pri,button.dng")||box.querySelector("button")||box).focus()})}
+  back.hidden=false;document.body.classList.add("dlgopen");setInert(true);
+  (box.querySelector("button.pri")||(box.querySelector("button.dng")?box.querySelector("button:not(.dng)"):box.querySelector("button"))||box).focus()})}   // a question about something destructive starts on its safe answer
 let dlgDone=null;
 function askConfirm({title,html,ok="OK",cancel="Cancel",danger}){return showDialog({title,html,buttons:[{key:"ok",label:ok,kind:danger?"danger":"pri"},{key:"no",label:cancel}]}).then(r=>!!r&&r.key==="ok")}
 const plural=(n,one,many)=>`${n} ${n===1?one:(many||one+"s")}`;
@@ -75,7 +146,6 @@ async function cancelGame(tid,name,phase){
 document.addEventListener("click",e=>{const b=e.target.closest("[data-cancel]");if(!b)return;e.preventDefault();b.disabled=true;cancelGame(b.dataset.cancel,b.dataset.name||b.dataset.cancel,b.dataset.phase).finally(()=>{b.disabled=false})});
 function doScan(){return api("/api/scan",{method:"POST"}).then(()=>say("Scanning…")).catch(e=>say(e.message,1)).finally(refresh)}
 $("#bScan").onclick=doScan;
-function goTab(t){document.querySelector(`nav button[data-tab=${t}]`).click()}
 // first-run checklist: the card stays open while something is wrong, then shrinks to one line
 let setup=[],setupOpen=false,lastFin,wantLog=null,lastS=null;
 const setupFails=()=>setup.filter(c=>c.level==="fail");
@@ -109,8 +179,8 @@ $("#bPause").onclick=async()=>{const paused=lastS&&lastS.schedule_pause;
     say(paused?"Schedule resumed":"Schedule paused")}catch(e){say(e.message,1)}finally{refresh()}};
 function renderSetup(){const el=$("#setupCard"),w=setup.filter(c=>c.level==="warn"),loud=setupFails().length>0||w.some(c=>!c.advisory);syncRun();
   if(!setup.length){el.innerHTML="";return}
-  if(!loud&&!setupOpen){el.innerHTML=`<div class="card row small"><b class="lv-ok">Setup OK</b>${w.length?`<span class="muted">· ${w.length} note${w.length>1?"s":""}</span>`:""}<span class="muted" style="margin-left:auto"><a href="#" data-more>Details</a> · <a href="#" data-recheck>Re-check</a></span></div>`;return}
-  el.innerHTML=`<div class="card"><div class="row"><h2 style="margin:0">Setup</h2><span class="small muted">${loud?"Fix the FAIL and warn rows, then re-check.":"Everything needed is in place."}</span><span style="margin-left:auto">${loud?"":`<a href="#" data-more class="small">Hide</a> `}<button class="btn" data-recheck>Re-check</button></span></div>
+  if(!loud&&!setupOpen){el.innerHTML=`<div class="card row small"><b class="lv-ok">Setup OK</b>${w.length?`<span class="muted">· ${w.length} note${w.length>1?"s":""}</span>`:""}<span class="muted" style="margin-left:auto"><button type="button" class="btn sm" data-more>Details</button> <button type="button" class="btn sm" data-recheck>Re-check</button></span></div>`;return}
+  el.innerHTML=`<div class="card"><div class="row"><h2 style="margin:0">Setup</h2><span class="small muted">${loud?"Fix the FAIL and warn rows, then re-check.":"Everything needed is in place."}</span><span style="margin-left:auto">${loud?"":`<button type="button" class="btn sm" data-more>Hide</button> `}<button class="btn" data-recheck>Re-check</button></span></div>
    <table class="setup">${setup.map(c=>`<tr><td class="lv-${cls(c.level)}">${esc(c.level==="fail"?"FAIL":c.level)}</td><td><b>${esc(c.title)}</b></td><td>${esc(c.message)}${c.fix?`<div class="small muted">Fix: ${esc(c.fix)}</div>`:""}</td><td class="small">${c.link?`<a href="#" data-goto="${esc(c.link.field)}">Settings</a>`:""}</td></tr>`).join("")}</table></div>`}
 $("#setupCard").addEventListener("click",e=>{const a=e.target.closest("[data-recheck],[data-more],[data-goto]");if(!a)return;e.preventDefault();
   if(a.matches("[data-recheck]"))loadSetup();else if(a.matches("[data-more]")){setupOpen=!setupOpen;renderSetup()}
@@ -121,7 +191,7 @@ for(const id of["#folders","#hostBanner"])$(id).addEventListener("click",e=>{con
   if(a.matches("[data-goto]"))gotoField(a.dataset.goto);else{try{localStorage.setItem("ps5pkg.hostBanner","1")}catch(x){}$("#hostBanner").innerHTML=""}});
 $("#bSetupSet").onclick=()=>{setupOpen=true;goTab("dash");loadSetup()};
 // a scan or run that ended badly: say so, with the end of its log
-$("#failBox").addEventListener("click",e=>{const a=e.target.closest("[data-log]");if(!a)return;e.preventDefault();wantLog=a.dataset.log;goTab("logs")});
+$("#failBox").addEventListener("click",e=>{const a=e.target.closest("[data-log]");if(!a)return;e.preventDefault();goTab("logs",a.dataset.log)});
 const FOLDER_LABEL={library:"Game library",downloads:"Downloads",output:"Finished .pkg files",temp:"Work / scratch",config:"Settings and history"};
 function hostCell(f){let h;
   if(f.source==="env"||f.source==="settings")h=`<code>${esc(f.host)}</code>`;
@@ -129,8 +199,8 @@ function hostCell(f){let h;
     h+=` <a href="#" class="small" data-goto="host_paths.${esc(f.key)}">Set location</a>`}
   return h+`<div class="small muted">in the container: ${esc(f.container)}</div>`+(f.mismatch?`<div class="small" style="color:var(--warn)">The mount reports …${esc(f.detected)}, which doesn't match. Check the compose file (only a hint: some set-ups add prefixes).</div>`:"")}
 function renderFolders(s){const F=s.folders||{},d=s.disks||{};
-  $("#folders").innerHTML=`<table>${Object.keys(FOLDER_LABEL).filter(k=>F[k]).map(k=>{const x=d[k]||{},f=F[k];
-    return `<tr><td>${FOLDER_LABEL[k]}${f.mode?`<div class="small muted">${f.mode==="ro"?"read-only":"writable"}</div>`:""}</td><td>${hostCell(f)}</td><td>${x.error?esc(x.error):gib(x.free)+" free"}</td></tr>`}).join("")}</table>`;
+  morph($("#folders"),`<table>${Object.keys(FOLDER_LABEL).filter(k=>F[k]).map(k=>{const x=d[k]||{},f=F[k];
+    return `<tr><td>${FOLDER_LABEL[k]}${f.mode?`<div class="small muted">${f.mode==="ro"?"read-only":"writable"}</div>`:""}</td><td>${hostCell(f)}</td><td>${x.error?esc(x.error):gib(x.free)+" free"}</td></tr>`}).join("")}</table>`);
   const any=Object.values(F).some(f=>f.source==="env"||f.source==="settings");
   $("#hostBanner").innerHTML=Object.keys(F).length&&!any&&!hostDismissed()?`<div class="banner warn">Folder locations are shown as paths inside the container. <a href="#" data-goto="host_paths.library">Tell the app where they are on your NAS</a>.<a href="#" data-dismiss class="small" style="float:right">Dismiss</a></div>`:""}
 // ---- games that failed or wait for space: explained, with what can be done (see /api/failures)
@@ -148,17 +218,17 @@ function failureBody(f){return `${f.detail?.length?`<ul class="small">${f.detail
   +(f.excerpt?.length?`<pre class="small">${esc((f.excerpt_host||f.excerpt).join("\n"))}</pre>`:"")
   +`<div class="small muted">Raw message: ${esc(f.message)}</div>`}
 let notifyBad=null;          // the last delivery, when it failed (from the status)
-const notifyRow=()=>notifyBad?`<div class="att"><b>Notifications can't be delivered</b> <span class="tag t-failed">failed</span> <span class="muted small">${esc(whenText(notifyBad.at))}</span>
+const notifyRow=()=>notifyBad?`<div class="att"><b>Notifications can't be delivered</b> <span class="tag t-failed">failed</span> <span class="muted small">${whenHtml(notifyBad.at)}</span>
   <div>${esc(notifyBad.error||(notifyBad.status?`HTTP ${num(notifyBad.status)}`:"There was no answer from the notification address."))}</div>
   <div class="small muted">The last ${esc(notifyBad.event||"")} message did not arrive. Check the address and use Send test under Settings.</div><div class="btnrow"><button class="btn sm" data-fa="goto" data-field="notify_url">Open the setting</button></div></div>`:"";
 function renderAttention(){const f=failures.filter(x=>!x.dismissed),nb=notifyRow();
   const html=f.length||nb?`<div class="card"><h2>Needs attention</h2>${nb}${f.map(x=>`<div class="att"><b>${esc(x.name||x.title||x.title_id)}</b> ${failTag(x)} <span class="muted small">${esc(x.at_text||"")} · attempt ${esc(x.attempts||1)}</span>
     <div>${esc(x.summary)}</div><div class="small muted">${esc(x.next||"")}</div>${failureButtons(x,true)}
     <details><summary class="small">Details and the log of this attempt</summary>${failureBody(x)}</details></div>`).join("")}</div>`:"";
-  const el=$("#attention");if(el.dataset.h!==html){el.dataset.h=html;el.innerHTML=html}}
+  const el=$("#attention");if(el.dataset.h!==html){el.dataset.h=html;morph(el,html)}}
 async function loadFailures(){try{failures=await api("/api/failures")}catch(e){return}renderAttention()}
 document.addEventListener("click",async e=>{const b=e.target.closest("[data-fa]");if(!b)return;e.preventDefault();const a=b.dataset.fa,tid=b.dataset.tid;
-  if(a==="log"){wantLog=b.dataset.log;goTab("logs");return}
+  if(a==="log"){goTab("logs",b.dataset.log);return}
   if(a==="goto"){gotoField(b.dataset.field);return}
   b.disabled=true;
   try{const r=a==="retry"?await api(`/api/failures/${encodeURIComponent(tid)}/retry`,{method:"POST"}):a==="dismiss"?await api(`/api/failures/${encodeURIComponent(tid)}/dismiss`,{method:"POST"})
@@ -173,7 +243,7 @@ function ps4Files(p){const f=p.files||[],dest=p.dest_dir_host||p.dest_dir;
    <table class="small"><tbody>${f.map(x=>`<tr><td>${esc(x.name)}${x.via?` <span class="muted">(from ${esc(x.via.split("/").pop())})</span>`:""}</td><td>${esc(x.kind)}</td><td>${x.size?gib(x.size):""}</td></tr>`).join("")}</tbody></table>
    ${(p.notes||[]).map(n=>`<div class="small muted">${esc(n)}</div>`).join("")}</details>`}
 function failBox(s){const ev=[["scan",s.scan],["run",s.run]].filter(([k,x])=>x&&x.finished).sort((a,b)=>b[1].finished-a[1].finished)[0];
-  $("#failBox").innerHTML=ev&&ev[1].error&&!s.engine_running&&!s.scan.running?`<div class="banner bad"><b>The ${ev[0]==="scan"?"scan":"run"} failed.</b> ${esc(ev[1].error)}${ev[1].log_tail?.length?`<pre class="small">${esc((ev[1].log_tail_host||ev[1].log_tail).join("\n"))}</pre>`:""}<a href="#" data-log="${esc(ev[1].log)}">Open the log</a></div>`:""}
+  morph($("#failBox"),ev&&ev[1].error&&!s.engine_running&&!s.scan.running?`<div class="banner bad"><b>The ${ev[0]==="scan"?"scan":"run"} failed.</b> ${esc(ev[1].error)}${ev[1].log_tail?.length?`<pre class="small">${esc((ev[1].log_tail_host||ev[1].log_tail).join("\n"))}</pre>`:""}<a href="#" data-log="${esc(ev[1].log)}">Open the log</a></div>`:"")}
 let cfgRev,cfgLoadedAt=0,bannerHtml="";   // cfgRev: version of config.json the Settings form shows
 function banners(s){const e=s.config_error,p=s.config_problems||[];let h="";
   if(e)h+=`<div class="banner bad"><b>Settings file could not be read</b> (${e.line?`line ${esc(e.line)}: `:""}${esc(e.message)}). ${e.using==="last_good"?"Using the last working settings.":"Using the default settings."} Fix the file or restore a backup.</div>`;
@@ -209,8 +279,8 @@ function clk(ts,now){if(!ts)return"—";const a=srvAt(ts),b=srvAt(now||Date.now(
 function dur(s){s=Math.max(0,Math.round(num(s)));if(s<90)return s+" s";const m=Math.round(s/60);if(m<60)return m+" min";const h=Math.floor(m/60),r=m%60;return r?`${h} h ${p2(r)} min`:`${h} h`}
 const mibs=r=>{const v=num(r)/2**20;return v.toFixed(v>=10?0:1)+" MiB/s"},games=n=>`${num(n)} game${num(n)===1?"":"s"}`;
 const countsText=r=>{const p=[];if(num(r.built))p.push(`${num(r.built)} built`);if(num(r.copied))p.push(`${num(r.copied)} copied`);if(num(r.failed))p.push(`${num(r.failed)} failed`);if(num(r.deferred))p.push(`${num(r.deferred)} waiting for space`);if(num(r.cancelled))p.push(`${num(r.cancelled)} cancelled`);return p.join(", ")||"nothing to do"};
-const bar=pct=>`<div class="bar"><i style="width:${Math.max(0,Math.min(100,num(pct)))}%"></i></div>`;
-const jobName=x=>esc(String(x.name||x.title||x.title_id||"").replace(/\.pkg$/,""));
+const bar=(pct,label)=>{const n=Math.max(0,Math.min(100,Math.round(num(pct))));return `<div class="bar" role="progressbar" aria-label="${esc(label||"Progress")}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${n}"><i style="width:${n}%"></i></div>`};
+const jobPlain=x=>String(x.name||x.title||x.title_id||"").replace(/\.pkg$/,""),jobName=x=>esc(jobPlain(x));
 // the run being shown: the engine is up and its status is of this run (the last run's finished status is not)
 const liveRun=s=>s.engine_running&&s.status&&s.status.run&&!s.status.finished?s.status.run:null;
 function headerText(s){const run=liveRun(s);let t;
@@ -219,6 +289,8 @@ function headerText(s){const run=liveRun(s);let t;
   else if(s.scan.running)t="Scanning…"+paused;
   else{t="Idle";if(paused)t+=paused;else if(s.next_run)t+=` · next run ${s.next_run.label}`;const lr=s.last_run;if(lr){const c=countsText(lr);t+=lr.interrupted?" · the last run did not finish":` · last run ${c==="nothing to do"?"had nothing to do":c}`}}
   return t+(s.clock?` · server time ${s.clock.time} ${s.clock.tz}`:"")}
+// the header: the first words (Idle, Running, Stopping…) are in a live region and announced when they change; the counts and the clock after them are not
+function renderState(txt){const i=txt.indexOf(" · "),w=i<0?txt:txt.slice(0,i),r=i<0?"":txt.slice(i),ww=$("#stateWord"),rr=$("#stateRest");if(ww.textContent!==w)ww.textContent=w;if(rr.textContent!==r)rr.textContent=r;$("#state").title=txt}
 function renderRun(s){const run=liveRun(s),now=s.now;let line,sub="",pct=null;
   if(s.engine_running){
     if(!run){line="Starting…";sub="a run has just been started"}
@@ -230,9 +302,9 @@ function renderRun(s){const run=liveRun(s),now=s.now;let line,sub="",pct=null;
     line=lr?(lr.interrupted?`Idle · the last run did not finish (${num(lr.done)} of ${num(lr.total)} done)`:`Idle · last run ${clk(lr.finished,now)}: ${games(lr.total)}, ${esc(countsText(lr))}`):"Idle · nothing has run yet";
     sub=s.schedule_pause&&s.schedule&&s.schedule.enabled?`Schedule ${esc(pauseLabel(s.schedule_pause,now))}: no run starts by itself. Press Resume schedule, or Run now.`
       :s.next_run?`Next run ${esc(s.next_run.label)}${lr&&lr.trigger?` · the last one was ${esc(lr.trigger)}`:""}`:"Not scheduled: press Run now, or set times under Settings."}
-  const r=$("#runLine");const html=line;if(r.innerHTML!==html)r.innerHTML=html;
-  $("#runBar").hidden=pct==null;if(pct!=null){$("#runBar i").style.width=pct+"%";$("#runPct").textContent=pct+"%"}
-  $("#runSub").innerHTML=sub}
+  morph($("#runLine"),line);
+  $("#runBar").hidden=pct==null;if(pct!=null){$("#runBar i").style.width=pct+"%";$("#runPct").textContent=pct+"%";$("#runBar .bar").setAttribute("aria-valuenow",String(pct))}
+  morph($("#runSub"),sub)}
 const cancelBtn=(x,canc,phase,label)=>canc.has(x.title_id)?`<span class="muted small">${phase==="queue"?"Removing…":"Cancelling…"}</span>`
   :`<button class="btn sm" data-cancel="${esc(x.title_id)}" data-name="${jobName(x)}" data-phase="${phase}">${label||"Cancel"}</button>`;
 function buildRow(x,now,canc=new Set()){const stages=[1,3,5].includes(num(x.stage))&&x.part;
@@ -240,9 +312,9 @@ function buildRow(x,now,canc=new Set()){const stages=[1,3,5].includes(num(x.stag
     :`${esc(x.stage_name)}${x.total_bytes?` · ${gib(x.bytes)} of ${gib(x.total_bytes)} · ${num(x.stage_pct)}%`:""}`;
   const left=x.remaining!=null?`about ${dur(x.remaining)} left`:"estimating…";
   return `<div class="job"><div class="row"><b>${jobName(x)}</b><span class="jobbtn small">${x.log?`<a href="#" data-log="pkg/${esc(x.log)}">log</a>`:""}${cancelBtn(x,canc,"building")}</span></div>
-   <div class="small">${what} · ${dur(now-num(x.since))} elapsed · ${left}${x.rate?` · ${mibs(x.rate)}`:""}</div>${x.progress!=null?bar(num(x.progress)*100):""}</div>`}
+   <div class="small">${what} · ${dur(now-num(x.since))} elapsed · ${left}${x.rate?` · ${mibs(x.rate)}`:""}</div>${x.progress!=null?bar(num(x.progress)*100,"Build progress: "+jobPlain(x)):""}</div>`}
 function prepRow(x,now,canc=new Set()){const known=num(x.size)>0;
-  return `<div class="job"><div class="row"><b>${jobName(x)}</b><span class="jobbtn small">${cancelBtn(x,canc,"preparing")}</span></div><div class="small">${x.ps4?"copying PS4 packages":"copying &amp; verifying"}${known?` · ${gib(x.bytes)} of ${gib(x.size)} · ${num(x.pct)}%`:` · ${gib(x.bytes)}`}${x.rate?` · ${mibs(x.rate)}`:""}${x.remaining!=null?` · about ${dur(x.remaining)} left`:""} · ${dur(now-num(x.since))} elapsed</div>${known?bar(num(x.pct)):""}</div>`}
+  return `<div class="job"><div class="row"><b>${jobName(x)}</b><span class="jobbtn small">${cancelBtn(x,canc,"preparing")}</span></div><div class="small">${x.ps4?"copying PS4 packages":"copying &amp; verifying"}${known?` · ${gib(x.bytes)} of ${gib(x.size)} · ${num(x.pct)}%`:` · ${gib(x.bytes)}`}${x.rate?` · ${mibs(x.rate)}`:""}${x.remaining!=null?` · about ${dur(x.remaining)} left`:""} · ${dur(now-num(x.since))} elapsed</div>${known?bar(num(x.pct),"Preparing: "+jobPlain(x)):""}</div>`}
 let resOpen=false,healthOpen=false,qOpen=false;
 document.addEventListener("toggle",e=>{if(e.target.id==="resDetails")resOpen=e.target.open;if(e.target.id==="healthBox")healthOpen=e.target.open;if(e.target.id==="qMore")qOpen=e.target.open},true);
 function resultsTable(r,now){return `<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${cls(x.status)}">${esc(x.status==="deferred"?"waiting for space":x.status)}</span></td><td class="small muted" title="${esc(x.why_host||x.why||"")}">${esc(x.summary||x.why_host||x.why||x.validate||"")} ${x.build_min?`· build ${esc(x.build_min)} min`:""}${x.at?` · ${esc(clk(x.at,now))}`:""}</td></tr>`).join("")}</table>`}
@@ -255,8 +327,8 @@ function renderLive(s){const run=liveRun(s),st=s.status||{},now=s.now,r=st.resul
     if(Q.length)h+=`<div class="card sec"><h2>Up next (${Q.length})${num(run.queue_bytes)?` · ${gib(run.queue_bytes)}`:""}</h2>${Q.slice(0,6).map(qRow).join("")}${Q.length>6?`<details id="qMore" ${qOpen?"open":""}><summary class="small muted">and ${Q.length-6} more</summary>${Q.slice(6).map(qRow).join("")}</details>`:""}</div>`;
     if(r.length)h+=`<details class="card sec" id="resDetails" ${resOpen?"open":""}><summary><b>Finished this run (${r.length})</b> <span class="muted small">${esc(countsText(run))}</span></summary>${resultsTable(r,now)}</details>`}
   else if(!s.engine_running&&r.length&&st.finished&&s.last_run)h=`<details class="card sec" id="resDetails" ${resOpen?"open":""}><summary><b>Last run (${r.length})</b> <span class="muted small">${esc(clk(s.last_run.finished,now))} · ${esc(countsText(s.last_run))}</span></summary>${resultsTable(r,now)}</details>`;
-  const box=$("#liveBox");if(box.dataset.h!==h){box.dataset.h=h;box.innerHTML=h}}
-$("#liveBox").addEventListener("click",e=>{const a=e.target.closest("[data-log]");if(!a)return;e.preventDefault();wantLog=a.dataset.log;goTab("logs")});
+  const box=$("#liveBox");if(box.dataset.h!==h){box.dataset.h=h;morph(box,h)}}
+$("#liveBox").addEventListener("click",e=>{const a=e.target.closest("[data-log]");if(!a)return;e.preventDefault();goTab("logs",a.dataset.log)});
 // what is wrong with a folder: missing, read-only, or too small for the biggest game still to build (the rules of the Setup card: the
 // output needs room for it, the work drive for 110 % of it on top of what is kept free; a big drive is never "low" for being nearly full)
 function folderProblems(s){const F=s.folders||{},d=s.disks||{},sp=s.space||{},big=num(sp.biggest&&sp.biggest.size),res=num(sp.reserve),out=[];
@@ -268,20 +340,20 @@ function folderProblems(s){const F=s.folders||{},d=s.disks||{},sp=s.space||{},bi
   return out}
 // one line about the library and the folders; the folders table opens from it, and moves to the top of the page when something is wrong with them
 function renderHealth(s){const c=s.plan_counts||{},d=s.disks||{},total=Object.values(c).reduce((a,b)=>a+num(b),0),probs=folderProblems(s),box=$("#healthBox");
-  $("#healthSum").innerHTML=`Library ${total} games · ${num(c.build)} to build${num(c.copy)?` · ${num(c.copy)} PS4 to copy`:""} · ${probs.length?`<b class="err">Folders: ${esc(probs.join("; "))}</b>`:`Folders ok <span class="muted">(work ${esc(gib(d.temp?.free))} free · output ${esc(gib(d.output?.free))} free)</span>`}`;
+  morph($("#healthSum"),`Library ${total} games · ${num(c.build)} to build${num(c.copy)?` · ${num(c.copy)} PS4 to copy`:""} · ${probs.length?`<b class="err">Folders: ${esc(probs.join("; "))}</b>`:`Folders ok <span class="muted">(work ${esc(gib(d.temp?.free))} free · output ${esc(gib(d.output?.free))} free)</span>`}`);
   box.classList.toggle("warn",probs.length>0);
   const to=probs.length?$("#healthTop"):$("#healthBottom");if(box.parentNode!==to)to.appendChild(box);
   box.open=healthOpen}
 async function refresh(){
   const s=await poll();
-  lastS=s;$("#state").textContent=headerText(s);
+  lastS=s;renderState(headerText(s));
   syncRun();renderPause(s);renderAskAgain();failBox(s);
   notifyBad=s.notify_last&&s.notify_last.ok===false?s.notify_last:null;
   if(s.failures_rev!==lastFailRev){lastFailRev=s.failures_rev;loadFailures()}else renderAttention();
   const fin=[s.scan.finished,s.run?.finished].join("|");if(fin!==lastFin){const first=lastFin===undefined;lastFin=fin;if(!first)loadSetup()}   // a scan changes what the biggest game is
   renderRun(s);renderLive(s);renderFolders(s);renderHealth(s);
   const c=s.plan_counts;
-  $("#kpis").innerHTML=[["To build",c.build],...(c.copy?[["PS4 to copy",c.copy]]:[]),["Built",c.done],["Failed",c.failed,c.failed>0],["Last scan",s.plan_time?ago(s.plan_time):"never"]].map(([k,v,bad])=>`<div class="kpi${bad?" bad":""}"><b>${esc(v??"—")}</b><span>${esc(k)}</span></div>`).join("");
+  morph($("#kpis"),[["To build",c.build],...(c.copy?[["PS4 to copy",c.copy]]:[]),["Built",c.done],["Failed",c.failed,c.failed>0],["Last scan",s.plan_time?ago(s.plan_time):"never"]].map(([k,v,bad])=>`<div class="kpi${bad?" bad":""}"><b>${esc(v??"—")}</b><span>${esc(k)}</span></div>`).join(""));
 }
 // under the patch folder input: where that folder is on the NAS, or where to put the files
 function patchHint(o,tid,cfgHost){
@@ -326,7 +398,7 @@ function optionsForm(p,o,cfgHost){const c=p.candidates||[];
      <div class="row"><button class="btn" data-do="saveov">Save options</button>${p.action==="build"?`<button class="btn" data-do="buildone" data-tid="${esc(p.title_id)}">Build only this…</button>`:""}<span class="small muted"></span></div></div>`}
 function libRow(p,cfgHost){const o=libData.overrides[p.title_id]||{},tid=esc(p.title_id),search=[p.title,p.title_id,p.source,...(p.candidates||[]).map(x=>x.source)].join(" ").toLowerCase();
   const why=p.help==="packed"?`<div class="small" style="margin-top:4px">Why this blocks the build, and what to do: <a href="${README_BASE}#packed-copies" target="_blank" rel="noopener noreferrer">Packed copies</a>.</div>`:"";
-  return `<tr data-tid="${tid}" data-action="${esc(cls(p.action))}" data-search="${esc(search)}"><td><b>${esc(p.title||p.title_id)}</b><div class="small muted">${tid} · ${p.version?"v"+esc(p.version):"version read after extraction"} · ${fwLine(p)||"firmware not known"}</div>
+  return `<tr data-tid="${tid}" data-action="${esc(cls(p.action))}" data-search="${esc(search)}"><td><b class="nm">${esc(p.title||p.title_id)}</b><div class="small muted"><span class="nw">${tid} · ${p.version?"v"+esc(p.version):"version read after extraction"}</span> · ${fwLine(p)||"firmware not known"}</div>
     ${p.patched?`<div class="small muted">Named after the patch's param.json: fw ${esc(p.fw||"?")} (the source has ${esc(p.source_fw||"?")})</div>`:""}
     <details class="why" data-tid="${tid}"><summary class="small">Why this copy · Options${Object.keys(o).length?" (changed)":""}</summary>${candList(p)}${backportText(p)}${optionsForm(p,o,cfgHost)}</details></td>
     <td>${esc(p.version)}</td><td class="small">${esc(((p.candidates||[]).find(x=>x.source===p.source)||{}).kind_label||p.kind||"")}<div>${pathHtml(p.source_host,p.source)}</div></td>
@@ -349,11 +421,19 @@ function renderLib(){const {plan:pl,status:s,unrec:un}=libData,cf=s.folders?.con
     :pl.map(p=>libRow(p,cfgHost)).join("")+`<tr id="libNone" hidden><td colspan="4"><span class="muted">No titles match the filter.</span></td></tr>`;
   unrecBox(un,s);libNote(s);
   $("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
-  restoreLibUi();applyLibFilter()}
+  restoreLibUi();applyLibFilter();focusRow()}
 // what the user had open or typed survives a re-render
 function restoreLibUi(){document.querySelectorAll("#libRows details.why").forEach(d=>{if(libUi.open.has(d.dataset.tid))d.open=true});
   for(const [tid,ed] of Object.entries(libUi.edits)){const box=document.querySelector(`#libRows .ovr[data-tid="${CSS.escape(tid)}"]`);if(!box)continue;
     for(const [k,v] of Object.entries(ed)){const e=box.querySelector(`[data-k="${CSS.escape(k)}"]`);if(!e)continue;if(e.type==="checkbox")e.checked=v;else e.value=v}}}
+// #library/PPSA01234: show that game's row, opened (its filter is cleared if it hides the row)
+function focusRow(){const id=wantRow;wantRow=null;if(!id)return;
+  const tr=document.querySelector(`#libRows tr[data-tid="${CSS.escape(id)}"]`);
+  if(!tr){toast(`${id} is not in the Library: the last scan did not find it.`,true);return}
+  if(tr.hidden){$("#libFilter").value="";$("#libAct").value="";applyLibFilter()}
+  const d=tr.querySelector("details.why");if(d)d.open=true;
+  tr.classList.remove("flash");void tr.offsetWidth;tr.classList.add("flash");tr.scrollIntoView({block:"center"});
+  const sm=tr.querySelector("summary");if(sm)sm.focus({preventScroll:true})}
 function applyLibFilter(){const f=$("#libFilter").value.toLowerCase().trim(),a=$("#libAct").value;let shown=0,all=0;
   document.querySelectorAll("#libRows tr[data-tid]").forEach(tr=>{all++;const show=(!a||tr.dataset.action===a)&&(!f||tr.dataset.search.includes(f));tr.hidden=!show;if(show)shown++});
   const none=$("#libNone");if(none)none.hidden=shown>0;
@@ -385,12 +465,14 @@ function buildEstimate(p){const pace=libData.status.pace||{},gibs=num(p.size)/2*
   return "about "+dur((pace.build_per_gib+(pace.prep_per_gib||0))*gibs)+", from the builds this machine has done"}
 async function buildOne(t){const p=libData.plan.find(x=>x.title_id===t)||{},free=libData.status.disks&&libData.status.disks.temp?libData.status.disks.temp.free:null;
   if(!(await askConfirm({title:`Build ${p.title||t} now?`,html:`<p>${num(p.size)?esc(gib(p.size))+" to read, ":""}${esc(buildEstimate(p))}.</p><p class="small muted">${free!=null?`Free on the work drive: ${esc(bytesText(free))}. `:""}It runs in the background; Stop on the Dashboard ends it.</p>`,ok:"Build it"})))return;
-  try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
+  try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);goTab("dash")}catch(e){alertBox(e.message)}}
 function alertBox(m){say(m,1)}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-do]");if(!b)return;e.preventDefault();
   if(b.dataset.do==="scan"){doScan();goTab("dash")}else if(b.dataset.do==="rescan")doScan();else if(b.dataset.do==="saveov")saveOv(b);else if(b.dataset.do==="buildone")buildOne(b.dataset.tid)});
 // ---- History: what each run did, and the packages it made. Two views of the same facts; the Runs view is history.jsonl, the Packages
 // view is the ledger (one row per game: the latest package) with what each entry says normalised, and "not recorded" where it doesn't.
+const exactText=ts=>{const d=new Date((ts+srvOff)*1000);return`${WD[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())} (server time${lastS&&lastS.clock?`, ${lastS.clock.tz}`:""})`};
+const whenHtml=ts=>ts?`<time datetime="${esc(new Date(num(ts)*1000).toISOString())}" title="${esc(exactText(ts))}">${esc(whenText(ts))}</time>`:`<span class="muted">not recorded</span>`;
 const whenText=ts=>{if(!ts)return"not recorded";const a=srvAt(ts),dt=new Date(Date.UTC(a.y,a.mo,a.d));return`${WD[dt.getUTCDay()]} ${a.d} ${MON[a.mo]} ${p2(a.h)}:${p2(a.mi)}`};
 const minText=m=>m==null?"not recorded":m<1?"under a minute":dur(m*60);
 const sizeText=b=>b==null?"not recorded":b<1024?b+" B":b<2**20?Math.round(b/1024)+" KiB":b<2**30?(b/2**20).toFixed(1)+" MiB":bytesText(b);
@@ -400,16 +482,16 @@ const checksText=(c,raw)=>c?`${num(c.passed)} checks passed${num(c.warned)?`, ${
 let histView="runs",runList=[],runsTotal=0,runOpen=new Set(),runJobs={},pkgData=null,failData=[];
 try{histView=localStorage.getItem("ps5pkg.histView")==="pkgs"?"pkgs":"runs"}catch(e){}
 function setHistView(v){histView=v;try{localStorage.setItem("ps5pkg.histView",v)}catch(e){}
-  document.querySelectorAll("[data-hv]").forEach(b=>b.classList.toggle("on",b.dataset.hv===v));$("#histRuns").hidden=v!=="runs";$("#histPkgs").hidden=v!=="pkgs"}
-document.querySelectorAll("[data-hv]").forEach(b=>b.onclick=()=>{setHistView(b.dataset.hv);loadHist().catch(e=>say(e.message,1))});
+  document.querySelectorAll("[data-hv]").forEach(b=>{b.classList.toggle("on",b.dataset.hv===v);b.setAttribute("aria-pressed",String(b.dataset.hv===v))});$("#histRuns").hidden=v!=="runs";$("#histPkgs").hidden=v!=="pkgs"}
+document.querySelectorAll("[data-hv]").forEach(b=>b.onclick=()=>{setHistView(b.dataset.hv);setHash(hashOf("hist",b.dataset.hv==="pkgs"?"packages":"runs"));loadHist().catch(e=>say(e.message,1))});
 function jobRow(j){const t=j.title||j.name||j.tid,ok=j.status==="built"||j.status==="copied";
   const what=ok?[j.bytes?sizeText(j.bytes):null,j.prep_min!=null?`prepared in ${minText(j.prep_min)}`:null,j.build_min!=null?`built in ${minText(j.build_min)}`:null,j.level!=null?`compression level ${j.level}`:null].filter(Boolean).map(esc).join(" · ")+(checksText(j.checks,j.validate)?` · ${checksText(j.checks,j.validate)}`:"")
     :esc(j.summary||j.why_host||j.why||"");
-  return `<tr><td><b>${esc(t)}</b><div class="small muted">${esc(j.tid||"")}${j.name?` · ${esc(j.name)}`:""}</div></td><td><span class="tag t-${cls(j.status)}">${esc(JOB_TAG[j.status]||j.status||"?")}</span><div class="small muted">${esc(whenText(j.at))}</div></td>
+  return `<tr><td><b class="nm">${esc(t)}</b><div class="small muted"><span class="nw">${esc(j.tid||"")}</span>${j.name?` · ${esc(j.name)}`:""}</div></td><td><span class="tag t-${cls(j.status)}">${esc(JOB_TAG[j.status]||j.status||"?")}</span><div class="small muted">${whenHtml(j.at)}</div></td>
     <td class="small">${what}${j.status==="failed"&&j.code?`<div class="muted">${esc(j.code)}${j.phase?` · while ${esc(j.phase)}`:""}</div>`:""}</td><td class="small">${j.log?`<a href="#logs/${esc(j.log)}">Build log</a>`:""}</td></tr>`}
 function runBody(r){const jobs=runJobs[r.run];if(!jobs)return`<span class="muted small">Loading…</span>`;
   return `${jobs.length?`<table><thead><tr><th>Game</th><th>Result</th><th>What happened</th><th></th></tr></thead><tbody>${jobs.map(jobRow).join("")}</tbody></table>`:`<div class="muted small">This run did not build anything.</div>`}${r.output_log?`<div class="small" style="margin-top:6px"><a href="#logs/${esc(r.output_log)}">Raw output of this run</a></div>`:""}`}
-const runCard=r=>`<details class="card run" data-run="${esc(r.run)}" ${runOpen.has(r.run)?"open":""}><summary><b>${esc(whenText(r.started))}</b><span class="muted small">${esc(r.trigger||"run")} · ${r.seconds!=null?esc(dur(r.seconds)):"duration not recorded"}${r.interrupted?" · did not finish":""}</span>
+const runCard=r=>`<details class="card run" data-run="${esc(r.run)}" ${runOpen.has(r.run)?"open":""}><summary><b>${whenHtml(r.started)}</b><span class="muted small">${esc(r.trigger||"run")} · ${r.seconds!=null?esc(dur(r.seconds)):"duration not recorded"}${r.interrupted?" · did not finish":""}</span>
   <span class="small">${esc(runCountsText(r.counts))}</span>${r.bytes?`<span class="muted small">${esc(sizeText(r.bytes))}</span>`:""}</summary><div class="runbody">${runOpen.has(r.run)?runBody(r):""}</div></details>`;
 function renderRuns(){const el=$("#histRuns");
   el.innerHTML=!runList.length?`<div class="card"><b>No run has been recorded yet.</b> <span class="muted">Every run from now on is listed here with its games, including failures and cancellations. Packages built before that are under Packages.</span></div>`
@@ -425,12 +507,12 @@ $("#histRuns").addEventListener("click",e=>{if(e.target.id==="runsMore")loadRuns
 function pkgRow(p){const tid=esc(p.tid),bits=p.ps4?[`copied as they are${p.files?` · ${plural(p.files.length,"package")}`:""}`]
     :[p.prep_min!=null?`prepared in ${minText(p.prep_min)}`:"preparation time not recorded",p.build_min!=null?`built in ${minText(p.build_min)}`:p.total_min!=null?`took ${minText(p.total_min)} in total (an older record)`:"build time not recorded",p.level!=null?`compression level ${p.level}`:"compression level not recorded"];
   const tags=[p.ps4?`<span class="tag">PS4</span>`:"",!p.exists?`<span class="tag t-waiting" title="The package is not where the history says it is: the next scan plans it again">file missing</span>`:"",p.marked?`<span class="tag t-build">rebuild requested</span>`:""].filter(Boolean).join(" ");
-  return `<div class="pkg" data-tid="${tid}"><div class="row"><b>${esc(p.title||p.tid)}</b><span class="muted small">${tid}${p.version?` · v${esc(p.version)}`:""}</span>${tags}<span class="small" style="margin-left:auto">${p.bytes!=null?esc(sizeText(p.bytes)):"size not recorded"} · built ${esc(whenText(p.built_ts))}</span></div>
+  return `<div class="pkg" data-tid="${tid}"><div class="row"><b>${esc(p.title||p.tid)}</b><span class="muted small nw">${tid}${p.version?` · v${esc(p.version)}`:""}</span>${tags}<span class="small" style="margin-left:auto">${p.bytes!=null?esc(sizeText(p.bytes)):"size not recorded"} · built ${whenHtml(p.built_ts)}</span></div>
     <div class="small muted">${bits.map(esc).join(" · ")} · ${checksText(p.checks,p.validate)||"checks not recorded"}</div>
     ${p.output?`<div class="small">${p.ps4?"Folder":"Package"}: ${pathHtml(p.output_host,p.output)}</div>`:`<div class="small muted">Location not recorded</div>`}
     <div class="small muted">Source: ${p.source?pathHtml(p.source_host,p.source):"not recorded"}</div>
     ${p.backport&&p.backport.differs?`<div class="small muted">The image differed from the original in ${num(p.backport.files)} file(s): the ${esc(p.backport.used)} was used.</div>`:""}
-    <div class="btnrow">${p.log?`<a class="btn sm" href="#logs/${esc(p.log)}">Build log${p.log_guessed?" (probably)":""}</a>${p.ps4?"":`<a class="btn sm" href="#logs/${esc(p.log)}?find=validate">Validation report</a>`}`:""}
+    <div class="btnrow"><a class="btn sm" href="#library/${esc(encodeURIComponent(p.tid))}" aria-label="Show ${esc(p.title||p.tid)} in the Library">In the Library</a>${p.log?`<a class="btn sm" href="#logs/${esc(p.log)}">Build log${p.log_guessed?" (probably)":""}</a>${p.ps4?"":`<a class="btn sm" href="#logs/${esc(p.log)}?find=validate">Validation report</a>`}`:""}
       ${p.sha256?`<span class="small muted"><code>${esc(p.sha256.slice(0,16))}…</code></span><button class="btn sm" data-copy="${esc(p.sha256)}" title="Copy the whole SHA-256">Copy SHA-256</button>`:""}
       ${p.marked?`<button class="btn sm" data-unmark="${tid}">Undo rebuild</button>`:`<button class="btn sm" data-rebuild="${tid}">Rebuild</button>`}<button class="btn sm" data-forget="${tid}">Forget</button></div></div>`}
 function failedPkgRow(f){return `<div class="pkg"><div class="row"><b>${esc(f.name||f.title||f.title_id)}</b><span class="muted small">${esc(f.title_id)}</span>${failTag(f)}<span class="small" style="margin-left:auto">${esc(f.at_text||"")}</span></div>
@@ -447,7 +529,7 @@ function renderPkgs(){if(!pkgData)return;const q=$("#pkgFind").value.trim().toLo
   $("#pkgList").innerHTML=(fl.length&&(!st||st==="failed")&&so!=="size"?fl.map(failedPkgRow).join(""):"")+pk.map(pkgRow).join("")+(!pk.length&&!fl.length?`<div class="muted"><b>${all.length||failData.length?"Nothing matches.":"Nothing built yet."}</b> Finished packages are listed here, with their checks, once a run has built one; games that failed are listed with the reason.</div>`:"");
   const r=pkgData.replaced||{items:[]};
   $("#replCard").innerHTML=r.items.length?`<h2>Replaced packages (${r.count} · ${esc(sizeText(r.bytes))})</h2><div class="small muted" style="margin-bottom:6px">When a game is built again its older package stays here as "(replaced …)". Settings > Cleanup can keep fewer.</div>
-    <table><tbody>${r.items.map(x=>`<tr><td>${esc(x.name)}<div class="small">${pathHtml(x.path_host,x.path)}</div></td><td class="small">${esc(sizeText(x.bytes))}</td><td class="small">replaced ${esc(whenText(x.replaced_at))}</td><td><button class="btn sm" data-repl-del="${esc(x.name)}">Delete</button></td></tr>`).join("")}</tbody></table>`
+    <table><tbody>${r.items.map(x=>`<tr><td>${esc(x.name)}<div class="small">${pathHtml(x.path_host,x.path)}</div></td><td class="small">${esc(sizeText(x.bytes))}</td><td class="small">replaced ${whenHtml(x.replaced_at)}</td><td><button class="btn sm" data-repl-del="${esc(x.name)}">Delete</button></td></tr>`).join("")}</tbody></table>`
     :`<div class="small muted">No replaced packages: a package that a newer build replaces is kept here until you delete it (Settings > Cleanup).</div>`}
 async function loadPkgs(){const[d,fl]=await Promise.all([api("/api/history/packages"),api("/api/failures")]);pkgData=d;failData=Array.isArray(fl)?fl:[];renderPkgs()}
 $("#pkgFind").oninput=renderPkgs;$("#pkgStatus").onchange=renderPkgs;$("#pkgSort").onchange=renderPkgs;
@@ -483,7 +565,7 @@ function fieldHtml(f){const v=valueOf(cfg,f.key),id="f_"+f.key.replace(/\W/g,"_"
   const def=f.kind==="lines"||f.kind==="regex"?(f.default||[]).join(", ")||"none":f.kind==="times"?(f.default||[]).join(", ")||"none":f.kind==="choice"||f.kind==="nice"?((f.choices||[]).find(c=>String(c[0])===String(f.default))||[0,String(f.default)])[1]:f.kind==="bool"?(f.default?"on":"off"):f.default===""?"empty":String(f.default);
   return `<div class="fld" data-f="${esc(k)}"><label class="t" for="${id}">${esc(f.label)}</label>${ctl}${f.key==="notify_url"?`<div class="row" style="margin-top:6px"><button type="button" class="btn sm" data-notify-test>Send test</button><span class="small" data-test-out></span></div><div class="small muted" id="notifyLast">${esc(notifyLastText(cfg.notify_last))}</div>`:""}<div class="small muted help">${esc(f.help)}${f.kind==="nice"?" "+NICE_NOTE:""}</div>
     <div class="small"><span class="muted def">Default: ${esc(def)}</span><a href="#" data-reset="${esc(k)}" hidden>Reset to default</a></div><div class="small err" data-err="${esc(k)}"></div><div class="small warn" data-warn="${esc(k)}"></div></div>`}
-const timeRow=t=>`<div class="row"><input type="text" inputmode="numeric" placeholder="03:00" maxlength="5" value="${esc(t)}" data-time> <button type="button" class="btn sm" data-rmtime title="Remove this time">Remove</button></div>`;
+const timeRow=t=>`<div class="row"><input type="text" inputmode="numeric" placeholder="03:00" maxlength="5" value="${esc(t)}" data-time aria-label="Time of day, as HH:MM"> <button type="button" class="btn sm" data-rmtime title="Remove this time">Remove</button></div>`;
 function renderGroups(){const sc=cfg.schema||[],threads=cfg.machine&&cfg.machine.cpus;
   $("#setGroups").innerHTML=(cfg.groups||[]).filter(g=>sc.some(f=>f.group===g[0])).map(([gk,gl])=>`<div class="card" data-g="${esc(gk)}"><h2>${esc(gl)}</h2>
     ${gk==="performance"?`<div class="small" id="perfCtx" style="margin-bottom:6px"></div>`:""}${sc.filter(f=>f.group===gk).map(fieldHtml).join("")}</div>`).join("");
@@ -584,17 +666,17 @@ function renderStorage(){const s=storage,b=s.backups;
    <div class="row" style="margin-top:8px"><a class="btn" id="bFull" href="/api/backup.zip" download>Download full backup (.zip)</a>
      <label class="small"><input type="checkbox" id="fullFailures"> also the failed-game records</label><span class="small muted">settings + build history + the list of patch folders (not their files)</span></div>
    <div style="margin-top:12px"><b class="small">Import</b>
-     <div class="row"><input type="file" id="impFile" accept=".json,application/json">
+     <div class="row"><input type="file" id="impFile" accept=".json,application/json" aria-label="Settings file to import">
        <label class="small"><input type="checkbox" id="impSettings" checked> settings</label><label class="small"><input type="checkbox" id="impOvr" checked> per-game overrides</label>
        <button class="btn" id="bImpPreview">Preview</button><button class="btn pri" id="bImpApply" disabled>Import</button></div>
      <div id="impOut" class="small"></div></div>
    <div style="margin-top:12px"><b class="small">Automatic backups</b>
-     <div class="small muted">${b.count?`${num(b.count)} of ${num(b.keep)} kept · last ${esc(when(b.last))}`:"None yet: one is made each time the settings file is changed."} <a href="#" id="bkToggle">${b.count?"Restore…":""}</a>${b.error?` <span class="err">${esc(b.error)}</span>`:""}</div>
+     <div class="small muted">${b.count?`${num(b.count)} of ${num(b.keep)} kept · last ${esc(when(b.last))}`:"None yet: one is made each time the settings file is changed."} ${b.count?`<a href="#" id="bkToggle" role="button" aria-expanded="false">Restore…</a>`:""}${b.error?` <span class="err">${esc(b.error)}</span>`:""}</div>
      <div id="bkList" hidden>${b.items.map(i=>`<div class="row small" data-bk="${esc(i.name)}"><span>${esc(when(i.at))}</span><span class="muted">${esc(i.name)} · ${num(i.size)} bytes</span><button class="btn sm" data-bkpreview>Preview</button><button class="btn sm" data-bkrestore>Restore</button></div>`).join("")}<div id="bkOut" class="small"></div></div></div>
    <p class="small muted" style="margin-bottom:0">${esc(verText(s.versions))}</p>`;
   $("#expNotify").onchange=$("#fullFailures").onchange=()=>{$("#bExport").href="/api/export?notify_url="+($("#expNotify").checked?1:0);$("#bFull").href="/api/backup.zip"+($("#fullFailures").checked?"?failures=1":"")};
   $("#bImpPreview").onclick=()=>impRun(true);$("#bImpApply").onclick=()=>impRun(false);$("#impFile").onchange=()=>{impText=null;$("#bImpApply").disabled=true;$("#impOut").textContent=""};
-  $("#bkToggle").onclick=e=>{e.preventDefault();$("#bkList").hidden=!$("#bkList").hidden}}
+  {const t=$("#bkToggle");if(t)t.onclick=e=>{e.preventDefault();const l=$("#bkList");l.hidden=!l.hidden;t.setAttribute("aria-expanded",String(!l.hidden))}}}
 const parts=()=>[$("#impSettings").checked?"settings":"",$("#impOvr").checked?"overrides":""].filter(Boolean).join(",");
 async function postJson(path,body){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body});if(r.status===401){location.reload();return{ok:false,data:{detail:"Log in first."}}}let d={};try{d=await r.json()}catch(e){}return{ok:r.ok,data:d}}
 function diffHtml(d){const row=(k,t)=>`<li><code>${esc(k)}</code> ${t}</li>`;
@@ -628,7 +710,7 @@ const PROG_RE=/^\s*\[[#\-=. ]{8,}\]\s*\d+%|\d+% [^@]*@ [\d.]+ MB\/s/;
 const OUTCOME={built:"built",copied:"copied",failed:"failed",cancelled:"cancelled",deferred:"waiting for space"};
 const logLabel=d=>d.kind==="build"?`${d.title||d.tid}`:d.kind==="activity"?"Activity log":d.kind==="activity_old"?"Activity log, earlier part":d.kind==="scan"?"Last scan":d.kind==="run"?"Raw output of a run":d.name;
 function logRow(d){const when=d.started||d.mtime;
-  return `<a class="lg ${d.name===logSt.name?"on":""}" href="#logs/${esc(d.name)}" data-lg="${esc(d.name)}">${d.kind==="build"?`<b>${esc(logLabel(d))}</b> `:`${esc(logLabel(d))} `}<span class="small muted">${esc(whenText(when))} · ${esc(sizeText(d.size))}</span>${d.outcome?` <span class="tag t-${cls(d.outcome)}">${esc(OUTCOME[d.outcome]||d.outcome)}</span>`:""}</a>`}
+  return `<a class="lg ${d.name===logSt.name?"on":""}" href="#logs/${esc(d.name)}" data-lg="${esc(d.name)}">${d.kind==="build"?`<b>${esc(logLabel(d))}</b> `:`${esc(logLabel(d))} `}<span class="small muted">${whenHtml(when)} · ${esc(sizeText(d.size))}</span>${d.outcome?` <span class="tag t-${cls(d.outcome)}">${esc(OUTCOME[d.outcome]||d.outcome)}</span>`:""}</a>`}
 function renderLogList(){const q=$("#logFind").value.trim().toLowerCase(),ok=d=>!q||[d.name,d.title,d.tid,logLabel(d)].join(" ").toLowerCase().includes(q),g=k=>logList.filter(d=>d.kind===k&&ok(d));
   const act=[...g("activity"),...g("activity_old")],scan=g("scan"),runs=g("run"),builds=g("build"),allBuilds=logList.filter(d=>d.kind==="build").length;
   const grp=(t,note,rows)=>rows.length?`<div class="lgh">${t}</div><div class="small muted">${note}</div>${rows.map(logRow).join("")}`:"";
@@ -669,7 +751,7 @@ function renderLog(how="keep"){const p=$("#logTxt"),h0=p.scrollHeight,t0=p.scrol
 function gotoHit(d){const marks=[...$("#logTxt").querySelectorAll("mark")];if(!marks.length)return;logSt.hit=(logSt.hit+d+marks.length)%marks.length;
   marks.forEach(m=>m.classList.remove("cur"));const m=marks[logSt.hit];m.classList.add("cur");m.scrollIntoView({block:"center"})}
 async function openLog(name,o={}){logSt={...logSt,name,lines:[],start:0,next:0,size:0,hit:-1,trimmed:false};
-  try{history.replaceState(null,"","#logs/"+name+(o.find?"?find="+encodeURIComponent(o.find):""))}catch(e){}
+  setHash("#logs/"+encPath(name)+(o.find?"?find="+encodeURIComponent(o.find):""));
   const meta=logList.find(d=>d.name===name)||{};
   $("#logTitle").textContent=logLabel(meta.name?meta:{name,kind:"other"});$("#logMeta").textContent=meta.name?`${name} · ${sizeText(meta.size)}`:name;
   const dl=$("#logDl");dl.hidden=false;dl.href=`/api/logs/${encPath(name)}?download=1`;dl.setAttribute("download",name.split("/").pop());
@@ -705,11 +787,6 @@ $("#bLogPrune").onclick=async()=>{try{const dry=await api("/api/logs/prune",{met
   if(!dry.removed.length){toast(dry.note||"Nothing is old enough to remove");return}
   if(!(await askConfirm({title:"Remove old logs?",html:`<p>${esc(plural(dry.removed.length,"log"))} (${esc(sizeText(dry.freed))}) are older than the retention allows. Removing them can't be undone.</p><p class="small muted">The log of a game that is still failing is kept.</p>`,ok:"Remove them",danger:true})))return;
   const r=await api("/api/logs/prune",{method:"POST",body:"{}"});toast(`Removed ${plural(r.removed.length,"log")}, ${sizeText(r.freed)} freed`);await loadLogs()}catch(e){toast(e.message,1)}};
-// a link to a log, or to a game's logs, works from anywhere: #logs/pkg/<file>[?find=validate] and #logs?game=<title ID>
-function routeHash(){const m=/^#logs(?:\/([^?]*))?(?:\?(.*))?$/.exec(location.hash);if(!m)return false;
-  const qs=new URLSearchParams(m[2]||"");wantLog=m[1]?decodeURIComponent(m[1]):null;wantGame=qs.get("game");wantFind=qs.get("find");
-  if(tab!=="logs")goTab("logs");else loadLogs().catch(e=>say(e.message,1));return true}
-window.addEventListener("hashchange",routeHash);
-document.addEventListener("click",e=>{const a=e.target.closest('a[href^="#logs"]');if(!a)return;e.preventDefault();try{history.replaceState(null,"",a.getAttribute("href"))}catch(x){}routeHash()});
 function load(){({dash:refresh,lib:loadLib,hist:loadHist,set:loadSet,logs:loadLogs})[tab]().catch(e=>say(e.message,1));if(tab==="dash")loadSetup();if(tab!=="dash"&&tab!=="set")poll().catch(()=>{})}
-if(!routeHash())load();setInterval(()=>{(tab==="dash"?refresh():poll()).catch(()=>{});if(tab==="logs")followLog()},5000);
+new MutationObserver(()=>stackify($("main"))).observe($("main"),{childList:true,subtree:true});stackify($("main"));
+startRoute();setInterval(()=>{(tab==="dash"?refresh():poll()).catch(()=>{});if(tab==="logs")followLog()},5000);

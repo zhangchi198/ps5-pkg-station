@@ -574,11 +574,14 @@ class Page(unittest.TestCase):
     def test_search_highlights_and_there_is_a_download_and_deep_links(self):
         self.assertIn("<mark>", self.body("function logHtml", "// draw the log"))
         self.assertIn("?download=1", self.body("async function openLog", "async function loadAllLog"))
-        route = self.body("function routeHash", "window.addEventListener")
-        self.assertIn("#logs", route)
+        route = self.body("async function route", "async function navigate")
+        self.assertIn("wantLog=r.sub", route)
         self.assertIn('qs.get("game")', route)
-        self.assertIn("routeHash()", self.JS)
-        self.assertRegex(self.JS, r"""document\.addEventListener\("click",e=>\{const a=e\.target\.closest\('a\[href\^="#logs"\]'\);if\(!a\)return;e\.preventDefault\(\)""")     # a link works even when the address already says so
+        self.assertIn('qs.get("find")', route)
+        self.assertNotIn("routeHash", self.JS)                                             # one router for every tab (see test_server_a11y)
+        nav = self.body("async function navigate", "const goTab")
+        self.assertIn("route(true,true)", nav)                                             # a link works even when the address already says so
+        self.assertRegex(self.JS, r"""document\.addEventListener\("click",e=>\{const a=e\.target\.closest\('a\[href\^="#"\]'\)""")
         self.assertIn('if(logSt.q)gotoHit(1)', self.JS)                                    # the first match, not the last
         self.assertIn('href="#logs?game=${tid}"', self.body("function libRow", "function unrecBox"))      # a game's logs, from the Library
 

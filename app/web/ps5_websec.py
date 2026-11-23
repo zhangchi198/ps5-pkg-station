@@ -36,7 +36,7 @@ LOGIN_PATH = "/login"
 COOKIE = "ps5pkg_session"
 SESSION_DAYS = 30
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
-       "form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+       "manifest-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 README_URL = "https://github.com/zhangchi198/ps5-pkg-station#keeping-it-private"
 PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip", "x-forwarded-host", "x-forwarded-proto", "cf-connecting-ip", "true-client-ip")
 

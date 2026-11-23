@@ -195,6 +195,44 @@ Some dumps store the game's AMPR assets compressed (LZ4 or Zstd packs). UltraPac
 passes over such a copy when another copy of the game exists, and a game that only has packed copies is listed as
 **skipped**. To build it, use an unpacked copy of the game (an image or a folder from the original dump), then scan again.
 
+### On a phone, with a keyboard, with a screen reader
+
+The page is made for a phone as much as for a desk.
+
+- **Phones (under 720 px)**: the tabs are a bar at the bottom of the screen (icon and name), the header is one line, and every table becomes a list of
+  cards with the column names above the values. Long names wrap, and a game's ID and version stay together on one line. Every button, field, checkbox and
+  link you press is at least 44 x 44 px (also on a tablet held upright, and on any touch screen).
+- **Colours**: the page follows the phone's or computer's light/dark setting. The button in the header (half-filled circle) switches between "follow the system",
+  light and dark; the choice is remembered in that browser only. All text is at least 4.5:1 against its background and the edges of fields and buttons at least 3:1
+  in both schemes. A status is never told by colour alone: each tag starts with its own mark (a tick, a cross, ...).
+- **Links to a place**: the address names the tab, so a reload stays on it and Back goes to the tab you came from:
+  `#dashboard`, `#library`, `#library/PPSA01234` (opens that game's row), `#history`, `#history/packages`, `#settings`, `#logs`, `#logs/pkg/<file>`,
+  `#logs?game=PPSA01234`. Leaving Settings with unsaved changes still asks first, whichever way you leave.
+- **Keyboard**: Tab reaches "Skip to the content" first. On the tab bar the arrow keys, Home and End move between the tabs, and Enter or Space opens the one in focus.
+  The questions the page asks (start a run, stop now, cancel a game) are dialogs that keep the focus inside, leave the page behind them unreachable, start on the safe
+  answer when something would be lost, and give the focus back to the button you pressed when they close. Escape closes them.
+- **Screen readers**: the tabs are announced as tabs with the selected one marked; the run's state (Idle, Running, Stopping) and the messages ("Run started", "Scanning...")
+  are announced when they change; every progress bar has a name ("Build progress: <game>") and its value; every field has a label; times show the exact moment when
+  pointed at (they are on the server's clock, like the schedule).
+- **Selecting text**: the Dashboard refreshes every 5 seconds by changing only what changed, so text you have selected, a button in focus and a section you opened
+  stay as they are.
+- **On the home screen**: the page has a web app manifest and icons, so a phone can add it to the home screen and open it like an app (it still needs the network and
+  the same login, if there is one).
+
+Contrast, as measured (WCAG ratios; 4.5 is the target for text, 3 for the edge of a control):
+
+| | before | after |
+|---|---|---|
+| primary button, dark scheme (white on light blue, now dark text) | 2.54 | 7.36 |
+| danger button, dark scheme | 2.77 | 6.95 |
+| primary button, light scheme | 5.17 | 6.70 |
+| secondary text on the selected log row, light scheme | 3.96 | 5.32 |
+| "built" tag, light scheme | 4.11 | 6.49 |
+| edge of a button or field, light / dark | 1.24 / 1.23 | 4.83 / 3.94 |
+| a disabled "Run now", light / dark | 2.42 / 1.63 | 5.29 / 6.10 |
+
+The colour pairs are written as tokens at the top of `app/web/static/index.html`, and `tests/test_server_a11y.py` measures every pair of both schemes from them.
+
 ### Keeping it private
 
 The page and the API are open to anyone who can reach the port, so the app does a few things to make "on my LAN"

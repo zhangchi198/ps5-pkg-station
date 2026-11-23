@@ -622,6 +622,30 @@ def app_js():
     return FileResponse(HERE / "static" / "app.js", media_type="text/javascript", headers=NO_CACHE)
 
 
+MANIFEST = {
+    "name": "PS5 PKG Station", "short_name": "PKG Station",
+    "description": "Builds PS5 packages from your game library, with the progress, the history and the logs on one page.",
+    "start_url": "/", "scope": "/", "display": "standalone", "background_color": "#0f1318", "theme_color": "#1d4ed8",
+    "icons": [{"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+              {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+              {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}]}
+ICONS = {"icon.svg": "image/svg+xml", "icon-192.png": "image/png", "icon-512.png": "image/png", "apple-touch-icon.png": "image/png"}
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    """Lets a phone put the page on the home screen as an app (own window, icon, colours). Nothing in it is private."""
+    return JSONResponse(MANIFEST, media_type="application/manifest+json", headers=NO_CACHE)
+
+
+@app.get("/static/{name}")
+def static_icon(name: str):
+    """The icons, and only those: the folder is not served (the page itself is `/`, the script is `/static/app.js`)."""
+    if name not in ICONS:
+        raise HTTPException(404, "Not found")
+    return FileResponse(HERE / "static" / name, media_type=ICONS[name], headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/login")
 def login_page():
     return RedirectResponse("/", status_code=303)           # the form is the front page while there is no session
