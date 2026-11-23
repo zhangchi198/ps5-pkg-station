@@ -107,27 +107,87 @@ document.addEventListener("click",e=>{if(!e.target.closest("[data-logout]"))retu
   fetch("/api/logout",{method:"POST",headers:{"Content-Type":"application/json"}}).finally(()=>location.reload())});
 const verText=v=>`PS5 PKG Station ${v.app} · ${v.ultrapack?"UltraPack "+v.ultrapack:"UltraPack version not known"}`;
 function syncDeleteButtons(){document.querySelectorAll('[data-act="delete_staged"]').forEach(b=>{const blocked=engineBusy||b.dataset.blocked==="1";b.disabled=blocked;if(engineBusy)b.title="A run is active and may be using it"})}
-async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);renderAccess(s.access);if(s.version)$("#ver").textContent=verText(s.version);engineBusy=!!s.engine_running;syncDeleteButtons();
+let srvOff=0;   // seconds the server's clock is ahead of UTC: times the server speaks of (a schedule, when a run started) are shown on its clock
+async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);renderAccess(s.access);
+  if(s.clock){const m=/^([+-])(\d\d):(\d\d)$/.exec(s.clock.utc_offset||"");if(m)srvOff=(m[1]==="-"?-1:1)*(num(m[2])*3600+num(m[3])*60)}if(s.version)$("#ver").textContent=verText(s.version);engineBusy=!!s.engine_running;syncDeleteButtons();
   // config.json was edited since the form was loaded (a poll that started before the last load says nothing new)
   if(tab==="set"&&!s.config_error&&cfgRev!==undefined&&t0>cfgLoadedAt&&s.config_rev!==cfgRev){
     if(setDirty)$("#cfgChanged").hidden=false;else loadSet("Settings file changed on disk: reloaded.")}
   if(s.clock)$("#clockNote").textContent=`Server time now ${s.clock.time} (${s.clock.tz}, UTC${s.clock.utc_offset}). Schedule times use this clock.`;
   return s}
+// ---- the Dashboard: the run first (state, how far, how long), then what it is doing, then the library and the folders
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],p2=n=>String(n).padStart(2,"0");
+const srvAt=ts=>{const d=new Date((ts+srvOff)*1000);return{y:d.getUTCFullYear(),mo:d.getUTCMonth(),d:d.getUTCDate(),h:d.getUTCHours(),mi:d.getUTCMinutes()}};
+// a time on the server's clock: 03:00 today, "22 Nov 03:00" another day
+function clk(ts,now){if(!ts)return"—";const a=srvAt(ts),b=srvAt(now||Date.now()/1000),hm=`${p2(a.h)}:${p2(a.mi)}`;return a.y===b.y&&a.mo===b.mo&&a.d===b.d?hm:`${a.d} ${MON[a.mo]} ${hm}`}
+function dur(s){s=Math.max(0,Math.round(num(s)));if(s<90)return s+" s";const m=Math.round(s/60);if(m<60)return m+" min";const h=Math.floor(m/60),r=m%60;return r?`${h} h ${p2(r)} min`:`${h} h`}
+const mibs=r=>{const v=num(r)/2**20;return v.toFixed(v>=10?0:1)+" MiB/s"},games=n=>`${num(n)} game${num(n)===1?"":"s"}`;
+const countsText=r=>{const p=[];if(num(r.built))p.push(`${num(r.built)} built`);if(num(r.copied))p.push(`${num(r.copied)} copied`);if(num(r.failed))p.push(`${num(r.failed)} failed`);if(num(r.deferred))p.push(`${num(r.deferred)} waiting for space`);return p.join(", ")||"nothing to do"};
+const bar=pct=>`<div class="bar"><i style="width:${Math.max(0,Math.min(100,num(pct)))}%"></i></div>`;
+const jobName=x=>esc(String(x.name||x.title||x.title_id||"").replace(/\.pkg$/,""));
+// the run being shown: the engine is up and its status is of this run (the last run's finished status is not)
+const liveRun=s=>s.engine_running&&s.status&&s.status.run&&!s.status.finished?s.status.run:null;
+function headerText(s){const run=liveRun(s);let t;
+  if(s.engine_running){t=s.stop_requested?"Stopping after current":"Running";if(run&&run.phase!=="scanning")t+=` · ${num(run.done)} of ${num(run.total)} done${run.remaining!=null?` · about ${dur(run.remaining)} left`:""}`}
+  else if(s.scan.running)t="Scanning…";
+  else{t="Idle";if(s.next_run)t+=` · next run ${s.next_run.label}`;const lr=s.last_run;if(lr){const c=countsText(lr);t+=lr.interrupted?" · the last run did not finish":` · last run ${c==="nothing to do"?"had nothing to do":c}`}}
+  return t+(s.clock?` · server time ${s.clock.time} ${s.clock.tz}`:"")}
+function renderRun(s){const run=liveRun(s),now=s.now;let line,sub="",pct=null;
+  if(s.engine_running){
+    if(!run){line="Starting…";sub="a run has just been started"}
+    else if(run.phase==="scanning"){line="Running · scanning the library…";sub=`started ${clk(run.started,now)} (${esc(run.trigger||"manual")}) · what to build is worked out first`}
+    else{line=`${s.stop_requested?"Stopping after the current games":"Running"} · ${num(run.done)} of ${num(run.total)} done${num(run.failed)?` · <span class="err">${num(run.failed)} failed</span>`:""}`;pct=Math.round(num(run.progress)*100);
+      sub=`started ${clk(run.started,now)} (${esc(run.trigger||"manual")}) · ${run.remaining!=null?`about ${dur(run.remaining)} left`:"estimating the time left…"}`}}
+  else if(s.scan.running){line="Scanning for new games…"}
+  else{const lr=s.last_run;
+    line=lr?(lr.interrupted?`Idle · the last run did not finish (${num(lr.done)} of ${num(lr.total)} done)`:`Idle · last run ${clk(lr.finished,now)}: ${games(lr.total)}, ${esc(countsText(lr))}`):"Idle · nothing has run yet";
+    sub=s.next_run?`Next run ${esc(s.next_run.label)}${lr&&lr.trigger?` · the last one was ${esc(lr.trigger)}`:""}`:"Not scheduled: press Run now, or set times under Settings."}
+  const r=$("#runLine");const html=line;if(r.innerHTML!==html)r.innerHTML=html;
+  $("#runBar").hidden=pct==null;if(pct!=null){$("#runBar i").style.width=pct+"%";$("#runPct").textContent=pct+"%"}
+  $("#runSub").innerHTML=sub}
+function buildRow(x,now){const stages=[1,3,5].includes(num(x.stage))&&x.part;
+  const what=x.phase==="building"?`<span title="${esc(x.stage_text?"UltraPack: "+x.stage_text:"")}">${esc(x.stage_name||"Building")}</span> (${num(x.stage)} of 5)${stages?` · ${num(x.stage_pct)}%`:""}`
+    :`${esc(x.stage_name)}${x.total_bytes?` · ${gib(x.bytes)} of ${gib(x.total_bytes)} · ${num(x.stage_pct)}%`:""}`;
+  const left=x.remaining!=null?`about ${dur(x.remaining)} left`:"estimating…";
+  return `<div class="job"><div class="row"><b>${jobName(x)}</b>${x.log?`<span class="small" style="margin-left:auto"><a href="#" data-log="pkg/${esc(x.log)}">log</a></span>`:""}</div>
+   <div class="small">${what} · ${dur(now-num(x.since))} elapsed · ${left}${x.rate?` · ${mibs(x.rate)}`:""}</div>${x.progress!=null?bar(num(x.progress)*100):""}</div>`}
+function prepRow(x,now){const known=num(x.size)>0;
+  return `<div class="job"><div class="row"><b>${jobName(x)}</b></div><div class="small">${x.ps4?"copying PS4 packages":"copying &amp; verifying"}${known?` · ${gib(x.bytes)} of ${gib(x.size)} · ${num(x.pct)}%`:` · ${gib(x.bytes)}`}${x.rate?` · ${mibs(x.rate)}`:""}${x.remaining!=null?` · about ${dur(x.remaining)} left`:""} · ${dur(now-num(x.since))} elapsed</div>${known?bar(num(x.pct)):""}</div>`}
+let resOpen=false,healthOpen=false;
+document.addEventListener("toggle",e=>{if(e.target.id==="resDetails")resOpen=e.target.open;if(e.target.id==="healthBox")healthOpen=e.target.open},true);
+function resultsTable(r,now){return `<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${cls(x.status)}">${esc(x.status==="deferred"?"waiting for space":x.status)}</span></td><td class="small muted" title="${esc(x.why_host||x.why||"")}">${esc(x.summary||x.why_host||x.why||x.validate||"")} ${x.build_min?`· build ${esc(x.build_min)} min`:""}${x.at?` · ${esc(clk(x.at,now))}`:""}</td></tr>`).join("")}</table>`}
+function renderLive(s){const run=liveRun(s),st=s.status||{},now=s.now,r=st.results||[];let h="";
+  if(run&&run.phase!=="scanning"){
+    const B=st.builds||[],P=st.preparing||[],Q=st.queue||[];
+    if(B.length)h+=`<div class="card sec"><h2>Building (${B.length})</h2>${B.map(x=>buildRow(x,now)).join("")}</div>`;
+    if(P.length)h+=`<div class="card sec"><h2>Preparing (${P.length})</h2>${P.map(x=>prepRow(x,now)).join("")}</div>`;
+    if(Q.length)h+=`<div class="card sec"><h2>Up next (${Q.length})${num(run.queue_bytes)?` · ${gib(run.queue_bytes)}`:""}</h2>${Q.slice(0,6).map(x=>`<div class="small">${jobName(x)} <span class="muted">${x.size?gib(x.size):""}${x.ps4?" · PS4":""}</span></div>`).join("")}${Q.length>6?`<div class="small muted">and ${Q.length-6} more</div>`:""}</div>`;
+    if(r.length)h+=`<details class="card sec" id="resDetails" ${resOpen?"open":""}><summary><b>Finished this run (${r.length})</b> <span class="muted small">${esc(countsText(run))}</span></summary>${resultsTable(r,now)}</details>`}
+  else if(!s.engine_running&&r.length&&st.finished&&s.last_run)h=`<details class="card sec" id="resDetails" ${resOpen?"open":""}><summary><b>Last run (${r.length})</b> <span class="muted small">${esc(clk(s.last_run.finished,now))} · ${esc(countsText(s.last_run))}</span></summary>${resultsTable(r,now)}</details>`;
+  const box=$("#liveBox");if(box.dataset.h!==h){box.dataset.h=h;box.innerHTML=h}}
+$("#liveBox").addEventListener("click",e=>{const a=e.target.closest("[data-log]");if(!a)return;e.preventDefault();wantLog=a.dataset.log;goTab("logs")});
+function folderProblems(s){const F=s.folders||{},d=s.disks||{},out=[];
+  for(const k of Object.keys(FOLDER_LABEL)){const f=F[k];if(!f)continue;const x=d[k]||{};
+    if(x.error)out.push(`${FOLDER_LABEL[k]}: not available`);
+    else if(["output","temp","config"].includes(k)&&f.mode==="ro")out.push(`${FOLDER_LABEL[k]}: read-only`);
+    else if(["output","temp"].includes(k)&&x.total&&(x.free<10*2**30||x.free<0.03*x.total))out.push(`${FOLDER_LABEL[k]}: only ${gib(x.free)} free`)}
+  return out}
+// one line about the library and the folders; the folders table opens from it, and moves to the top of the page when something is wrong with them
+function renderHealth(s){const c=s.plan_counts||{},d=s.disks||{},total=Object.values(c).reduce((a,b)=>a+num(b),0),probs=folderProblems(s),box=$("#healthBox");
+  $("#healthSum").innerHTML=`Library ${total} games · ${num(c.build)} to build${num(c.copy)?` · ${num(c.copy)} PS4 to copy`:""} · ${probs.length?`<b class="err">Folders: ${esc(probs.join("; "))}</b>`:`Folders ok <span class="muted">(work ${esc(gib(d.temp?.free))} free · output ${esc(gib(d.output?.free))} free)</span>`}`;
+  box.classList.toggle("warn",probs.length>0);
+  const to=probs.length?$("#healthTop"):$("#healthBottom");if(box.parentNode!==to)to.appendChild(box);
+  box.open=healthOpen}
 async function refresh(){
-  const s=await poll();const st=s.status||{};
-  $("#state").textContent=s.engine_running?(s.stop_requested?"Stopping after current":"Running")+` · load ${s.load[0].toFixed(1)}/${s.cpus}`:s.scan.running?"Scanning…":"Idle"+(s.schedule?.enabled?` · next ${s.schedule.times.join(", ")}`:"");
-  if(s.clock)$("#state").textContent+=` · server time ${s.clock.time} ${s.clock.tz}`;
+  const s=await poll();
+  $("#state").textContent=headerText(s);
   busy=s.engine_running||s.scan.running;syncRun();failBox(s);
   if(s.failures_rev!==lastFailRev){lastFailRev=s.failures_rev;loadFailures()}
   const fin=[s.scan.finished,s.run?.finished].join("|");if(fin!==lastFin){const first=lastFin===undefined;lastFin=fin;if(!first)loadSetup()}   // a scan changes what the biggest game is
   $("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
-  const d=s.disks;renderFolders(s);
-  $("#kpis").innerHTML=[["To build",s.plan_counts.build],...(s.plan_counts.copy?[["PS4 to copy",s.plan_counts.copy]]:[]),["Built",s.plan_counts.done],["Work drive free",gib(d.temp?.free)],["Output free",gib(d.output?.free)]].map(([k,v])=>`<div class="kpi"><b>${esc(v??"—")}</b><span>${esc(k)}</span></div>`).join("")+`<div class="kpi"><b>${esc(s.plan_time?ago(s.plan_time):"never")}</b><span>Last scan</span></div>`;
-  const b=s.engine_running?(st.builds||[]):[];
-  $("#builds").innerHTML=b.length?b.map(x=>`<div style="margin:8px 0"><div class="row"><b>${esc(x.name)}</b><span class="muted small">stage ${num(x.stage)}/5 ${esc(x.stage_text)} · ${esc(x.part)} ${num(x.pct)}% · ${esc(ago(x.since))}</span></div><div class="bar"><i style="width:${num((num(x.stage)-1)*20+num(x.pct)/5)}%"></i></div></div>`).join(""):"Nothing building.";
-  $("#preparing").innerHTML=(s.engine_running&&st.preparing?.length)?st.preparing.map(x=>`<div>${esc(x.name)} <span class="muted small">copying &amp; verifying · ${esc(ago(x.since))}</span></div>`).join(""):"—";
-  $("#queue").innerHTML=(s.engine_running&&st.queue?.length)?st.queue.map(x=>`<div>${esc(x.name)} <span class="muted small">${esc(gib(x.size))}</span></div>`).join(""):"—";
-  const r=st.results||[];$("#results").innerHTML=r.length?`<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${cls(x.status)}">${esc(x.status==="deferred"?"waiting for space":x.status)}</span></td><td class="small muted" title="${esc(x.why_host||x.why||"")}">${esc(x.summary||x.why_host||x.why||x.validate||"")} ${x.build_min?`· build ${esc(x.build_min)} min`:""}</td></tr>`).join("")}</table>`:"—";
+  renderRun(s);renderLive(s);renderFolders(s);renderHealth(s);
+  const c=s.plan_counts;
+  $("#kpis").innerHTML=[["To build",c.build],...(c.copy?[["PS4 to copy",c.copy]]:[]),["Built",c.done],["Failed",c.failed,c.failed>0],["Last scan",s.plan_time?ago(s.plan_time):"never"]].map(([k,v,bad])=>`<div class="kpi${bad?" bad":""}"><b>${esc(v??"—")}</b><span>${esc(k)}</span></div>`).join("");
 }
 // under the patch folder input: where that folder is on the NAS, or where to put the files
 function patchHint(o,tid,cfgHost){

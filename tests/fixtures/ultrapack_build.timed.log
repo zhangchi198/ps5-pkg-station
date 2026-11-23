@@ -1,0 +1,235 @@
+# One UltraPack build: <seconds since the build started><TAB><line>. Synthetic (UltraPack's line formats,
+# one install's pace); the replay test in tests/test_progress.py runs on every *.timed.log in this folder.
+0.0	[INFO] Building fPKG from /work/PPSA01234/src/app
+4.0	[####################] 100% source scan
+4.0	planning nwonly inner image: 5,350 files, 150,000,000,000 uncompressed bytes
+24.0	[inner] preparing inner tree
+54.0	prepared inner tree
+54.0	[####################] 100% inner files prepared
+58.0	writing afid-ordered inner data
+58.0	[stage 1/5] Building and compressing the inner pfs_image.dat (Kraken level 4)...
+73.7	processing large file: /data/pack001.bin (3,750,000,000 bytes)
+75.7	kraken level 4: 1% of /data/pack001.bin
+76.7	[--------------------] 1% inner image (Kraken) @ 80.3 MB/s ETA 1848s
+93.9	[--------------------] 2% inner image (Kraken) @ 83.6 MB/s ETA 1757s
+115.3	[--------------------] 3% inner image (Kraken) @ 78.5 MB/s ETA 1854s
+131.9	[--------------------] 4% inner image (Kraken) @ 81.2 MB/s ETA 1772s
+151.9	data 5% (267/5,350): /data/file0005.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+152.4	[#-------------------] 5% inner image (Kraken) @ 79.5 MB/s ETA 1792s
+171.4	[#-------------------] 6% inner image (Kraken) @ 79.4 MB/s ETA 1776s
+187.8	[#-------------------] 7% inner image (Kraken) @ 80.9 MB/s ETA 1724s
+205.0	processing large file: /data/pack008.bin (3,750,000,000 bytes)
+207.0	kraken level 4: 8% of /data/pack008.bin
+208.0	[#-------------------] 8% inner image (Kraken) @ 80.0 MB/s ETA 1725s
+224.3	[#-------------------] 9% inner image (Kraken) @ 81.2 MB/s ETA 1681s
+246.9	data 10% (535/5,350): /data/file0010.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+247.4	[##------------------] 10% inner image (Kraken) @ 79.2 MB/s ETA 1705s
+267.5	[##------------------] 11% inner image (Kraken) @ 78.8 MB/s ETA 1695s
+287.8	[##------------------] 12% inner image (Kraken) @ 78.3 MB/s ETA 1684s
+310.9	[##------------------] 13% inner image (Kraken) @ 77.1 MB/s ETA 1692s
+337.4	[##------------------] 14% inner image (Kraken) @ 75.2 MB/s ETA 1716s
+354.9	processing large file: /data/pack015.bin (3,750,000,000 bytes)
+356.9	kraken level 4: 15% of /data/pack015.bin
+357.4	data 15% (802/5,350): /data/file0015.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+357.9	[###-----------------] 15% inner image (Kraken) @ 75.0 MB/s ETA 1699s
+379.3	[###-----------------] 16% inner image (Kraken) @ 74.7 MB/s ETA 1686s
+404.1	[###-----------------] 17% inner image (Kraken) @ 73.7 MB/s ETA 1689s
+431.7	[###-----------------] 18% inner image (Kraken) @ 72.2 MB/s ETA 1702s
+456.1	[###-----------------] 19% inner image (Kraken) @ 71.6 MB/s ETA 1697s
+478.5	data 20% (1,070/5,350): /data/file0020.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+479.0	[####----------------] 20% inner image (Kraken) @ 71.3 MB/s ETA 1683s
+506.8	[####----------------] 21% inner image (Kraken) @ 70.2 MB/s ETA 1688s
+523.7	processing large file: /data/pack022.bin (3,750,000,000 bytes)
+525.7	kraken level 4: 22% of /data/pack022.bin
+526.7	[####----------------] 22% inner image (Kraken) @ 70.4 MB/s ETA 1661s
+553.5	[####----------------] 23% inner image (Kraken) @ 69.6 MB/s ETA 1658s
+575.4	[####----------------] 24% inner image (Kraken) @ 69.6 MB/s ETA 1638s
+595.6	data 25% (1,337/5,350): /data/file0025.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+596.1	[#####---------------] 25% inner image (Kraken) @ 69.7 MB/s ETA 1614s
+616.6	[#####---------------] 26% inner image (Kraken) @ 69.8 MB/s ETA 1589s
+638.7	[#####---------------] 27% inner image (Kraken) @ 69.7 MB/s ETA 1570s
+665.1	[#####---------------] 28% inner image (Kraken) @ 69.2 MB/s ETA 1561s
+683.1	processing large file: /data/pack029.bin (3,750,000,000 bytes)
+685.1	kraken level 4: 29% of /data/pack029.bin
+686.1	[#####---------------] 29% inner image (Kraken) @ 69.3 MB/s ETA 1537s
+710.1	data 30% (1,605/5,350): /data/file0030.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+710.6	[######--------------] 30% inner image (Kraken) @ 69.0 MB/s ETA 1522s
+735.5	[######--------------] 31% inner image (Kraken) @ 68.6 MB/s ETA 1508s
+758.2	[######--------------] 32% inner image (Kraken) @ 68.6 MB/s ETA 1487s
+782.3	[######--------------] 33% inner image (Kraken) @ 68.3 MB/s ETA 1470s
+802.3	[######--------------] 34% inner image (Kraken) @ 68.5 MB/s ETA 1444s
+821.8	data 35% (1,872/5,350): /data/file0035.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+822.3	[#######-------------] 35% inner image (Kraken) @ 68.7 MB/s ETA 1419s
+840.5	processing large file: /data/pack036.bin (3,750,000,000 bytes)
+842.5	kraken level 4: 36% of /data/pack036.bin
+843.5	[#######-------------] 36% inner image (Kraken) @ 68.7 MB/s ETA 1396s
+868.8	[#######-------------] 37% inner image (Kraken) @ 68.4 MB/s ETA 1380s
+891.9	[#######-------------] 38% inner image (Kraken) @ 68.3 MB/s ETA 1360s
+914.1	[#######-------------] 39% inner image (Kraken) @ 68.3 MB/s ETA 1339s
+938.1	data 40% (2,140/5,350): /data/file0040.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+938.6	[########------------] 40% inner image (Kraken) @ 68.1 MB/s ETA 1320s
+961.9	[########------------] 41% inner image (Kraken) @ 68.0 MB/s ETA 1300s
+984.0	[########------------] 42% inner image (Kraken) @ 68.0 MB/s ETA 1278s
+1007.2	processing large file: /data/pack043.bin (3,750,000,000 bytes)
+1009.2	kraken level 4: 43% of /data/pack043.bin
+1010.2	[########------------] 43% inner image (Kraken) @ 67.7 MB/s ETA 1262s
+1035.7	[########------------] 44% inner image (Kraken) @ 67.5 MB/s ETA 1244s
+1056.7	data 45% (2,407/5,350): /data/file0045.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+1057.2	[#########-----------] 45% inner image (Kraken) @ 67.6 MB/s ETA 1221s
+1081.6	[#########-----------] 46% inner image (Kraken) @ 67.4 MB/s ETA 1201s
+1105.6	[#########-----------] 47% inner image (Kraken) @ 67.3 MB/s ETA 1181s
+1132.5	[#########-----------] 48% inner image (Kraken) @ 67.0 MB/s ETA 1164s
+1158.2	[#########-----------] 49% inner image (Kraken) @ 66.8 MB/s ETA 1145s
+1177.1	processing large file: /data/pack050.bin (3,750,000,000 bytes)
+1179.1	kraken level 4: 50% of /data/pack050.bin
+1179.6	data 50% (2,675/5,350): /data/file0050.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+1180.1	[##########----------] 50% inner image (Kraken) @ 66.8 MB/s ETA 1122s
+1208.0	[##########----------] 51% inner image (Kraken) @ 66.5 MB/s ETA 1104s
+1228.5	[##########----------] 52% inner image (Kraken) @ 66.6 MB/s ETA 1080s
+1251.5	[##########----------] 53% inner image (Kraken) @ 66.6 MB/s ETA 1058s
+1277.4	[##########----------] 54% inner image (Kraken) @ 66.4 MB/s ETA 1038s
+1297.7	data 55% (2,942/5,350): /data/file0055.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+1298.2	[###########---------] 55% inner image (Kraken) @ 66.5 MB/s ETA 1014s
+1321.9	[###########---------] 56% inner image (Kraken) @ 66.5 MB/s ETA 993s
+1338.7	processing large file: /data/pack057.bin (3,750,000,000 bytes)
+1340.7	kraken level 4: 57% of /data/pack057.bin
+1341.7	[###########---------] 57% inner image (Kraken) @ 66.6 MB/s ETA 968s
+1366.9	[###########---------] 58% inner image (Kraken) @ 66.5 MB/s ETA 947s
+1392.9	[###########---------] 59% inner image (Kraken) @ 66.3 MB/s ETA 927s
+1416.7	data 60% (3,210/5,350): /data/file0060.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+1417.2	[############--------] 60% inner image (Kraken) @ 66.2 MB/s ETA 906s
+1444.2	[############--------] 61% inner image (Kraken) @ 66.0 MB/s ETA 886s
+1466.3	[############--------] 62% inner image (Kraken) @ 66.0 MB/s ETA 863s
+1491.7	[############--------] 63% inner image (Kraken) @ 65.9 MB/s ETA 842s
+1513.3	processing large file: /data/pack064.bin (3,750,000,000 bytes)
+1515.3	kraken level 4: 64% of /data/pack064.bin
+1516.3	[############--------] 64% inner image (Kraken) @ 65.8 MB/s ETA 820s
+1540.2	data 65% (3,477/5,350): /data/file0065.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+1540.7	[#############-------] 65% inner image (Kraken) @ 65.8 MB/s ETA 798s
+1564.1	[#############-------] 66% inner image (Kraken) @ 65.7 MB/s ETA 775s
+1590.7	[#############-------] 67% inner image (Kraken) @ 65.6 MB/s ETA 754s
+1618.3	[#############-------] 68% inner image (Kraken) @ 65.4 MB/s ETA 734s
+1641.8	[#############-------] 69% inner image (Kraken) @ 65.3 MB/s ETA 711s
+1666.5	data 70% (3,745/5,350): /data/file0070.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+1667.0	[##############------] 70% inner image (Kraken) @ 65.3 MB/s ETA 689s
+1683.9	processing large file: /data/pack071.bin (3,750,000,000 bytes)
+1685.9	kraken level 4: 71% of /data/pack071.bin
+1686.9	[##############------] 71% inner image (Kraken) @ 65.4 MB/s ETA 665s
+1712.4	[##############------] 72% inner image (Kraken) @ 65.3 MB/s ETA 643s
+1737.4	[##############------] 73% inner image (Kraken) @ 65.2 MB/s ETA 621s
+1765.4	[##############------] 74% inner image (Kraken) @ 65.0 MB/s ETA 599s
+1791.4	data 75% (4,012/5,350): /data/file0075.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+1791.9	[###############-----] 75% inner image (Kraken) @ 64.9 MB/s ETA 577s
+1813.8	[###############-----] 76% inner image (Kraken) @ 64.9 MB/s ETA 554s
+1836.5	[###############-----] 77% inner image (Kraken) @ 64.9 MB/s ETA 531s
+1858.7	processing large file: /data/pack078.bin (3,750,000,000 bytes)
+1860.7	kraken level 4: 78% of /data/pack078.bin
+1861.7	[###############-----] 78% inner image (Kraken) @ 64.9 MB/s ETA 508s
+1881.4	[###############-----] 79% inner image (Kraken) @ 65.0 MB/s ETA 484s
+1904.3	data 80% (4,280/5,350): /data/file0080.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+1904.8	[################----] 80% inner image (Kraken) @ 65.0 MB/s ETA 461s
+1925.7	[################----] 81% inner image (Kraken) @ 65.1 MB/s ETA 438s
+1946.2	[################----] 82% inner image (Kraken) @ 65.1 MB/s ETA 414s
+1966.1	[################----] 83% inner image (Kraken) @ 65.2 MB/s ETA 390s
+1992.2	[################----] 84% inner image (Kraken) @ 65.1 MB/s ETA 368s
+2009.8	processing large file: /data/pack085.bin (3,750,000,000 bytes)
+2011.8	kraken level 4: 85% of /data/pack085.bin
+2012.3	data 85% (4,547/5,350): /data/file0085.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+2012.8	[#################---] 85% inner image (Kraken) @ 65.2 MB/s ETA 344s
+2034.3	[#################---] 86% inner image (Kraken) @ 65.3 MB/s ETA 321s
+2057.2	[#################---] 87% inner image (Kraken) @ 65.3 MB/s ETA 298s
+2084.1	[#################---] 88% inner image (Kraken) @ 65.2 MB/s ETA 276s
+2104.2	[#################---] 89% inner image (Kraken) @ 65.2 MB/s ETA 252s
+2127.0	data 90% (4,815/5,350): /data/file0090.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+2127.5	[##################--] 90% inner image (Kraken) @ 65.2 MB/s ETA 229s
+2160.0	[##################--] 91% inner image (Kraken) @ 64.9 MB/s ETA 207s
+2192.3	processing large file: /data/pack092.bin (3,750,000,000 bytes)
+2194.3	kraken level 4: 92% of /data/pack092.bin
+2195.3	[##################--] 92% inner image (Kraken) @ 64.6 MB/s ETA 185s
+2230.1	[##################--] 93% inner image (Kraken) @ 64.2 MB/s ETA 163s
+2265.3	[##################--] 94% inner image (Kraken) @ 63.9 MB/s ETA 140s
+2295.0	data 95% (5,082/5,350): /data/file0095.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+2295.5	[###################-] 95% inner image (Kraken) @ 63.7 MB/s ETA 117s
+2326.8	[###################-] 96% inner image (Kraken) @ 63.5 MB/s ETA 94s
+2357.6	[###################-] 97% inner image (Kraken) @ 63.3 MB/s ETA 71s
+2393.0	[###################-] 98% inner image (Kraken) @ 63.0 MB/s ETA 47s
+2425.9	processing large file: /data/pack099.bin (3,750,000,000 bytes)
+2427.9	kraken level 4: 99% of /data/pack099.bin
+2428.9	[###################-] 99% inner image (Kraken) @ 62.6 MB/s ETA 23s
+2457.5	data 100% (5,350/5,350): /data/file0100.dat -> 1,234,567 bytes (kraken level 4, ratio 61.3 %)
+2458.0	[####################] 100% inner image (Kraken) @ 62.5 MB/s ETA 0s
+2459.0	[stage 1/5] Inner image complete (86,123,456,789 bytes)
+2460.0	[stage 2/5] Building the NAPS tables
+2515.0	[stage 2/5] NAPS tables complete
+2515.0	[####################] 100% NAPS tables
+2516.0	[stage 3/5] Preparing the fPKG identity (1/2)
+2526.0	[stage 3/5] Writing the outer PFS
+2538.2	[stage 3/5] outer PFS 5% (4.0 GiB / 80.2 GiB; 288.8 MiB/s)
+2538.2	[#-------------------] 5% outer PFS @ 302.8 MB/s ETA 270s
+2550.6	[stage 3/5] outer PFS 10% (8.0 GiB / 80.2 GiB; 304.3 MiB/s)
+2550.6	[##------------------] 10% outer PFS @ 319.0 MB/s ETA 242s
+2564.5	[stage 3/5] outer PFS 15% (12.0 GiB / 80.2 GiB; 290.7 MiB/s)
+2564.5	[###-----------------] 15% outer PFS @ 304.8 MB/s ETA 240s
+2576.0	[stage 3/5] outer PFS 20% (16.0 GiB / 80.2 GiB; 300.2 MiB/s)
+2576.0	[####----------------] 20% outer PFS @ 314.8 MB/s ETA 218s
+2588.9	[stage 3/5] outer PFS 25% (20.1 GiB / 80.2 GiB; 309.2 MiB/s)
+2588.9	[#####---------------] 25% outer PFS @ 324.2 MB/s ETA 199s
+2604.3	[stage 3/5] outer PFS 30% (24.1 GiB / 80.2 GiB; 316.8 MiB/s)
+2604.3	[######--------------] 30% outer PFS @ 332.2 MB/s ETA 181s
+2617.8	[stage 3/5] outer PFS 35% (28.1 GiB / 80.2 GiB; 312.4 MiB/s)
+2617.8	[#######-------------] 35% outer PFS @ 327.5 MB/s ETA 170s
+2632.0	[stage 3/5] outer PFS 40% (32.1 GiB / 80.2 GiB; 278.0 MiB/s)
+2632.0	[########------------] 40% outer PFS @ 291.5 MB/s ETA 177s
+2647.2	[stage 3/5] outer PFS 45% (36.1 GiB / 80.2 GiB; 322.3 MiB/s)
+2647.2	[#########-----------] 45% outer PFS @ 337.9 MB/s ETA 140s
+2662.2	[stage 3/5] outer PFS 50% (40.1 GiB / 80.2 GiB; 323.4 MiB/s)
+2662.2	[##########----------] 50% outer PFS @ 339.1 MB/s ETA 127s
+2675.2	[stage 3/5] outer PFS 55% (44.1 GiB / 80.2 GiB; 299.0 MiB/s)
+2675.2	[###########---------] 55% outer PFS @ 313.5 MB/s ETA 123s
+2687.1	[stage 3/5] outer PFS 60% (48.1 GiB / 80.2 GiB; 313.4 MiB/s)
+2687.1	[############--------] 60% outer PFS @ 328.6 MB/s ETA 104s
+2698.9	[stage 3/5] outer PFS 65% (52.1 GiB / 80.2 GiB; 278.8 MiB/s)
+2698.9	[#############-------] 65% outer PFS @ 292.3 MB/s ETA 103s
+2711.2	[stage 3/5] outer PFS 70% (56.1 GiB / 80.2 GiB; 284.6 MiB/s)
+2711.2	[##############------] 70% outer PFS @ 298.4 MB/s ETA 86s
+2724.0	[stage 3/5] outer PFS 75% (60.2 GiB / 80.2 GiB; 277.9 MiB/s)
+2724.0	[###############-----] 75% outer PFS @ 291.4 MB/s ETA 73s
+2735.5	[stage 3/5] outer PFS 80% (64.2 GiB / 80.2 GiB; 283.9 MiB/s)
+2735.5	[################----] 80% outer PFS @ 297.7 MB/s ETA 57s
+2747.4	[stage 3/5] outer PFS 85% (68.2 GiB / 80.2 GiB; 296.9 MiB/s)
+2747.4	[#################---] 85% outer PFS @ 311.3 MB/s ETA 41s
+2759.0	[stage 3/5] outer PFS 90% (72.2 GiB / 80.2 GiB; 328.0 MiB/s)
+2759.0	[##################--] 90% outer PFS @ 344.0 MB/s ETA 25s
+2772.9	[stage 3/5] outer PFS 95% (76.2 GiB / 80.2 GiB; 283.7 MiB/s)
+2772.9	[###################-] 95% outer PFS @ 297.5 MB/s ETA 14s
+2785.4	[stage 3/5] outer PFS 100% (80.2 GiB / 80.2 GiB; 295.9 MiB/s)
+2785.4	[####################] 100% outer PFS @ 310.2 MB/s ETA 0s
+2786.4	[stage 3/5] outer PFS complete
+2787.4	[stage 4/5] Building the CNT image
+2837.4	[stage 4/5] CNT image complete
+2837.4	[########------------] 40% CNT image
+2838.4	[stage 5/5] Finalizing the package
+2838.4	[##########----------] 50% finalize (FIH digests)
+2852.6	[finalize] FIH digests: 10% (42,100 / 421,000 blocks)
+2852.6	[###########---------] 55% finalize (FIH digests)
+2865.4	[finalize] FIH digests: 20% (84,200 / 421,000 blocks)
+2865.4	[############--------] 60% finalize (FIH digests)
+2882.5	[finalize] FIH digests: 30% (126,300 / 421,000 blocks)
+2882.5	[#############-------] 65% finalize (FIH digests)
+2900.4	[finalize] FIH digests: 40% (168,400 / 421,000 blocks)
+2900.4	[##############------] 70% finalize (FIH digests)
+2915.2	[finalize] FIH digests: 50% (210,500 / 421,000 blocks)
+2915.2	[###############-----] 75% finalize (FIH digests)
+2930.1	[finalize] FIH digests: 60% (252,600 / 421,000 blocks)
+2930.1	[################----] 80% finalize (FIH digests)
+2942.6	[finalize] FIH digests: 70% (294,700 / 421,000 blocks)
+2942.6	[#################---] 85% finalize (FIH digests)
+2955.2	[finalize] FIH digests: 80% (336,800 / 421,000 blocks)
+2955.2	[##################--] 90% finalize (FIH digests)
+2969.3	[finalize] FIH digests: 90% (378,900 / 421,000 blocks)
+2969.3	[###################-] 95% finalize (FIH digests)
+2982.9	[finalize] FIH digests: 100% (421,000 / 421,000 blocks)
+2982.9	[####################] 100% finalize (FIH digests)
+2984.9	build finished
+2984.9	[####################] 100% finalized .pkg written
+2984.9	[SUCCESS] fPKG built.

@@ -35,6 +35,7 @@ import threading
 import unicodedata
 import time
 import zlib
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import NamedTuple
@@ -48,6 +49,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import ps5_ampr_audit as A  # noqa: E402  (read-only exFAT/PFS/PFSC/UFS2 readers)
 import ps5_failures  # noqa: E402  (what failed, in words, and whether another try can help)
+import ps5_progress as PG  # noqa: E402  (what UltraPack's log says, how far a build is, how long it will take)
 import ps5_ps4pkg  # noqa: E402  (PS4 package headers: name and classify packages by what they say)
 import ps5_hostpaths  # noqa: E402  (where the container's folders are on the host: validated here, shown by the server)
 import ps5_setup  # noqa: E402  (first-run setup checks, shared with the web server)
@@ -1334,23 +1336,15 @@ def notify(cfg, title, msg):
         pass
 
 
-RESULT_KEYS = ("title_id", "name", "title", "status", "why", "validate", "prep_min", "build_min", "gib", "code", "phase", "data")
-PROGRESS_RE = re.compile(rb"(\d+)% (inner image|outer PFS|finalize)[^\n\r]*")
-STAGE_RE = re.compile(rb"\[stage (\d)/5\] ([^\n\r(:]+)")
+RESULT_KEYS = ("title_id", "name", "title", "status", "why", "validate", "prep_min", "build_min", "gib", "code", "phase", "data", "size", "at")
 
 
 def build_progress(logf):
     """Stage and percentage of a running UltraPack build, from the tail of its log."""
-    try:
-        with open(logf, "rb") as fh:
-            fh.seek(max(0, os.path.getsize(logf) - (256 << 10)))
-            tail = fh.read()
-    except OSError:
+    tr = PG.LogTracker(time.time(), exact=False)
+    if not tr.read(logf, time.time()):
         return {}
-    st = STAGE_RE.findall(tail)
-    pr = PROGRESS_RE.findall(tail)
-    return dict(stage=int(st[-1][0]) if st else 1, stage_text=st[-1][1].decode(errors="replace").strip() if st else "",
-                pct=int(pr[-1][0]) if pr else 0, part=pr[-1][1].decode() if pr else "")
+    return dict(stage=tr.stage, stage_text=tr.stage_text, pct=tr.pct, part=tr.part)
 
 
 def stop_requested():
@@ -1433,7 +1427,7 @@ def start_build(cfg, job, prep, log):
                                                   prep=dict(prep, app=str(prep["app"])), job=job),
                                              ensure_ascii=False, default=str))   # a started build consumes its source
     (jd / ".prepared.json").unlink(missing_ok=True)
-    return dict(job=job, prep=prep, proc=proc, logf=logf, stage=stage, t0=t0)
+    return dict(job=job, prep=prep, proc=proc, logf=logf, stage=stage, t0=t0, tracker=PG.LogTracker(t0))
 
 
 class PidProc:
@@ -1482,9 +1476,10 @@ def adopt_build(cfg, job, log):
         prep["app"] = Path(prep["app"])
     job.update({k: v for k, v in (info.get("job") or {}).items() if k in ("version", "fw", "title", "name", "source")})
     log(f"ADOPT running build of {job['name']} (pid {pid}); log {logf.name}")
+    t0 = float(info.get("t0") or bf.stat().st_mtime)
     return dict(job=job, prep=prep, proc=PidProc(pid, logf), logf=logf,
                 stage=Path(info.get("stage") or Path(cfg["output"]) / ".staging" / job["title_id"]),
-                t0=float(info.get("t0") or bf.stat().st_mtime))
+                t0=t0, tracker=PG.LogTracker(t0, exact=False))
 
 
 def past_compression(b) -> bool:
@@ -1515,13 +1510,15 @@ def _drop_cache(fd):
         os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
 
 
-def copy_verified(src: Path, dst: Path, log):
+def copy_verified(src: Path, dst: Path, log, progress=None):
     """Copy src -> dst (dst + '.partial' first) in 64 MiB writes; SHA-256 of the source while writing, then a
-    cache-bypassing read-back of the NAS copy must match before the rename."""
+    cache-bypassing read-back of the NAS copy must match before the rename. `progress("copying" | "verifying",
+    bytes done, total)` is told after every chunk."""
     part = dst.parent / ".staging" / (dst.name + ".partial")
     part.parent.mkdir(exist_ok=True)
     t0 = time.time()
     h = hashlib.sha256()
+    total, wrote = src.stat().st_size, 0
     with open(src, "rb") as fi, open(part, "wb") as fo:
         _nocache(fi.fileno())
         _nocache(fo.fileno())
@@ -1531,6 +1528,9 @@ def copy_verified(src: Path, dst: Path, log):
                 break
             fo.write(chunk)
             h.update(chunk)
+            wrote += len(chunk)
+            if progress:
+                progress("copying", wrote, total)
         fo.flush()
         os.fsync(fo.fileno())
         _drop_cache(fo.fileno())
@@ -1539,11 +1539,15 @@ def copy_verified(src: Path, dst: Path, log):
     with open(part, "rb") as fr:
         _nocache(fr.fileno())
         _drop_cache(fr.fileno())
+        read = 0
         while True:
             chunk = fr.read(64 << 20)
             if not chunk:
                 break
             h2.update(chunk)
+            read += len(chunk)
+            if progress:
+                progress("verifying", read, total)
     size = src.stat().st_size
     if h.digest() != h2.digest() or part.stat().st_size != size:
         part.unlink(missing_ok=True)
@@ -1582,18 +1586,24 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
     out = Path(cfg["output"])
     temp_root = Path(cfg["temp"])
     jd = jobdir_of(cfg, job)
-    res = dict(title=job["title"], title_id=job["title_id"], name=job["name"], source=job["source"],
+    res = dict(title=job["title"], title_id=job["title_id"], name=job["name"], source=job["source"], size=job.get("size"),
                status="failed", clean=prep.get("clean"), prep_min=prep.get("prep_min"), log=str(logf))
+    tid, tr, validate_secs, copy_secs = job["title_id"], b.get("tracker"), 0.0, 0.0
     try:
         rc = b["proc"].wait()
         res.update(rc=rc, build_min=round((time.time() - b["t0"]) / 60, 1))
+        if tr is not None:
+            tr.read(logf, time.time())                      # the last lines: the stages that ended just now
         pkgs = sorted(stage.glob("*.pkg"), key=lambda p: -p.stat().st_size)
         if rc != 0 or not pkgs:
             res["why"] = f"UltraPack exit {rc}, {len(pkgs)} package(s)"
             res.update(phase="build", code="ultrapack_failed", data=ultrapack_failure_data(logf, rc, len(pkgs)))
             return res
+        FINISH[tid] = dict(phase="validating", frac=0.0)
+        t_val = time.time()
         v = subprocess.run([cfg["python"], "-B", "backend/cli.py", "--fpkg-validate", str(pkgs[0])],
                            cwd=cfg["ultrapack_src"], capture_output=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
+        validate_secs = time.time() - t_val
         vtxt = (v.stdout + v.stderr).decode("utf-8", "replace")
         with open(logf, "a") as fh:
             fh.write("\n==== --fpkg-validate ====\n" + vtxt)
@@ -1609,16 +1619,30 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
         if final.exists():
             final.rename(final.with_name(final.stem + f" (replaced {time.strftime('%Y%m%d%H%M')}).pkg"))
         if Path(cfg["temp"]).resolve() in pkgs[0].resolve().parents:
-            res["sha256"] = copy_verified(pkgs[0], final, log)
+            marks = {}
+
+            def copy_progress(phase, done, total):
+                now_ = time.time()
+                t0_ = marks.setdefault(phase, now_)
+                FINISH[tid] = dict(phase=phase, done=done, total=total, rate=(done / (now_ - t0_)) if now_ - t0_ > 2 else None,
+                                   frac=(0.5 if phase == "verifying" else 0.0) + 0.5 * (done / total if total else 1.0))
+            t_cp = time.time()
+            res["sha256"] = copy_verified(pkgs[0], final, log, progress=copy_progress)
+            copy_secs = time.time() - t_cp
         else:
             pkgs[0].rename(final)
-        res.update(status="built", output=str(final), gib=round(final.stat().st_size / 2**30, 2))
+        res.update(status="built", output=str(final), gib=round(final.stat().st_size / 2**30, 2), build_secs=round(time.time() - b["t0"], 1))
+        secs = tr.stage_secs() if tr is not None else {}
+        if all(str(n) in secs for n in range(1, 6)):         # a build seen from its first line: its stage times teach the next estimate
+            secs.update(validate=round(validate_secs, 1), copy=round(copy_secs, 1))
+        else:
+            secs = {}
         with ledger_lock:
             ledger[job["title_id"]] = dict(version=job["version"], output=str(final), source=job["source"],
-                                           built=time.strftime("%Y-%m-%d %H:%M"), prep_min=prep.get("prep_min"),
-                                           build_min=res["build_min"], bytes=final.stat().st_size,
+                                           built=time.strftime("%Y-%m-%d %H:%M"), built_ts=time.time(), prep_min=prep.get("prep_min"),
+                                           build_min=res["build_min"], bytes=final.stat().st_size, source_bytes=job.get("size"),
                                            level=cfg["compression_level"], validate=summ, clean=prep.get("clean"),
-                                           sha256=res.get("sha256"))
+                                           sha256=res.get("sha256"), **({"stage_secs": secs} if secs else {}))
             ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
         return res
     except Exception as ex:
@@ -1626,6 +1650,8 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
         res.update(why=f"{type(ex).__name__}: {ex}", code=code, data=data, phase="build" if code == "unknown" else phase)
         return res
     finally:
+        FINISH.pop(tid, None)
+        res["at"] = time.time()
         if jd.exists():
             guarded_rmtree(jd, temp_root)
         shutil.rmtree(stage / "_ultrapack_temp", ignore_errors=True)
@@ -1736,7 +1762,312 @@ def copy_ps4(cfg, job, log):
             pass
 
 
-def run_ps4(cfg, jobs, log, ledger_p, ledger):
+# ------------------------------------------------------------------ what the page shows of a run
+
+STATUS_INTERVAL = float(os.environ.get("PS5PKG_STATUS_INTERVAL") or 5)    # seconds between writes of status.json
+FINISH = {}          # title_id -> {phase: validating|copying|verifying, frac, done, total}: a build UltraPack is done with
+
+
+def tree_bytes(*paths):
+    """Bytes in the files under these folders (one that isn't there counts 0); never raises."""
+    total = 0
+    for p in paths:
+        for root, _dirs, files in os.walk(p):
+            for f in files:
+                try:
+                    total += os.lstat(os.path.join(root, f)).st_size
+                except OSError:
+                    pass
+    return total
+
+
+def run_counts(results):
+    return {s: sum(1 for r in results if r.get("status") == s) for s in ("built", "copied", "failed", "deferred")}
+
+
+class RunStatus:
+    """state/status.json for one run. It is written when the run starts (so the page knows at once), every
+    STATUS_INTERVAL seconds while it works, and at the end. It says when the run started and why (manual or
+    scheduled), how many games it covers and how many are done, each build with its stage, progress, timings and
+    estimate, what is being prepared (bytes, percentage, rate) or copied (PS4), what is waiting, and the results.
+    The estimates come from ps5_progress: this run's own log and pace first, earlier builds in the ledger second."""
+
+    def __init__(self, cfg, trigger="manual", ledger=None):
+        self.cfg = cfg
+        self.trigger = trigger if trigger in ("manual", "scheduled") else "manual"
+        self.started = time.time()
+        self.hist = PG.history(ledger or {}, cfg.get("compression_level"))
+        self.shares = PG.normalise(PG.shares_from(self.hist), with_copy=bool(cfg.get("build_on_ssd")))
+        self.ps4_jobs, self.ps4_results, self.ps4_current = [], [], None
+        self.jobs = []                      # the builds of this run
+        self.q = {}                         # the queue's live containers, see bind()
+        self.samples, self.scans = {}, {}    # per title: (time, bytes) of its prepare or copy; the last folder scan
+        self.smoothers, self.paced = {}, set()
+        self.pace, self.prep_pace, self.ps4_pace = [], [], []     # seconds per source GiB of what finished in this run
+        self.progress = 0.0
+        self.stop_evt, self.thread, self.finished, self.last_error = threading.Event(), None, False, None
+        self.lock = threading.Lock()
+
+    # -- what the engine tells it
+    def plan(self, todo, copies):
+        self.jobs, self.ps4_jobs = list(todo), list(copies)
+
+    def bind(self, **containers):
+        self.q = containers
+
+    def ps4_begin(self, job):
+        self.ps4_current = dict(job=job, t0=time.time())
+
+    def ps4_end(self, res):
+        self.ps4_current = None
+        self.ps4_results.append(res)
+
+    def start(self):
+        self.write()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self):
+        while not self.stop_evt.wait(STATUS_INTERVAL):
+            self.write()
+
+    # -- assembling it
+    def _scan(self, key, now, fn):
+        """A folder size, not re-measured more often than it costs: a game of 100k files is not walked every tick."""
+        last = self.scans.get(key)
+        if last and now - last["at"] < max(STATUS_INTERVAL, 4 * last["cost"]):
+            return last["value"]
+        t0 = time.time()
+        value = fn()
+        self.scans[key] = dict(at=now, value=value, cost=time.time() - t0)
+        return value
+
+    def _rate(self, tid, now, got):
+        sm = self.samples.setdefault(tid, deque(maxlen=120))
+        if not sm or sm[-1][1] != got or now - sm[-1][0] >= STATUS_INTERVAL:
+            sm.append((now, got))
+        return PG.rate_of(sm, now, window=90)
+
+    def _build_rows(self, now):
+        rows, kept = [], set()
+        pairs = list(zip(list(self.q.get("all_builds", [])), list(self.q.get("finishing", []))))
+        for b, fut in pairs:
+            if fut.done():
+                continue
+            job, tid, tr = b["job"], b["job"]["title_id"], b.get("tracker")
+            running = b["proc"].poll() is None
+            row = dict(title_id=tid, name=job["name"], since=b["t0"], log=Path(b["logf"]).name, size=job.get("size"), elapsed=now - b["t0"])
+            raw, kraken_left = None, 0.0
+            if tr is not None and running:
+                tr.read(b["logf"], now)
+                est = PG.estimate_build(tr, self.shares, now)
+                raw = est["remaining"]
+                kraken_left = (tr.local_remaining(now) or 0.0) if tr.stage == 1 and raw is not None else 0.0
+                row.update(stage=tr.stage, stage_text=tr.stage_text, stage_name=est["stage_name"], part=tr.part, pct=tr.pct,
+                           stage_pct=est["stage_pct"], progress=round(est["progress"], 4), rate=est["rate"], phase="building",
+                           stages=tr.timings())
+            elif running:                                        # a build without a tracker: only the tail of its log
+                row.update(build_progress(b["logf"]), phase="building", progress=None, stage_name="")
+            else:
+                fin = FINISH.get(tid) or {}
+                phase = fin.get("phase") or "validating"
+                frac = float(fin.get("frac") or 0.0)
+                scale = None
+                if tr is not None and tr.exact and tr.stage_secs():
+                    scale = sum(tr.stage_secs().values()) / max(1e-9, sum(self.shares[k] for k in PG.STAGE_KEYS[:5]))
+                elif self.hist.get("build_per_gib") and job.get("size"):
+                    scale = self.hist["build_per_gib"] * job["size"] / PG.GIB
+                if scale is not None:
+                    raw = scale * (self.shares["validate"] * 0.5 + self.shares["copy"]) if phase == "validating" else scale * self.shares["copy"] * (1.0 - frac)
+                row.update(stage=5, stage_text="", stage_name=PG.STAGE_NAMES["validate" if phase == "validating" else "copy"], part="", pct=0,
+                           stage_pct=round(frac * 100), phase=phase, rate=fin.get("rate"),
+                           progress=round(PG.finishing_progress(self.shares, "validating" if phase == "validating" else "copying", frac), 4),
+                           stages=tr.timings() if tr is not None else [])
+                if fin.get("total"):
+                    row.update(bytes=fin.get("done"), total_bytes=fin.get("total"))
+            sm = self.smoothers.setdefault(tid, PG.Smoother(tick=STATUS_INTERVAL))
+            row["remaining"] = sm.update(raw, now)
+            row["kraken_remaining"] = kraken_left
+            kept.add(tid)
+            rows.append(row)
+        for tid in [t for t in self.smoothers if t not in kept and t != "run"]:
+            self.smoothers.pop(tid, None)
+        return rows
+
+    @staticmethod
+    def _prep_row(job, since, got, size, rate, ps4=False):
+        return dict(title_id=job["title_id"], name=job["name"], since=since, bytes=got, size=size, ps4=ps4,
+                    pct=(min(99, int(got * 100 / size)) if size else None), rate=rate,
+                    remaining=((max(0, size - got) / rate) if rate and size else None))
+
+    def _prepare_rows(self, now):
+        cfg, rows = self.cfg, []
+        todo, preparing = self.q.get("todo", []), self.q.get("preparing", {})
+        if self.ps4_current:                                    # a PS4 title being copied (before the queue starts)
+            job = self.ps4_current["job"]
+            tid = job["title_id"]
+            stage = Path(cfg["output"]) / ".staging" / f"{tid}-ps4"
+            got = self._scan(("ps4", tid), now, lambda: tree_bytes(stage / "x", stage / "final"))
+            rows.append(self._prep_row(job, self.ps4_current["t0"], got, job.get("size") or 0, self._rate(tid, now, got), ps4=True))
+        for k, (t, f) in list(preparing.items()):
+            if f.done() or k >= len(todo):
+                continue
+            job = todo[k]
+            tid = job["title_id"]
+            jd = jobdir_of(cfg, job)
+            got = self._scan(("prep", tid), now, lambda: tree_bytes(jd / "src", jd / "pkg", Path(cfg["output"]) / ".staging" / f"{tid}-image"))
+            rows.append(self._prep_row(job, t, got, job.get("size") or 0, self._rate(tid, now, got)))
+        return rows
+
+    def _progress(self, results, builds, prep_rows):
+        """The whole run as one number: each game weighs its size; a finished one counts fully, one being built by
+        how far its build is (after its prepare), one being prepared or copied by how many bytes are in. It only grows."""
+        rho, h = 0.12, self.hist                              # rho: the part of a game's time that is its prepare
+        if h.get("prep_per_gib") and h.get("build_per_gib"):
+            rho = h["prep_per_gib"] / (h["prep_per_gib"] + h["build_per_gib"])
+        done = {r.get("title_id") for r in results}
+        building = {b["title_id"]: b for b in builds}
+        prepping = {p["title_id"]: p for p in prep_rows}
+        total = got = 0.0
+        for j in list(self.ps4_jobs) + list(self.jobs):
+            w, tid = float(j.get("size") or 1), j["title_id"]
+            total += w
+            if tid in done:
+                got += w
+            elif tid in building:
+                got += w * (rho + (1 - rho) * float(building[tid].get("progress") or 0.0))
+            elif tid in prepping:
+                p = prepping[tid]
+                frac = (p["bytes"] / p["size"]) if p.get("size") else 0.0
+                got += w * (frac if p.get("ps4") else rho * min(0.99, frac))
+        self.progress = max(self.progress, min(1.0, (got / total) if total else 0.0))
+        return self.progress
+
+    def _eta(self, now, results, builds, prep_rows):
+        """Seconds until the run is done, or None while that can't be said. In flight: each build's own estimate.
+        Waiting: the pace this run has shown (or earlier builds), sent through the same pipeline the engine runs
+        (one prepare at a time, max_compress compressions, max_builds processes)."""
+        cfg, h = self.cfg, self.hist
+        done = {r.get("title_id") for r in results}
+        building = {b["title_id"] for b in builds}
+        stopping = stop_requested()                               # what is waiting will not be started
+        ps4_left, ps4_rate = 0.0, None
+        cur = next((p for p in prep_rows if p.get("ps4")), None)
+        if cur is not None:
+            ps4_rate = cur.get("rate")
+            ps4_left += max(0, (cur.get("size") or 0) - (cur.get("bytes") or 0))
+        if not stopping:
+            ps4_left += sum(float(j.get("size") or 0) for j in self.ps4_jobs
+                            if j["title_id"] not in done and not (cur and cur["title_id"] == j["title_id"]))
+        if ps4_left > 0:
+            if not ps4_rate and self.ps4_pace:
+                ps4_rate = PG.GIB / PG.median_of(self.ps4_pace)
+            if not ps4_rate and h.get("ps4_per_gib"):
+                ps4_rate = PG.GIB / h["ps4_per_gib"]
+            if not ps4_rate:
+                return None
+        t0 = now + (ps4_left / ps4_rate if ps4_left > 0 else 0.0)
+        running = []
+        for b in builds:
+            if b.get("remaining") is None:
+                return None                                       # a build in flight with no signal yet
+            running.append(dict(end=now + b["remaining"], kraken_end=now + (b.get("kraken_remaining") or 0.0)))
+        todo, preparing = (self.q.get("todo") or self.jobs), self.q.get("preparing", {})
+        waiting = [] if stopping else [(k, j) for k, j in enumerate(todo) if j["title_id"] not in done and j["title_id"] not in building]
+        queue = []
+        if waiting:
+            obs = list(self.pace) + [(b["elapsed"] + b["remaining"]) / (b["size"] / PG.GIB) for b in builds
+                                     if b.get("size") and b["elapsed"] >= PG.MIN_SIGNAL_SECS and b["phase"] == "building"]
+            per_gib = PG.median_of(obs) if obs else h.get("build_per_gib")
+            if not per_gib:
+                return None
+            prep_obs = [PG.GIB / p["rate"] for p in prep_rows if not p.get("ps4") and p.get("rate")] + list(self.prep_pace)
+            prep_per_gib = PG.median_of(prep_obs) if prep_obs else (h.get("prep_per_gib") or 0.0)
+            by_tid = {p["title_id"]: p for p in prep_rows}
+            for k, j in waiting:
+                gib = float(j.get("size") or 0) / PG.GIB
+                total = per_gib * gib
+                p, fut = by_tid.get(j["title_id"]), (preparing.get(k) or (None, None))[1]
+                if fut is not None and fut.done():
+                    prep = 0.0                                    # prepared and waiting for a slot
+                elif p is not None and p.get("remaining") is not None:
+                    prep = p["remaining"]
+                else:
+                    prep = prep_per_gib * gib
+                queue.append(dict(prep=prep, total=total, kraken=total * self.shares["1"]))
+        end = PG.simulate(t0, running, queue, max_builds=int(cfg.get("max_builds", 3)), max_compress=int(cfg.get("max_compress", 2)))
+        return None if end is None else max(0.0, end - now)
+
+    def _paced(self, results):
+        """What the games that finished in this run say about the pace of the next ones."""
+        for r in results:
+            tid = r.get("title_id")
+            if tid in self.paced or not r.get("size"):
+                continue
+            gib = r["size"] / PG.GIB
+            if r.get("status") == "built" and r.get("build_secs"):
+                self.pace.append(r["build_secs"] / gib)
+                if r.get("prep_min"):
+                    self.prep_pace.append(r["prep_min"] * 60 / gib)
+                self.paced.add(tid)
+            elif r.get("status") == "copied" and r.get("copy_secs"):
+                self.ps4_pace.append(r["copy_secs"] / gib)
+                self.paced.add(tid)
+
+    def snapshot(self, now=None):
+        now = now or time.time()
+        q, bound = self.q, bool(self.q)
+        todo, preparing, done_idx = q.get("todo", []), q.get("preparing", {}), q.get("done_idx", set())
+        results = list(q["results"]) if bound else list(self.ps4_results)
+        results += [dict(f.result()) for f in q.get("finishing", []) if f.done()]
+        builds, prep_rows = self._build_rows(now), self._prepare_rows(now)
+        shown = {p["title_id"] for p in prep_rows}
+        finished = {r.get("title_id") for r in results}
+        waiting = [j for k, j in enumerate(todo) if k not in preparing and k not in done_idx] if bound else list(self.jobs)
+        queue = [dict(title_id=j["title_id"], name=j.get("name") or j["title_id"], size=j.get("size"), ps4=True) for j in self.ps4_jobs
+                 if j["title_id"] not in finished and j["title_id"] not in shown]
+        queue += [dict(title_id=j["title_id"], name=j["name"], size=j["size"]) for j in waiting]
+        self._paced(results)
+        progress = self._progress(results, builds, prep_rows)
+        eta = self._eta(now, results, builds, prep_rows) if (self.jobs or self.ps4_jobs) else None
+        eta = self.smoothers.setdefault("run", PG.Smoother(tick=STATUS_INTERVAL)).update(eta, now)
+        run = dict(started=self.started, trigger=self.trigger, phase="running" if (self.jobs or self.ps4_jobs or bound) else "scanning",
+                   total=len(self.jobs) + len(self.ps4_jobs), done=len(results), progress=round(progress, 4), remaining=eta,
+                   eta_at=(now + eta) if eta is not None else None, queue_bytes=sum(int(x.get("size") or 0) for x in queue), **run_counts(results))
+        return dict(updated=now, pid=os.getpid(), stopping=stop_requested(), run=run, queue=queue, preparing=prep_rows, builds=builds,
+                    results=[{k: r.get(k) for k in RESULT_KEYS} for r in results])
+
+    def write(self):
+        try:
+            with self.lock:
+                if self.finished:
+                    return
+                tmp = STATE / "status.json.part"
+                tmp.write_text(json.dumps(self.snapshot(), ensure_ascii=False, default=str))
+                tmp.replace(STATE / "status.json")
+        except Exception as ex:                                 # a run must not stop over its status; but say so, once per kind of error
+            msg = f"status.json could not be written: {type(ex).__name__}: {ex}"
+            if msg != self.last_error:
+                self.last_error = msg
+                print(msg, flush=True)
+
+    def finish(self, results, interrupted=False):
+        """The last write: the run is over."""
+        self.stop_evt.set()
+        with self.lock:
+            self.finished = True
+            now = time.time()
+            run = dict(started=self.started, finished=now, trigger=self.trigger, phase="finished",
+                       total=max(len(results), len(self.jobs) + len(self.ps4_jobs)), done=len(results), progress=1.0, **run_counts(results))
+            if interrupted:
+                run["interrupted"] = True
+            tmp = STATE / "status.json.part"
+            tmp.write_text(json.dumps(dict(updated=now, pid=None, finished=True, run=run,
+                                           results=[{k: r.get(k) for k in RESULT_KEYS} for r in results]), ensure_ascii=False, default=str))
+            tmp.replace(STATE / "status.json")
+
+
+def run_ps4(cfg, jobs, log, ledger_p, ledger, rs=None):
     """Copy the planned PS4 titles one after the other (it is only disk to disk). Returns their results."""
     results = []
     for job in jobs:
@@ -1745,14 +2076,18 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger):
             break
         tid = job["title_id"]
         log(f"PS4 copy {job['name']}  <- {job['source']}")
-        res = dict(title=job.get("title") or job["name"], title_id=tid, name=job["name"], status="failed", source=job["source"])
+        res = dict(title=job.get("title") or job["name"], title_id=tid, name=job["name"], status="failed", source=job["source"], size=job.get("size"))
+        if rs:
+            rs.ps4_begin(job)
+        t_copy = time.time()
         try:
             r = copy_ps4(cfg, job, log)
             ledger[tid] = dict(version=job["version"], output=r["output"], source=job["source"], built=time.strftime("%Y-%m-%d %H:%M"),
-                               bytes=r["bytes"], ps4=True, kind="ps4", files=r["files"], validate=r["validate"])
+                               built_ts=time.time(), bytes=r["bytes"], ps4=True, kind="ps4", files=r["files"], validate=r["validate"],
+                               source_bytes=job.get("size"), copy_secs=round(time.time() - t_copy, 1))
             ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
             res.update(status="copied", output=str(Path(r["output"]) / r["files"][0]) if r["files"] else r["output"],
-                       gib=round(r["bytes"] / 2**30, 2), validate=r["validate"])
+                       gib=round(r["bytes"] / 2**30, 2), validate=r["validate"], copy_secs=round(time.time() - t_copy, 1))
             try:
                 failure_store().clear(tid)
             except Exception:
@@ -1770,16 +2105,24 @@ def run_ps4(cfg, jobs, log, ledger_p, ledger):
                 if record_failure(cfg, job, log, phase="copy", code=code, message=f"{type(ex).__name__}: {ex}", data=data):
                     notify(cfg, "PS5 pkg: failed", notification_text(
                         cfg, job["name"], "failed", ps5_failures.short_reason(dict(code=code, data=data, message=str(ex)))))
+        res["at"] = time.time()
         results.append(res)
+        if rs:
+            rs.ps4_end(res)
     return results
 
 
-def run_queue(cfg, todo, log, ledger_p, ledger, preset=None):
+def run_queue(cfg, todo, log, ledger_p, ledger, preset=None, rs=None):
     """Three-stage pipeline:  prepare (extract+verify+clean) game N+2  |  compress game N+1  |
     hash/write/validate game N.  At most max_compress builds in the Kraken stage and max_builds UltraPack
     processes; prepares only start when the SSD can hold them on top of what is in flight."""
     import threading
     results = list(preset or [])          # what ran before the queue (PS4 copies) is part of this run's results
+    if rs is None:                        # not started by main(): this call is the whole run as far as the status goes
+        rs = RunStatus(cfg, ledger=ledger)
+        rs.plan(todo, [])
+        rs.ps4_results = list(results)
+        rs.start()
     ledger_lock = threading.Lock()
     prep_pool = ThreadPoolExecutor(max_workers=1)
     fin_pool = ThreadPoolExecutor(max_workers=cfg.get("max_builds", 3))
@@ -1806,29 +2149,10 @@ def run_queue(cfg, todo, log, ledger_p, ledger, preset=None):
                 return True
         return False
 
-    preparing = {}           # index -> start time
-
-    def status_writer(stop_evt):
-        while not stop_evt.wait(5):
-            try:
-                st = dict(updated=time.time(), pid=os.getpid(), stopping=stop_requested(),
-                          queue=[dict(title_id=j["title_id"], name=j["name"], size=j["size"])
-                                 for k, j in enumerate(todo) if k not in preparing and k not in done_idx],
-                          preparing=[dict(title_id=todo[k]["title_id"], name=todo[k]["name"], since=t)
-                                     for k, (t, f) in list(preparing.items()) if not f.done()],
-                          builds=[dict(title_id=b["job"]["title_id"], name=b["job"]["name"], since=b["t0"],
-                                       log=Path(b["logf"]).name, **build_progress(b["logf"]))
-                                  for b in list(all_builds) if b["proc"].poll() is None],
-                          results=[{k: r.get(k) for k in RESULT_KEYS} for r in results]
-                                  + [{k: f.result().get(k) for k in RESULT_KEYS} for f in finishing if f.done()])
-                tmp = STATE / "status.json.part"
-                tmp.write_text(json.dumps(st, ensure_ascii=False, default=str))
-                tmp.replace(STATE / "status.json")
-            except Exception:
-                pass
-
+    preparing = {}           # index -> (start time, Future(prepare))
     all_builds = list(active)
     done_idx = set()
+    rs.bind(todo=todo, preparing=preparing, done_idx=done_idx, all_builds=all_builds, finishing=finishing, results=results)
     _orig_submit = prep_pool.submit
 
     def _submit(fn, *a, **kw):
@@ -1838,8 +2162,6 @@ def run_queue(cfg, todo, log, ledger_p, ledger, preset=None):
             preparing[k] = (time.time(), fut)
         return fut
     prep_pool.submit = _submit
-    stop_evt = threading.Event()
-    threading.Thread(target=status_writer, args=(stop_evt,), daemon=True).start()
 
     try_prefetch(0)
     for i, job in enumerate(todo):
@@ -1861,7 +2183,7 @@ def run_queue(cfg, todo, log, ledger_p, ledger, preset=None):
             jlog = job_log(log, job["title_id"])
             code, phase, data = ps5_failures.classify(ex)
             if code == "no_space":            # not a failure: it will be tried again when there is room
-                results.append(dict(job, status="deferred", why=str(ex), code=code, phase="prepare", data=data))
+                results.append(dict(job, status="deferred", why=str(ex), code=code, phase="prepare", data=data, at=time.time()))
                 jlog(f"  -> deferred: {ex}")
                 record_failure(cfg, job, log, phase="prepare", code=code, message=str(ex), data=data,
                                state=ps5_failures.WAITING)
@@ -1869,7 +2191,7 @@ def run_queue(cfg, todo, log, ledger_p, ledger, preset=None):
             jd = jobdir_of(cfg, job)
             if jd.exists():
                 guarded_rmtree(jd, Path(cfg["temp"]))
-            results.append(dict(job, status="failed", why=f"prepare: {type(ex).__name__}: {ex}", code=code, phase="prepare", data=data))
+            results.append(dict(job, status="failed", why=f"prepare: {type(ex).__name__}: {ex}", code=code, phase="prepare", data=data, at=time.time()))
             jlog(f"  -> {job['title']}: failed while preparing: {type(ex).__name__}: {ex}")
             if record_failure(cfg, job, log, phase="prepare", code=code, message=f"{type(ex).__name__}: {ex}", data=data):
                 notify(cfg, "PS5 pkg: failed", notification_text(
@@ -1901,9 +2223,7 @@ def run_queue(cfg, todo, log, ledger_p, ledger, preset=None):
     final = results + [dict(f.result()) for f in finishing]
     prep_pool.shutdown(wait=True)
     fin_pool.shutdown(wait=True)
-    stop_evt.set()
-    (STATE / "status.json").write_text(json.dumps(dict(updated=time.time(), pid=None, finished=True, results=[
-        {k: r.get(k) for k in RESULT_KEYS} for r in final]), ensure_ascii=False, default=str))
+    rs.finish(final)
     (STATE / "stop.request").unlink(missing_ok=True)
     (STATE / "last_run.json").write_text(json.dumps(final, indent=2, ensure_ascii=False, default=str))
     return final
@@ -1915,6 +2235,7 @@ def main():
     ap.add_argument("--only", nargs="*", default=[])
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--rescan", action="store_true")
+    ap.add_argument("--trigger", choices=["manual", "scheduled"], default="manual", help="why this run was started (for the status)")
     a = ap.parse_args()
     LOGS.mkdir(parents=True, exist_ok=True)
     log = log_to(open(LOGS / "pkg_sync.log", "a", encoding="utf-8"))
@@ -1936,6 +2257,7 @@ def main():
         log(f"can't read {p}: {ex.strerror or ex}")
         sys.exit(EXIT_NOT_MOUNTED)
     lock = STATE / "run.lock"
+    rs = None
     if a.mode == "run":
         failing = ps5_setup.blocking(ps5_setup.run_checks(cfg, state_dir=STATE))    # not 30 minutes into a game
         for row in failing:
@@ -1954,6 +2276,9 @@ def main():
             cache = {"__version__": IDENT_VERSION}
         ledger_p = STATE / "ledger.json"
         ledger = json.loads(ledger_p.read_text()) if ledger_p.exists() else {}
+        if a.mode == "run":
+            rs = RunStatus(cfg, a.trigger, ledger)             # the page knows the run has started while it is still scanning
+            rs.start()
         log(f"=== {a.mode}: scanning")
         cands = discover(cfg, log, cache)
         cache_p.write_text(json.dumps(cache, indent=1, ensure_ascii=False))
@@ -1985,10 +2310,16 @@ def main():
             f"{cfg.get('max_compress', 2)} concurrent compressions")
         if copies:
             log(f"=== PS4: {len(copies)} title(s) to copy as they are")
-        results = run_queue(cfg, todo, log, ledger_p, ledger, preset=run_ps4(cfg, copies, log, ledger_p, ledger))
+        rs.plan(todo, copies)
+        results = run_queue(cfg, todo, log, ledger_p, ledger, preset=run_ps4(cfg, copies, log, ledger_p, ledger, rs=rs), rs=rs)
         log("=== summary: " + ", ".join(f"{s} {sum(1 for r in results if r['status'] == s)}"
                                         for s in ("built", "copied", "failed", "deferred")))
     finally:
+        if rs is not None and not rs.finished:          # the run did not get to its end: say so instead of leaving it "running"
+            try:
+                rs.finish(rs.snapshot()["results"], interrupted=True)
+            except Exception:
+                pass
         if a.mode == "run" and lock.exists():
             lock.unlink()
 

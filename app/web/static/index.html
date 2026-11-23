@@ -26,11 +26,14 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;
 input,select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}input[type=text]{width:100%}
 label.f{display:grid;grid-template-columns:220px 1fr;gap:10px;align-items:center;margin:6px 0}label.f span{color:var(--muted)}
 details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{color:var(--bad)}
+.runline{font-size:16px;font-weight:600}.runbar{display:flex;align-items:center;gap:8px;margin:8px 0 4px}.runbar[hidden]{display:none}.runbar .bar{flex:1;height:10px}
+.job{padding:8px 0;border-top:1px solid var(--line)}.job:first-of-type{border-top:0}.job .bar{margin-top:5px}.sec h2{margin-bottom:4px}
+.kpis{grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}.kpi.bad b{color:var(--bad)}#healthBox summary{cursor:pointer}#healthBox.warn{border-color:var(--warn)}
 .banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}.banner pre{color:var(--fg);max-height:14em;margin:8px 0}
 .lv-ok{color:var(--ok)}.lv-warn{color:var(--warn)}.lv-fail{color:var(--bad);font-weight:700}.setup td:first-child{width:3.5em;white-space:nowrap}
 a{color:var(--acc)}
 .path code{word-break:break-all}.copy{font:inherit;font-size:11px;padding:0 6px;margin-left:4px;border:1px solid var(--line);border-radius:4px;background:none;color:var(--muted);cursor:pointer}
-@media (max-width:640px){label.f{grid-template-columns:1fr}main{padding:10px}td,th{padding:5px 4px}}
+@media (max-width:640px){label.f{grid-template-columns:1fr}main{padding:10px}td,th{padding:5px 4px}header{gap:8px;padding:8px 12px}.runline{font-size:15px}.card{padding:12px}}
 </style>
 </head>
 <body>
@@ -47,21 +50,24 @@ a{color:var(--acc)}
 <div id="accessBanner"></div>
 <div id="cfgBanner"></div>
 <section id="dash" class="on">
+  <div id="healthTop"></div>
+  <div class="card" id="runCard">
+    <div id="runLine" class="runline">…</div>
+    <div class="runbar" id="runBar" hidden><div class="bar"><i></i></div><span id="runPct" class="small"></span></div>
+    <div id="runSub" class="small muted"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="btn pri" id="bRun">Run now</button><button class="btn" id="bStop">Stop after current</button>
+      <button class="btn" id="bScan">Scan for new games</button><span class="muted small" id="msg"></span>
+      <span class="small err" id="runWhy"></span>
+    </div>
+  </div>
   <div id="failBox"></div>
+  <div id="liveBox"></div>
   <div id="attention"></div>
   <div id="setupCard"></div>
   <div id="hostBanner"></div>
-  <div class="card"><div class="row">
-    <button class="btn pri" id="bRun">Run now</button><button class="btn" id="bStop">Stop after current</button>
-    <button class="btn" id="bScan">Scan for new games</button><span class="muted small" id="msg"></span>
-    <span class="small err" id="runWhy"></span>
-  </div></div>
-  <div class="grid" id="kpis"></div>
-  <div class="card"><h2>Folders</h2><div id="folders" class="muted">—</div></div>
-  <div class="card"><h2>Building</h2><div id="builds" class="muted">Nothing building.</div></div>
-  <div class="card"><h2>Preparing</h2><div id="preparing" class="muted">—</div></div>
-  <div class="card"><h2>Queue</h2><div id="queue" class="muted">—</div></div>
-  <div class="card"><h2>This run</h2><div id="results" class="muted">—</div></div>
+  <div class="grid kpis" id="kpis"></div>
+  <div id="healthBottom"><details class="card" id="healthBox"><summary id="healthSum">Folders</summary><div id="folders" class="muted">—</div></details></div>
 </section>
 <section id="lib">
   <div class="card"><div class="row"><b id="libSum"></b><span class="muted small" id="libTime"></span>

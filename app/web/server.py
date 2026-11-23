@@ -206,6 +206,99 @@ def plan_entries(cfg):
     return [p for p in data if isinstance(p, dict)] if isinstance(data, list) else []
 
 
+_json_cache = {}
+
+
+def read_json_cached(p: Path, default):
+    """read_json, parsed again only when the file changed (the ledger is read on every poll of every open page)."""
+    try:
+        st = p.stat()
+    except OSError:
+        return default
+    key = (st.st_mtime_ns, st.st_size)
+    hit = _json_cache.get(str(p))
+    if hit and hit[0] == key:
+        return hit[1]
+    data = read_json(p, default)
+    _json_cache[str(p)] = (key, data)
+    return data
+
+
+def built_after(v, since):
+    """Was this ledger entry written after `since` (the epoch time the plan was made)? Entries from older versions
+    only know the minute: those count when that minute began after the plan was made."""
+    ts = v.get("built_ts")
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        return ts > since
+    try:
+        return time.mktime(time.strptime(str(v.get("built", "")), "%Y-%m-%d %H:%M")) > since
+    except (ValueError, OverflowError):
+        return False
+
+
+def live_plan(entries):
+    """The plan as it stands now. plan.json is written when a scan or a run starts, so a game built or copied
+    since is still `build` / `copy` in it: here it is `done` (the same line the next scan would write), and the
+    counts and the Library follow a run as it goes."""
+    try:
+        plan_time = (STATE / "plan.json").stat().st_mtime
+    except OSError:
+        return entries
+    ledger = read_json_cached(STATE / "ledger.json", {})
+    if not isinstance(ledger, dict) or not ledger:
+        return entries
+    out = []
+    for p in entries:
+        v = ledger.get(p.get("title_id")) if isinstance(p, dict) else None
+        if (isinstance(p, dict) and p.get("action") in ("build", "copy", "failed") and isinstance(v, dict) and built_after(v, plan_time)
+                and (not p.get("version") or E.vkey(str(v.get("version", ""))) >= E.vkey(str(p["version"])))):
+            p = dict(p, action="done", why=f"built {v.get('built', '')}: {Path(str(v.get('output', ''))).name}", live_done=True)
+        out.append(p)
+    return out
+
+
+def next_run(schedule, now=None):
+    """When the schedule starts the next run, from the server's clock: {at, time, day: today|tomorrow, label}, or
+    None when nothing is scheduled."""
+    if not isinstance(schedule, dict) or not schedule.get("enabled"):
+        return None
+    times = sorted(t for t in (schedule.get("times") or []) if isinstance(t, str) and len(t) == 5 and t[2] == ":")
+    if not times:
+        return None
+    now = now or time.time()
+    lt = time.localtime(now)
+    for day_offset in (0, 1):
+        for t in times:
+            try:
+                h, m = int(t[:2]), int(t[3:])
+                at = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + day_offset, h, m, 0, 0, 0, -1))
+            except ValueError:
+                continue
+            if at > now:
+                day = "today" if day_offset == 0 else "tomorrow"
+                return dict(at=at, time=t, day=day, label=f"{day} {t}")
+    return None
+
+
+def last_run(st, running):
+    """What the last finished run did, from status.json: {started, finished, trigger, total, done, built, copied,
+    failed, deferred, interrupted}. None while a run is active or when there has been none. A status file from
+    before runs were described has only the results: their count and the time of the file stand in."""
+    if running or not isinstance(st, dict) or not st:
+        return None
+    run = st.get("run")
+    results = st.get("results") if isinstance(st.get("results"), list) else []
+    if isinstance(run, dict) and run.get("started"):
+        interrupted = bool(run.get("interrupted")) or not st.get("finished")
+        counts = {k: int(run.get(k) or 0) for k in ("built", "copied", "failed", "deferred")}
+        return dict(started=run.get("started"), finished=run.get("finished") or st.get("updated"), trigger=run.get("trigger"),
+                    total=run.get("total") or run.get("done") or 0, done=int(run.get("done") or 0), interrupted=interrupted, **counts)
+    if not results:
+        return None
+    counts = {s: sum(1 for r in results if isinstance(r, dict) and r.get("status") == s) for s in ("built", "copied", "failed", "deferred")}
+    return dict(started=None, finished=st.get("updated"), trigger=None, total=len(results), done=len(results), interrupted=not st.get("finished"), **counts)
+
+
 def plan_with_failures(plan, cfg, mapping):
     """The plan as the page should show it: a title that failed is `failed` while nothing it depends on has
     changed and nobody asked for a retry (the engine skips it too), a title waiting for space stays `build` with
@@ -288,9 +381,10 @@ class EngineStartError(Exception):
         self.status = status
 
 
-def start_engine(*args):
-    """Start a detached run. False when one is already active; raises EngineStartError when the engine
-    process exits straight away (a settings file it can't read, a folder that isn't mounted, ...)."""
+def start_engine(*args, trigger="manual"):
+    """Start a detached run (`trigger`: manual or scheduled, shown on the Dashboard). False when one is already
+    active; raises EngineStartError when the engine process exits straight away (a settings file it can't read, a
+    folder that isn't mounted, ...)."""
     with _lock:
         if engine_pid() or _scan["running"]:
             return False
@@ -300,7 +394,7 @@ def start_engine(*args):
         LOGS.mkdir(parents=True, exist_ok=True)
         logname = f"run_{time.strftime('%Y%m%d-%H%M%S')}.stdout.log"
         with open(LOGS / logname, "ab") as out:               # the child has its own copy of the descriptor
-            proc = subprocess.Popen([PY, "-I", "-u", str(ENGINE), "run", *args], stdout=out, stderr=subprocess.STDOUT,
+            proc = subprocess.Popen([PY, "-I", "-u", str(ENGINE), "run", "--trigger", trigger, *args], stdout=out, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
         _run.update(pid=proc.pid, started=time.time(), finished=None, rc=None, error=None, log=logname, log_tail=[])
 
@@ -361,7 +455,7 @@ def scheduler_tick(fired, now=None):
     if hm in (sch.get("times") or []) and key not in fired:
         fired.add(key)
         try:
-            msg = "started" if start_engine() else "skipped (a run or scan is active)"
+            msg = "started" if start_engine(trigger="scheduled") else "skipped (a run or scan is active)"
         except EngineStartError as ex:
             msg = f"did not start: {ex}"
         with open(LOGS / "pkg_sync.log", "a", encoding="utf-8") as fh:
@@ -436,6 +530,8 @@ def logout():
 @app.get("/api/status")
 def status(request: Request):
     st = read_json(STATE / "status.json", {})
+    if not isinstance(st, dict):
+        st = {}
     pid = engine_pid()
     info = E.load_cfg_info()
     cfg = info.cfg
@@ -450,7 +546,7 @@ def status(request: Request):
             disks[k] = dict(path=f["container"], free=u.free, total=u.total)
         except Exception:
             disks[k] = dict(path=f["container"], error="not available")
-    entries = plan_entries(cfg)
+    entries = live_plan(plan_entries(cfg))
     plan = plan_with_failures(entries, cfg, mapping)
     by_id = {p.get("title_id"): p for p in entries}
     attention = [failure_view(r, by_id.get(t), cfg, mapping) for t, r in failure_store().load().items() if not r.get("dismissed")]
@@ -460,7 +556,7 @@ def status(request: Request):
                 attention=[dict(title_id=a["title_id"], name=a.get("name"), state=a["state"], code=a["code"], summary=a["summary"],
                                 at_text=a.get("at_text"), will_retry=a["will_retry"]) for a in attention],
                 scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
-                status=st if pid else dict(st, live=False),
+                status=st if pid else dict(st, live=False), next_run=next_run(cfg.get("schedule")), last_run=last_run(st, bool(pid)),
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "copy", "failed", "done", "skip", "error")},
@@ -479,7 +575,7 @@ def plan():
     cfg = load_cfg()
     data, mapping = read_json(STATE / "plan.json", []), host_view(cfg)["mapping"]
     if isinstance(data, list):
-        data = plan_with_failures(data, cfg, mapping)
+        data = plan_with_failures(live_plan(data), cfg, mapping)
     if not mapping or not isinstance(data, list):
         return data
     out = []

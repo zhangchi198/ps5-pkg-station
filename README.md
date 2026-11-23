@@ -35,11 +35,29 @@ Open `http://<host>:8765`.
 
 | Page | |
 |---|---|
-| Dashboard | setup checklist; run now, stop after the current games, rescan; live stages and progress; free space; why a scan or run failed |
+| Dashboard | the current run first (how far along, about how long it will take, each build's stage), run now, stop after the current games, rescan; what is being prepared and what is next; the last run's result when idle; setup checklist; free space; why a scan or run failed |
 | Library | every game found, the copy that will be used and why; per-game options: force a source, keep the backport or the original, overlay a folder of patch files, skip, build just this one |
 | History | every finished package with its validation result, size and times |
 | Settings | folders, compression level, parallel builds, console firmware, junk-file cleanup patterns, schedule, notifications |
 | Logs | the run log and each build's log, live |
+
+### Progress and time estimates
+
+The Dashboard leads with the run: when it started and whether it was scheduled or started by hand, how many games it
+covers, how many are done or failed, a bar for the whole run and, when it can be said, "about 1 h 20 min left". Below
+it: each build with its stage in plain words (UltraPack's own text is in the tooltip), elapsed time and time left;
+what is being prepared or copied (bytes, percentage, rate); what is next; and the results. When nothing runs it shows
+the last run with its date and result, and the next scheduled time ("today 14:00" / "tomorrow 03:00", on the server's
+clock). The counts and the Library follow the run: a game that has been built since the scan is "done" at once.
+
+The estimates are not guesses about speed. A build's time left comes from its own UltraPack log (its progress and
+rate so far) and, for the stages after the current one, from how long each stage took relative to the others in
+earlier builds on this machine (plain defaults until there is such history: the first stage, compressing, is most of a
+build; the same shares weigh the bar). It says "estimating…" for the first two minutes and whenever there is no rate yet, is always an "about",
+and moves smoothly rather than jumping. The time for the whole run adds what is still queued, at the pace this run
+has shown (or earlier builds), with the same limits on parallel builds as the engine (`max_builds`,
+`max_compress`). `status.json` carries the data (start time, trigger, totals, per build the stage timings); each
+finished build adds its stage times, source size and finish time to `ledger.json`.
 
 There is no login unless you set a password. Keep port 8765 on your LAN or behind a VPN such as Tailscale, and
 don't forward it to the internet. See [Keeping it private](#keeping-it-private).
