@@ -1,0 +1,20 @@
+# PS5 PKG Station - copy this file, change the paths on the left of each ":" and run `docker compose up -d`.
+services:
+  ps5-pkg-station:
+    image: ghcr.io/zhangchi198/ps5-pkg-station:latest
+    # build: .                      # or build it yourself from this repo
+    container_name: ps5-pkg-station
+    restart: unless-stopped
+    user: "1000:1000"               # uid:gid that owns your output folder (`id` on the host)
+    # group_add: ["101"]            # Synology: lets the container write through DSM's ACLs (administrators)
+    ports:
+      - "8765:8765"
+    environment:
+      TZ: Etc/UTC                   # your time zone, used by the schedule
+    mem_limit: 16g                  # optional: cap what builds may use
+    volumes:
+      - /path/to/ps5/library:/library:ro      # game images (.exfat/.ffpfsc/...) and/or folders, read-only
+      - /path/to/ps5/downloads:/downloads:ro  # optional second source (RAR/7z/zip sets), read-only
+      - /path/to/ps5/pkg:/output              # finished .pkg files go here
+      - /path/to/fast/scratch:/work           # temp space: an SSD with room for your biggest game
+      - ./config:/config                      # settings, history, logs

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+# personal deploy scripts, configs and downloaded tools stay out of the repo
+local/
+vendor/
+.env

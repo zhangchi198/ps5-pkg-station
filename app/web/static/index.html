@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PS5 PKG Station</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1c2330;--muted:#6b7280;--line:#e5e7eb;--acc:#2563eb;--ok:#15803d;--warn:#b45309;--bad:#b91c1c;--bar:#dbeafe}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1318;--card:#171c23;--fg:#e6e9ee;--muted:#9aa3af;--line:#262d37;--acc:#60a5fa;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--bar:#1e3a5f}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:16px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2;flex-wrap:wrap}
+header h1{font-size:16px;margin:0}nav{display:flex;gap:4px;flex-wrap:wrap}nav button{background:none;border:0;color:var(--muted);padding:6px 10px;border-radius:6px;cursor:pointer;font:inherit}
+nav button.on{background:var(--bg);color:var(--fg);font-weight:600}.state{margin-left:auto;font-size:13px;color:var(--muted)}
+main{max-width:1200px;margin:0 auto;padding:16px}section{display:none}section.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin-bottom:14px}.card h2{font-size:14px;margin:0 0 10px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.kpi{border:1px solid var(--line);border-radius:8px;padding:10px}.kpi b{display:block;font-size:20px}.kpi span{color:var(--muted);font-size:12px}
+button.btn{border:1px solid var(--line);background:var(--card);color:var(--fg);padding:6px 12px;border-radius:6px;cursor:pointer;font:inherit}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}button:disabled{opacity:.5;cursor:default}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--muted);font-weight:500;font-size:12px}
+.tag{display:inline-block;padding:1px 7px;border-radius:999px;font-size:12px;border:1px solid var(--line)}
+.t-build{color:var(--acc)}.t-done,.t-built{color:var(--ok)}.t-skip{color:var(--muted)}.t-error,.t-failed{color:var(--bad)}.t-deferred{color:var(--warn)}
+.bar{height:8px;background:var(--bar);border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
+.muted{color:var(--muted)}.small{font-size:12px}pre{white-space:pre-wrap;word-break:break-all;font:12px/1.4 ui-monospace,Menlo,monospace;max-height:70vh;overflow:auto;margin:0}
+input,select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}input[type=text]{width:100%}
+label.f{display:grid;grid-template-columns:220px 1fr;gap:10px;align-items:center;margin:6px 0}label.f span{color:var(--muted)}
+details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{color:var(--bad)}
+@media (max-width:640px){label.f{grid-template-columns:1fr}main{padding:10px}td,th{padding:5px 4px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>PS5 PKG Station</h1>
+  <nav>
+    <button data-tab="dash" class="on">Dashboard</button><button data-tab="lib">Library</button>
+    <button data-tab="hist">History</button><button data-tab="set">Settings</button><button data-tab="logs">Logs</button>
+  </nav>
+  <div class="state" id="state">…</div>
+</header>
+<main>
+<section id="dash" class="on">
+  <div class="card"><div class="row">
+    <button class="btn pri" id="bRun">Run now</button><button class="btn" id="bStop">Stop after current</button>
+    <button class="btn" id="bScan">Scan for new games</button><span class="muted small" id="msg"></span>
+  </div></div>
+  <div class="grid" id="kpis"></div>
+  <div class="card"><h2>Building</h2><div id="builds" class="muted">Nothing building.</div></div>
+  <div class="card"><h2>Preparing</h2><div id="preparing" class="muted">—</div></div>
+  <div class="card"><h2>Queue</h2><div id="queue" class="muted">—</div></div>
+  <div class="card"><h2>This run</h2><div id="results" class="muted">—</div></div>
+</section>
+<section id="lib">
+  <div class="card"><div class="row"><b id="libSum"></b><span class="muted small" id="libTime"></span>
+    <input id="libFilter" placeholder="Filter…" style="max-width:220px;margin-left:auto">
+    <select id="libAct"><option value="">All</option><option>build</option><option>done</option><option>skip</option><option>error</option></select>
+  </div></div>
+  <div class="card"><table><thead><tr><th>Game</th><th>Version</th><th>Source</th><th>Status</th></tr></thead><tbody id="libRows"></tbody></table></div>
+</section>
+<section id="hist"><div class="card"><table><thead><tr><th>Package</th><th>Built</th><th>Size</th><th>Times</th><th>Checks</th></tr></thead><tbody id="histRows"></tbody></table></div></section>
+<section id="set">
+  <div class="card"><h2>Folders</h2><div id="fFolders"></div></div>
+  <div class="card"><h2>Conversion</h2><div id="fConv"></div></div>
+  <div class="card"><h2>Schedule &amp; notifications</h2><div id="fSched"></div></div>
+  <div class="row"><button class="btn pri" id="bSave">Save settings</button><span id="setMsg" class="small"></span></div>
+</section>
+<section id="logs"><div class="card"><div class="row"><select id="logSel"></select><button class="btn" id="bLog">Refresh</button>
+  <label class="small"><input type="checkbox" id="logFollow" checked> follow</label></div></div>
+  <div class="card"><pre id="logTxt"></pre></div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s), esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const gib=b=>b==null?"—":(b/2**30).toFixed(b>2**40?0:1)+" GiB", ago=t=>{if(!t)return"—";const s=Date.now()/1000-t;return s<90?Math.round(s)+" s":s<5400?Math.round(s/60)+" min":(s/3600).toFixed(1)+" h"};
+async function api(p,o={}){const r=await fetch(p,{headers:{"Content-Type":"application/json"},...o});if(!r.ok)throw new Error((await r.json().catch(()=>({detail:r.statusText}))).detail);return r.headers.get("content-type")?.includes("json")?r.json():r.text()}
+let tab="dash",plan=[],overrides={};
+document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{tab=b.dataset.tab;document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on",x===b));document.querySelectorAll("section").forEach(s=>s.classList.toggle("on",s.id===tab));load()});
+function say(t,bad){$("#msg").textContent=t;$("#msg").className="small "+(bad?"err":"muted")}
+$("#bRun").onclick=()=>api("/api/run",{method:"POST",body:"{}"}).then(()=>say("Run started")).catch(e=>say(e.message,1)).finally(refresh);
+$("#bStop").onclick=()=>api("/api/stop",{method:"POST"}).then(()=>say("Stopping after the running builds")).catch(e=>say(e.message,1)).finally(refresh);
+$("#bScan").onclick=()=>api("/api/scan",{method:"POST"}).then(()=>say("Scanning…")).catch(e=>say(e.message,1)).finally(refresh);
+async function refresh(){
+  const s=await api("/api/status");const st=s.status||{};
+  $("#state").textContent=s.engine_running?(s.stop_requested?"Stopping after current":"Running")+` · load ${s.load[0].toFixed(1)}/${s.cpus}`:s.scan.running?"Scanning…":"Idle"+(s.schedule?.enabled?` · next ${s.schedule.times.join(", ")}`:"");
+  $("#bRun").disabled=s.engine_running||s.scan.running;$("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
+  const d=s.disks;$("#kpis").innerHTML=[["To build",s.plan_counts.build],["Built",s.plan_counts.done],["Work drive free",gib(d.temp?.free)],["Output free",gib(d.output?.free)]].map(([k,v])=>`<div class="kpi"><b>${v??"—"}</b><span>${k}</span></div>`).join("")+`<div class="kpi"><b>${s.plan_time?ago(s.plan_time):"never"}</b><span>Last scan</span></div>`;
+  const b=s.engine_running?(st.builds||[]):[];
+  $("#builds").innerHTML=b.length?b.map(x=>`<div style="margin:8px 0"><div class="row"><b>${esc(x.name)}</b><span class="muted small">stage ${x.stage}/5 ${esc(x.stage_text)} · ${esc(x.part)} ${x.pct}% · ${ago(x.since)}</span></div><div class="bar"><i style="width:${((x.stage-1)*20+x.pct/5)}%"></i></div></div>`).join(""):"Nothing building.";
+  $("#preparing").innerHTML=(s.engine_running&&st.preparing?.length)?st.preparing.map(x=>`<div>${esc(x.name)} <span class="muted small">copying &amp; verifying · ${ago(x.since)}</span></div>`).join(""):"—";
+  $("#queue").innerHTML=(s.engine_running&&st.queue?.length)?st.queue.map(x=>`<div>${esc(x.name)} <span class="muted small">${gib(x.size)}</span></div>`).join(""):"—";
+  const r=st.results||[];$("#results").innerHTML=r.length?`<table>${r.map(x=>`<tr><td>${esc(x.name||x.title)}</td><td><span class="tag t-${x.status}">${x.status}</span></td><td class="small muted">${esc(x.why||x.validate||"")} ${x.build_min?`· build ${x.build_min} min`:""}</td></tr>`).join("")}</table>`:"—";
+}
+async function loadLib(){
+  [plan,overrides]=await Promise.all([api("/api/plan"),api("/api/overrides")]);
+  const f=$("#libFilter").value.toLowerCase(),a=$("#libAct").value;
+  const rows=plan.filter(p=>(!a||p.action===a)&&(!f||(p.title+p.title_id).toLowerCase().includes(f)));
+  $("#libSum").textContent=`${plan.length} titles · ${plan.filter(p=>p.action==="build").length} to build`;
+  $("#libRows").innerHTML=rows.map(p=>{const o=overrides[p.title_id]||{};const c=p.candidates||[];
+    return `<tr><td><b>${esc(p.title||p.title_id)}</b><div class="small muted">${p.title_id}${p.fw?" · fw "+p.fw:""}</div>
+    <details><summary class="small">Options${Object.keys(o).length?" (overridden)":""}</summary><div class="ovr" data-tid="${p.title_id}">
+     <label class="small">Source <select data-k="source"><option value="">automatic</option>${c.map(x=>`<option value="${esc(x.source)}" ${o.source===x.source?"selected":""}>${esc(x.kind)} v${esc(x.version)}${x.packed?" ["+x.packed+"]":""} · ${esc(x.source.split("/").slice(-2).join("/"))}</option>`).join("")}</select></label>
+     <label class="small">Modified executables <select data-k="modified_exec"><option value="">by console firmware</option><option value="image" ${o.modified_exec==="image"?"selected":""}>keep image (backport)</option><option value="original" ${o.modified_exec==="original"?"selected":""}>use original</option></select></label>
+     <label class="small">Patch folder (files overlaid) <input type="text" data-k="patch" value="${esc(o.patch||"")}" placeholder="/config/patches/…"></label>
+     <label class="small">Note <input type="text" data-k="note" value="${esc(o.note||"")}"></label>
+     <label class="small"><input type="checkbox" data-k="skip" ${o.skip?"checked":""}> skip this title</label>
+     <div class="row"><button class="btn" onclick="saveOv(this)">Save options</button>${p.action==="build"?`<button class="btn" onclick="buildOne('${p.title_id}')">Build only this</button>`:""}<span class="small muted"></span></div></div></details></td>
+    <td>${esc(p.version)}</td><td class="small">${esc(p.kind||"")}<div class="muted">${esc((p.source||"").split("/").slice(-1)[0])}</div></td>
+    <td><span class="tag t-${p.action}">${p.action}</span><div class="small muted">${esc(p.why)}</div></td></tr>`}).join("");
+  const s=await api("/api/status");$("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
+}
+$("#libFilter").oninput=loadLib;$("#libAct").onchange=loadLib;
+async function saveOv(btn){const box=btn.closest(".ovr"),o={};box.querySelectorAll("[data-k]").forEach(e=>o[e.dataset.k]=e.type==="checkbox"?e.checked:e.value);
+  const m=btn.parentElement.querySelector("span");try{await api("/api/overrides/"+box.dataset.tid,{method:"PUT",body:JSON.stringify(o)});m.textContent="Saved — rescan to apply"}catch(e){m.textContent=e.message;m.className="small err"}}
+async function buildOne(t){try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
+function alertBox(m){say(m,1)}
+async function loadHist(){const l=await api("/api/ledger");const rows=Object.entries(l).sort((a,b)=>(b[1].built||"").localeCompare(a[1].built||""));
+  $("#histRows").innerHTML=rows.map(([t,v])=>`<tr><td><b>${esc((v.output||"").split("/").pop())}</b><div class="small muted">${esc(v.source||"")}</div></td><td class="small">${esc(v.built||"")}</td><td>${gib(v.bytes)}</td><td class="small">prep ${v.prep_min??"—"} · build ${v.build_min??"—"} min · L${v.level??""}</td><td class="small">${esc(v.validate||"")}${v.sha256?`<div class="muted">sha256 ${v.sha256.slice(0,16)}…</div>`:""}</td></tr>`).join("")}
+const FIELDS={fFolders:[["library","Game library (read-only)"],["downloads","Downloads (read-only)"],["output","Output folder"],["temp","Work folder (fast drive)"]],
+ fConv:[["compression_level","Kraken level (1-9; 4 = fast, 7 = smaller)","n"],["cpu_count","Workers per build","n"],["max_compress","Builds compressing at once","n"],["max_builds","Builds alive at once","n"],["nice","CPU priority (nice 0-19)","n"],["ssd_reserve_gb","Keep free on work drive (GB)","n"],["build_on_ssd","Write package on work drive, then copy","b"],["console_fw","Console firmware (picks original vs backport)"],["skip_download_prefixes","Skip download folders starting with (comma separated)","l"],["junk_file_patterns","Delete files whose name matches (regex, comma separated)","l"],["junk_title_patterns","Cut from game titles (regex, comma separated)","l"]],
+ fSched:[["schedule.enabled","Run automatically","b"],["schedule.times","At (HH:MM, comma separated)","l"],["notify_url","Notification URL (ntfy topic, optional)"]]};
+let cfg={};
+async function loadSet(){cfg=await api("/api/config");for(const [box,fs] of Object.entries(FIELDS)){$("#"+box).innerHTML=fs.map(([k,l,t])=>{const v=k.split(".").reduce((o,x)=>o?.[x],cfg);
+  return `<label class="f"><span>${esc(l)}</span>${t==="b"?`<input type="checkbox" data-c="${k}" data-t="b" ${v?"checked":""}>`:`<input type="${t==="n"?"number":"text"}" data-c="${k}" data-t="${t||"s"}" value="${esc(Array.isArray(v)?v.join(", "):v)}">`}</label>`}).join("")}}
+$("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]").forEach(e=>{let v=e.dataset.t==="b"?e.checked:e.dataset.t==="n"?Number(e.value):e.dataset.t==="l"?e.value.split(",").map(x=>x.trim()).filter(Boolean):e.value.trim();
+  const [a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});
+  try{await api("/api/config",{method:"PUT",body:JSON.stringify(out)});$("#setMsg").textContent="Saved";$("#setMsg").className="small muted";loadSet()}catch(e){$("#setMsg").textContent=e.message;$("#setMsg").className="small err"}};
+async function loadLogs(){const l=await api("/api/logs");const cur=$("#logSel").value;$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
+async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600");const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
+$("#logSel").onchange=showLog;$("#bLog").onclick=loadLogs;
+function load(){({dash:refresh,lib:loadLib,hist:loadHist,set:loadSet,logs:loadLogs})[tab]().catch(e=>say(e.message,1))}
+load();setInterval(()=>{if(tab==="dash")refresh().catch(()=>{});if(tab==="logs"&&$("#logFollow").checked)showLog().catch(()=>{})},5000);
+</script>
+</body>
+</html>
