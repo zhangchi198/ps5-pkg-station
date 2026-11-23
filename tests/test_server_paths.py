@@ -42,6 +42,10 @@ class PathsCase(ServerCase):
     def put(self, name, obj):
         (self.state / name).write_text(json.dumps(obj, ensure_ascii=False))
 
+    def plan_as_stored(self):
+        """/api/plan without what the Library adds from the current settings (fw_check, ...): what is asserted here is the host twins."""
+        return [{k: v for k, v in p.items() if k not in ("fw_check", "backport")} if isinstance(p, dict) else p for p in self.get("/api/plan")]
+
 
 class Plan(PathsCase):
     def test_sources_candidates_patch_and_duplicates_get_host_twins(self):
@@ -61,12 +65,12 @@ class Plan(PathsCase):
 
     def test_without_a_host_location_nothing_is_added(self):
         self.put("plan.json", PLAN)
-        self.assertEqual(self.get("/api/plan"), PLAN)
+        self.assertEqual(self.plan_as_stored(), PLAN)
 
     def test_a_folder_that_only_has_a_detected_hint_gets_no_twin(self):
         self.put("plan.json", PLAN)
         (self.dir / "mountinfo").write_text("24 22 253:1 /@syno/share/games/ps5 /library ro - btrfs /dev/mapper/pool_1 rw\n")
-        self.assertEqual(self.get("/api/plan"), PLAN)
+        self.assertEqual(self.plan_as_stored(), PLAN)
         self.assertEqual(self.get("/api/status")["folders"]["library"]["source"], "detected")
 
     def test_only_the_folders_that_are_mapped_get_twins(self):
@@ -180,7 +184,7 @@ class Overrides(PathsCase):
     def test_without_a_mapping_the_path_is_stored_as_typed_when_it_is_in_the_patches_folder(self):
         cfg_root = os.path.commonpath([str(self.state), str(self.logs)])
         o = self.client.put("/api/overrides/PPSA01234", json={"patch": cfg_root + "/patches/PPSA01234"}).json()
-        self.assertEqual(o, {"patch": cfg_root + "/patches/PPSA01234"})
+        self.assertEqual(o, {"patch": cfg_root + "/patches/PPSA01234", "replan": "now"})
         r = self.client.put("/api/overrides/PPSA01234", json={"patch": "/srv/docker/ps5-pkg/config/patches/PPSA01234"})
         self.assertEqual(r.status_code, 400)                                           # a host path nobody told the app about
 

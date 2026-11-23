@@ -29,6 +29,9 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
 .runline{font-size:16px;font-weight:600}.runbar{display:flex;align-items:center;gap:8px;margin:8px 0 4px}.runbar[hidden]{display:none}.runbar .bar{flex:1;height:10px}
 .job{padding:8px 0;border-top:1px solid var(--line)}.job:first-of-type{border-top:0}.job .bar{margin-top:5px}.sec h2{margin-bottom:4px}
 .kpis{grid-template-columns:repeat(auto-fit,minmax(110px,1fr))}.kpi.bad b{color:var(--bad)}#healthBox summary{cursor:pointer}#healthBox.warn{border-color:var(--warn)}
+.cands{list-style:none;margin:4px 0 8px;padding:0}.cands li{padding:5px 0;border-top:1px solid var(--line)}.cands li:first-child{border-top:0}
+.v-chosen{color:var(--ok);border-color:var(--ok)}.v-packed,.v-older,.v-not_used{color:var(--muted)}.v-verifies{color:var(--acc);border-color:var(--acc)}
+#libSum a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--muted)}#libSum a.on{font-weight:700}.why summary{cursor:pointer}
 .banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}.banner pre{color:var(--fg);max-height:14em;margin:8px 0}
 .lv-ok{color:var(--ok)}.lv-warn{color:var(--warn)}.lv-fail{color:var(--bad);font-weight:700}.setup td:first-child{width:3.5em;white-space:nowrap}
 a{color:var(--acc)}
@@ -70,11 +73,12 @@ a{color:var(--acc)}
   <div id="healthBottom"><details class="card" id="healthBox"><summary id="healthSum">Folders</summary><div id="folders" class="muted">—</div></details></div>
 </section>
 <section id="lib">
-  <div class="card"><div class="row"><b id="libSum"></b><span class="muted small" id="libTime"></span>
-    <input id="libFilter" placeholder="Filter…" style="max-width:220px;margin-left:auto">
-    <select id="libAct"><option value="">All</option><option>build</option><option>copy</option><option>failed</option><option>done</option><option>skip</option><option>error</option></select>
-  </div></div>
-  <div class="card"><table><thead><tr><th>Game</th><th>Version</th><th>Source</th><th>Status</th></tr></thead><tbody id="libRows"></tbody></table></div>
+  <div class="card"><div class="row"><span id="libSum"></span><span class="muted small" id="libTime"></span>
+    <input id="libFilter" placeholder="Filter by name, ID or file…" style="max-width:240px;margin-left:auto">
+    <select id="libAct"><option value="">All</option><option value="build">To build</option><option value="copy">PS4 to copy</option><option value="failed">Failed</option><option value="done">Done</option><option value="skip">Skipped</option><option value="error">Problems</option></select>
+  </div><div class="small muted" id="libShown"></div></div>
+  <div class="card"><table><thead><tr><th>Game</th><th>Version</th><th>Copy used</th><th>Status</th></tr></thead><tbody id="libRows"></tbody></table></div>
+  <div id="libUnrec"></div>
 </section>
 <section id="hist"><div class="card row"><select id="histFilter"><option value="">All attempts</option><option value="built">Built</option><option value="failed">Failed</option></select><span class="muted small">Failed attempts are listed with the reason and what to do; the log has the details.</span></div>
   <div class="card"><table><thead><tr><th>Package</th><th>Built</th><th>Size</th><th>Times</th><th>Checks</th></tr></thead><tbody id="histRows"></tbody></table></div></section>

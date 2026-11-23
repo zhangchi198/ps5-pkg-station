@@ -140,6 +140,11 @@ class ServerCase(StateCase):
                 p = mock.patch.object(self.srv, name, val)
                 p.start()
                 self.addCleanup(p.stop)
+        # a changed option plans again (see request_replan); no test starts a real scan by accident: the real function is self.real_replan
+        self.real_replan, self.replans = self.srv.request_replan, []
+        p = mock.patch.object(self.srv, "request_replan", side_effect=lambda: self.replans.append(1) or "now")
+        p.start()
+        self.addCleanup(p.stop)
         self.srv._scan.update(running=False, started=None, finished=None, rc=None)
         if hasattr(self.srv, "_run"):
             self.srv._scan.update(error=None, log=None, log_tail=[])

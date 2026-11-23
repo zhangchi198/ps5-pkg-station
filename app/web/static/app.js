@@ -108,7 +108,7 @@ document.addEventListener("click",e=>{if(!e.target.closest("[data-logout]"))retu
 const verText=v=>`PS5 PKG Station ${v.app} · ${v.ultrapack?"UltraPack "+v.ultrapack:"UltraPack version not known"}`;
 function syncDeleteButtons(){document.querySelectorAll('[data-act="delete_staged"]').forEach(b=>{const blocked=engineBusy||b.dataset.blocked==="1";b.disabled=blocked;if(engineBusy)b.title="A run is active and may be using it"})}
 let srvOff=0;   // seconds the server's clock is ahead of UTC: times the server speaks of (a schedule, when a run started) are shown on its clock
-async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);renderAccess(s.access);
+async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);renderAccess(s.access);refreshLibIfChanged(s);
   if(s.clock){const m=/^([+-])(\d\d):(\d\d)$/.exec(s.clock.utc_offset||"");if(m)srvOff=(m[1]==="-"?-1:1)*(num(m[2])*3600+num(m[3])*60)}if(s.version)$("#ver").textContent=verText(s.version);engineBusy=!!s.engine_running;syncDeleteButtons();
   // config.json was edited since the form was loaded (a poll that started before the last load says nothing new)
   if(tab==="set"&&!s.config_error&&cfgRev!==undefined&&t0>cfgLoadedAt&&s.config_rev!==cfgRev){
@@ -197,40 +197,105 @@ function patchHint(o,tid,cfgHost){
   if(o.patch)return o.patch_host?`On your NAS: ${pathHtml(o.patch_host,o.patch)}`:`${pathHtml(null,o.patch)} (no host location is set for this folder)`;
   return cfgHost?`Put the files in <code>${esc(cfgHost.replace(/[\\/]+$/,"")+"/patches/"+tid)}</code> on your NAS and enter <code>/config/patches/${esc(tid)}</code> here (a path on the NAS works too).`
     :`Inside the container. Say where /config is on your NAS (Settings > Folders) to see the real location.`}
-async function loadLib(){
-  let s;[plan,overrides,s]=await Promise.all([api("/api/plan"),api("/api/overrides"),api("/api/status")]);
-  const f=$("#libFilter").value.toLowerCase(),a=$("#libAct").value;
-  const rows=plan.filter(p=>(!a||p.action===a)&&(!f||(p.title+p.title_id).toLowerCase().includes(f)));
-  $("#libSum").textContent=`${plan.length} titles · ${plan.filter(p=>p.action==="build").length} to build`;
-  const empty=t=>`<tr><td colspan="4">${t}</td></tr>`,cf=s.folders?.config,cfgHost=cf&&cf.host&&!cf.partial?cf.host:null;libCfgHost=cfgHost;
-  $("#libRows").innerHTML=!plan.length?empty(!s.plan_time?`<b>No scan yet.</b> <span class="muted">Press Scan to look through your game library for games to build.</span> <button class="btn" data-do="scan">Scan for new games</button>`
-      :`<b>The last scan found no games.</b> <span class="muted">Nothing usable was found in <code>${esc(s.disks.library?.path||"")}</code>${s.disks.downloads?.error?"":` or <code>${esc(s.disks.downloads?.path||"")}</code>`}. Check the folders on the Dashboard, then scan again.</span>`)
-    :!rows.length?empty('<span class="muted">No titles match the filter.</span>'):rows.map(p=>{const o=overrides[p.title_id]||{};const c=p.candidates||[];
-    return `<tr><td><b>${esc(p.title||p.title_id)}</b><div class="small muted">${esc(p.title_id)}${p.fw?" · fw "+esc(p.fw):""}</div>${p.patched?`<div class="small muted">Named after the patch's param.json: fw ${esc(p.fw||"?")} (the source has ${esc(p.source_fw||"?")})</div>`:""}
-    <details><summary class="small">Options${Object.keys(o).length?" (overridden)":""}</summary><div class="ovr" data-tid="${esc(p.title_id)}">
-     <label class="small">Source <select data-k="source"><option value="">automatic</option>${c.map(x=>`<option value="${esc(x.source)}" ${o.source===x.source?"selected":""}>${esc(x.kind)} v${esc(x.version)}${x.packed?" ["+esc(x.packed)+"]":""} · ${esc(x.source_host||x.source+" (container path)")}</option>`).join("")}</select></label>
-     <label class="small">Modified executables <select data-k="modified_exec"><option value="">by console firmware</option><option value="image" ${o.modified_exec==="image"?"selected":""}>keep image (backport)</option><option value="original" ${o.modified_exec==="original"?"selected":""}>use original</option></select></label>
-     <label class="small">Patch folder (files overlaid) <input type="text" data-k="patch" value="${esc(o.patch||"")}" placeholder="/config/patches/…"></label>
+// ---- Library: every game, why this copy was chosen, what its options do. A fetch builds the whole table once; filtering only hides rows
+// (no request, nothing re-rendered, so an open panel and an unsaved edit stay); a re-render for new data puts open panels and edits back.
+let libData={plan:[],overrides:{},status:{},unrec:[]},libKey=null,libUi={open:new Set(),edits:{}},libBusy=false;
+const VERDICT={chosen:"used",verifies:"checks the image",older:"older",packed:"packed",same_version:"same version",not_used:"not used"};
+const README_BASE="https://github.com/zhangchi198/ps5-pkg-station";
+const libKeyOf=s=>[s.plan_time,JSON.stringify(s.plan_counts||{}),s.failures_rev,s.config_rev].join("|");   // what the Library shows changes when one of these does
+async function fetchLib(){
+  const [pl,ov,s,un]=await Promise.all([api("/api/plan"),api("/api/overrides"),api("/api/status"),api("/api/unrecognised")]);
+  plan=pl;overrides=ov;libData={plan:pl,overrides:ov,status:s,unrec:un};libKey=libKeyOf(s)}
+async function loadLib(){await fetchLib();renderLib()}
+// a title's firmware against the console's; the copy that will be used decides, as the server worked out for the settings of the moment
+function fwLine(p){const f=p.fw_check;if(!f)return"";
+  if(f.ok===false)return `needs fw ${esc(f.need)} · <span class="tag t-failed">above your console (${esc(f.console)}): won't run</span>`;
+  if(f.ok===true)return `needs fw ${esc(f.need)} · your console ${esc(f.console)}: ok`;
+  return `needs fw ${esc(f.need)} · <a href="#" data-goto="console_fw">set your console firmware</a>`}
+function candList(p){const c=p.candidates||[];if(!c.length)return"";
+  return `<div class="small"><b>Copies found (${c.length})</b></div><ul class="cands">${c.map(x=>`<li><span class="tag v-${cls(x.verdict||"")}">${esc(VERDICT[x.verdict]||x.kind||"")}</span> ${pathHtml(x.source_host,x.source)}
+    <div class="small muted">${esc(x.kind_label||x.kind||"")} · v${esc(x.version||"?")}${x.fw?` · needs fw ${esc(x.fw)}`:""}${x.size?` · ${esc(gib(x.size))}`:""}${x.packed?` · ${esc(x.packed)}-packed`:""}</div>${x.reason?`<div class="small">${esc(x.reason)}</div>`:""}</li>`).join("")}</ul>`}
+function backportText(p){const b=p.backport,out=[];
+  if(b){const con=b.console_fw?`your console (${esc(b.console_fw)})`:"your console";
+    if(b.present)out.push(`<b>Backport:</b> the image needs fw ${esc(b.image_fw)}; the original archive needs fw ${esc(b.original_fw)}. `+(b.decision==="original"?`${b.console_fw?`Your console (${esc(b.console_fw)})`:"Your console"} runs the original, so the original will be used (${esc(b.decided_by)}).`
+      :b.decision==="image"?`The original needs newer firmware than ${con}, so the image's modified executables are kept (${esc(b.decided_by)}).`:`Not decided: ${esc(b.decided_by)}. Set your console firmware under Settings, or choose under Options.`)
+      +` <span class="muted">The files are compared when the build starts; what it did is shown here afterwards.</span>`);
+    else out.push(`<b>Checked against the original:</b> the image is compared file by file with the original archive (${b.image_fw?`both ask for fw ${esc(b.image_fw)}`:"firmware not known"}).`)}
+  const l=p.last_backport;if(l)out.push(`<b>Last build:</b> ${l.differs===false?"the image and the original archive matched.":`the image differed from the original in ${num(l.files)} file(s): the ${esc(l.used)} was used (${esc(l.decided_by||"")}).`}`);
+  return out.map(t=>`<div class="small" style="margin:4px 0">${t}</div>`).join("")}
+function optionsForm(p,o,cfgHost){const c=p.candidates||[];
+  return `<div class="ovr" data-tid="${esc(p.title_id)}"><div class="small"><b>Options</b></div>
+     <label class="small">Copy to use <select data-k="source"><option value="">automatic</option>${c.map(x=>`<option value="${esc(x.source)}" ${o.source===x.source?"selected":""}>${esc(x.kind_label||x.kind)} v${esc(x.version)}${x.packed?" ["+esc(x.packed)+"]":""} · ${esc(x.source_host||x.source+" (container path)")}</option>`).join("")}</select></label>
+     <label class="small">If a backport exists <select data-k="modified_exec"><option value="">decide by console firmware</option><option value="image" ${o.modified_exec==="image"?"selected":""}>keep the backport (the image)</option><option value="original" ${o.modified_exec==="original"?"selected":""}>use the original</option></select></label>
+     <label class="small">Extra files folder (copied over the game) <input type="text" data-k="patch" value="${esc(o.patch||"")}" placeholder="/config/patches/…"></label>
      <div class="small muted" data-patchhint>${patchHint(o,p.title_id,cfgHost)}</div>
      <label class="small">Note <input type="text" data-k="note" value="${esc(o.note||"")}"></label>
      <label class="small"><input type="checkbox" data-k="skip_verify" ${o.skip_verify?"checked":""}> don't check against the original archive (keep this copy anyway)</label>
-     <label class="small"><input type="checkbox" data-k="skip" ${o.skip?"checked":""}> skip this title</label>
-     <div class="row"><button class="btn" data-do="saveov">Save options</button>${p.action==="build"?`<button class="btn" data-do="buildone" data-tid="${esc(p.title_id)}">Build only this</button>`:""}<span class="small muted"></span></div></div></details></td>
-    <td>${esc(p.version)}</td><td class="small">${esc(p.kind||"")}<div>${pathHtml(p.source_host,p.source)}</div></td>
+     <label class="small"><input type="checkbox" data-k="skip" ${o.skip?"checked":""}> never build this game</label>
+     <div class="row"><button class="btn" data-do="saveov">Save options</button>${p.action==="build"?`<button class="btn" data-do="buildone" data-tid="${esc(p.title_id)}">Build only this…</button>`:""}<span class="small muted"></span></div></div>`}
+function libRow(p,cfgHost){const o=libData.overrides[p.title_id]||{},tid=esc(p.title_id),search=[p.title,p.title_id,p.source,...(p.candidates||[]).map(x=>x.source)].join(" ").toLowerCase();
+  const why=p.help==="packed"?`<div class="small" style="margin-top:4px">Why this blocks the build, and what to do: <a href="${README_BASE}#packed-copies" target="_blank" rel="noopener noreferrer">Packed copies</a>.</div>`:"";
+  return `<tr data-tid="${tid}" data-action="${esc(cls(p.action))}" data-search="${esc(search)}"><td><b>${esc(p.title||p.title_id)}</b><div class="small muted">${tid} · ${p.version?"v"+esc(p.version):"version read after extraction"} · ${fwLine(p)||"firmware not known"}</div>
+    ${p.patched?`<div class="small muted">Named after the patch's param.json: fw ${esc(p.fw||"?")} (the source has ${esc(p.source_fw||"?")})</div>`:""}
+    <details class="why" data-tid="${tid}"><summary class="small">Why this copy · Options${Object.keys(o).length?" (changed)":""}</summary>${candList(p)}${backportText(p)}${optionsForm(p,o,cfgHost)}</details></td>
+    <td>${esc(p.version)}</td><td class="small">${esc(((p.candidates||[]).find(x=>x.source===p.source)||{}).kind_label||p.kind||"")}<div>${pathHtml(p.source_host,p.source)}</div></td>
     <td>${p.failure?failTag(p.failure.state==="waiting"||p.action==="failed"?p.failure:{state:"failed"}):`<span class="tag t-${cls(p.action)}">${esc(p.action)}</span>`}${p.failure&&p.failure.state==="failed"&&p.action==="build"?` <span class="tag t-build">will retry</span>`:""}
-     <div class="small muted">${esc(p.why_host||p.why)}</div>${p.ps4&&p.files?ps4Files(p):""}${p.failure?`${failureButtons(p.failure,false)}<details><summary class="small">Why, and the log</summary>${failureBody(p.failure)}</details>`:""}</td></tr>`}).join("");
+     <div class="small muted">${esc(p.why_host||p.why)}</div>${why&&p.action==="skip"?why:""}${p.ps4&&p.files?ps4Files(p):""}${p.failure?`${failureButtons(p.failure,false)}<details><summary class="small">Why, and the log</summary>${failureBody(p.failure)}</details>`:""}</td></tr>`}
+function unrecBox(un,s){if(!un.length){$("#libUnrec").innerHTML="";return}
+  $("#libUnrec").innerHTML=`<details class="card" id="unrecDetails"><summary><b>Not recognised (${un.length})</b> <span class="muted small">looked at, but not usable</span></summary>
+    <div class="small muted" style="margin:6px 0">These files were scanned and could not be identified as a game. A patch, an add-on or an unrelated archive is not listed here, only what failed. Fix or remove the file and scan again.</div>
+    <table>${un.map(x=>`<tr><td>${pathHtml(x.source_host,x.source)}<div class="small muted">${esc(x.origin==="library"?"in the game library":x.origin==="download"?"in downloads":x.origin||"")}</div></td><td class="small err">${esc(x.error)}</td></tr>`).join("")}</table></details>`}
+function renderLib(){const {plan:pl,status:s,unrec:un}=libData,cf=s.folders?.config,cfgHost=cf&&cf.host&&!cf.partial?cf.host:null;libCfgHost=cfgHost;
+  const n=a=>pl.filter(p=>p.action===a).length,bits=[[`${pl.length} titles`,""],[`${n("build")} to build`,"build"],...(n("copy")?[[`${n("copy")} PS4 to copy`,"copy"]]:[]),[`${n("done")} done`,"done"],...(n("failed")?[[`${n("failed")} failed`,"failed"]]:[]),
+    ...(n("skip")?[[`${n("skip")} skipped`,"skip"]]:[]),...(n("error")?[[`${n("error")} problem${n("error")===1?"":"s"}`,"error"]]:[]),...(un.length?[[`${un.length} not recognised`,"unrec"]]:[])];
+  $("#libSum").innerHTML=bits.map(([t,k])=>k==="unrec"?`<a href="#" data-libunrec>${esc(t)}</a>`:k?`<a href="#" data-libfilter="${k}" class="${$("#libAct").value===k?"on":""}">${esc(t)}</a>`:`<b>${esc(t)}</b>`).join(" · ");
+  const empty=t=>`<tr><td colspan="4">${t}</td></tr>`;
+  $("#libRows").innerHTML=!pl.length?empty(!s.plan_time?`<b>No scan yet.</b> <span class="muted">Press Scan to look through your game library for games to build.</span> <button class="btn" data-do="scan">Scan for new games</button>`
+      :`<b>The last scan found no games.</b> <span class="muted">Nothing usable was found in <code>${esc(s.disks.library?.path||"")}</code>${s.disks.downloads?.error?"":` or <code>${esc(s.disks.downloads?.path||"")}</code>`}. Check the folders on the Dashboard, then scan again.</span>${un.length?` <span class="muted">${un.length} file${un.length===1?"":"s"} could not be identified: see below.</span>`:""}`)
+    :pl.map(p=>libRow(p,cfgHost)).join("")+`<tr id="libNone" hidden><td colspan="4"><span class="muted">No titles match the filter.</span></td></tr>`;
+  unrecBox(un,s);
   $("#libTime").textContent=s.plan_time?`scanned ${ago(s.plan_time)} ago`:"not scanned yet";
-}
-$("#libFilter").oninput=loadLib;$("#libAct").onchange=loadLib;
-async function saveOv(btn){const box=btn.closest(".ovr"),o={};box.querySelectorAll("[data-k]").forEach(e=>o[e.dataset.k]=e.type==="checkbox"?e.checked:e.value);
-  const m=btn.parentElement.querySelector("span");try{const r=await api("/api/overrides/"+encodeURIComponent(box.dataset.tid),{method:"PUT",body:JSON.stringify(o)});m.textContent="Saved — rescan to apply";m.className="small muted";
+  restoreLibUi();applyLibFilter()}
+// what the user had open or typed survives a re-render
+function restoreLibUi(){document.querySelectorAll("#libRows details.why").forEach(d=>{if(libUi.open.has(d.dataset.tid))d.open=true});
+  for(const [tid,ed] of Object.entries(libUi.edits)){const box=document.querySelector(`#libRows .ovr[data-tid="${CSS.escape(tid)}"]`);if(!box)continue;
+    for(const [k,v] of Object.entries(ed)){const e=box.querySelector(`[data-k="${CSS.escape(k)}"]`);if(!e)continue;if(e.type==="checkbox")e.checked=v;else e.value=v}}}
+function applyLibFilter(){const f=$("#libFilter").value.toLowerCase().trim(),a=$("#libAct").value;let shown=0,all=0;
+  document.querySelectorAll("#libRows tr[data-tid]").forEach(tr=>{all++;const show=(!a||tr.dataset.action===a)&&(!f||tr.dataset.search.includes(f));tr.hidden=!show;if(show)shown++});
+  const none=$("#libNone");if(none)none.hidden=shown>0;
+  $("#libShown").textContent=(f||a)&&all?`showing ${shown} of ${all} titles`:"";
+  document.querySelectorAll("#libSum a[data-libfilter]").forEach(x=>x.classList.toggle("on",x.dataset.libfilter===a))}
+$("#libFilter").oninput=applyLibFilter;$("#libAct").onchange=applyLibFilter;
+$("#libSum").addEventListener("click",e=>{const u=e.target.closest("[data-libunrec]");if(u){e.preventDefault();const d=$("#unrecDetails");if(d){d.open=true;d.scrollIntoView({block:"start"})}return}
+  const a=e.target.closest("[data-libfilter]");if(!a)return;e.preventDefault();$("#libAct").value=$("#libAct").value===a.dataset.libfilter?"":a.dataset.libfilter;applyLibFilter()});
+$("#libRows").addEventListener("toggle",e=>{const d=e.target;if(d.classList&&d.classList.contains("why")){if(d.open)libUi.open.add(d.dataset.tid);else libUi.open.delete(d.dataset.tid)}},true);
+const noteEdit=e=>{const k=e.target.dataset&&e.target.dataset.k,box=e.target.closest&&e.target.closest(".ovr");if(!k||!box)return;(libUi.edits[box.dataset.tid]=libUi.edits[box.dataset.tid]||{})[k]=e.target.type==="checkbox"?e.target.checked:e.target.value};
+$("#libRows").addEventListener("input",noteEdit);$("#libRows").addEventListener("change",noteEdit);
+$("#libRows").addEventListener("click",e=>{const a=e.target.closest("[data-goto]");if(!a)return;e.preventDefault();gotoField(a.dataset.goto)});
+// the Library follows what changes (a build finishing, a scan, a saved option) without a visit to the tab; not while someone is typing in it
+async function refreshLibIfChanged(s){if(tab!=="lib"||libKey===null||libBusy||libKeyOf(s)===libKey)return;
+  const ae=document.activeElement;if(ae&&ae.closest&&ae.closest("#libRows .ovr"))return;
+  libBusy=true;try{await fetchLib();renderLib()}catch(e){}finally{libBusy=false}}
+async function saveOv(btn){const box=btn.closest(".ovr"),tid=box.dataset.tid,o={};box.querySelectorAll("[data-k]").forEach(e=>o[e.dataset.k]=e.type==="checkbox"?e.checked:e.value);
+  const m=btn.parentElement.querySelector("span"),prev=libData.status.plan_time;
+  try{const r=await api("/api/overrides/"+encodeURIComponent(tid),{method:"PUT",body:JSON.stringify(o)});delete libUi.edits[tid];m.className="small muted";
+    m.textContent=r.replan==="now"?"Saved. Planning again…":r.replan==="after_run"?"Saved. A run is active: this applies from the next run, and the list updates when the run ends.":"Saved. A scan is running: the list updates when it ends.";
     const pi=box.querySelector('[data-k="patch"]');if(pi)pi.value=r.patch||"";   // a path typed as on the NAS is stored as the container path
-    const h=box.querySelector("[data-patchhint]");if(h)h.innerHTML=patchHint(r,box.dataset.tid,libCfgHost)}catch(e){m.textContent=e.message;m.className="small err"}}
-async function buildOne(t){try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
+    const h=box.querySelector("[data-patchhint]");if(h)h.innerHTML=patchHint(r,tid,libCfgHost);
+    if(r.replan==="now")afterReplan(tid,prev)}catch(e){m.textContent=e.message;m.className="small err"}}
+// a scan is about a second with the cache warm: look for the new plan until it is there
+async function afterReplan(tid,prev){for(let i=0;i<30;i++){await new Promise(r=>setTimeout(r,1000));let s;try{s=await api("/api/status")}catch(e){return}
+  if(s.plan_time!==prev&&!s.scan.running){try{await fetchLib();renderLib()}catch(e){}toast("Saved and applied: "+tid);return}}}
+function buildEstimate(p){const pace=libData.status.pace||{},gibs=num(p.size)/2**30;
+  if(!pace.build_per_gib||!gibs)return"no estimate yet: no build has finished on this machine";
+  return "about "+dur((pace.build_per_gib+(pace.prep_per_gib||0))*gibs)+", from the builds this machine has done"}
+async function buildOne(t){const p=libData.plan.find(x=>x.title_id===t)||{};
+  if(!confirm(`Build ${p.title||t} now?\n\n${num(p.size)?gib(p.size)+" to read, ":""}${buildEstimate(p)}.\nIt runs in the background; Stop after current ends it after the games in progress.`))return;
+  try{await api("/api/run",{method:"POST",body:JSON.stringify({only:[t]})});say("Started "+t);tab="dash";document.querySelector('nav button[data-tab=dash]').click()}catch(e){alertBox(e.message)}}
 function alertBox(m){say(m,1)}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-do]");if(!b)return;e.preventDefault();
   if(b.dataset.do==="scan"){doScan();goTab("dash")}else if(b.dataset.do==="saveov")saveOv(b);else if(b.dataset.do==="buildone")buildOne(b.dataset.tid)});
-function builtRow(t,v){return `<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.ps4?` <span class="tag">PS4</span>${Array.isArray(v.files)?` <span class="muted small">${num(v.files.length)} package${v.files.length===1?"":"s"}</span>`:""}`:""}${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${esc(gib(v.bytes))}</td><td class="small">${v.ps4?"copied as they are":v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${esc((num(v.seconds)/60).toFixed(1))} min`:`prep ${esc(v.prep_min??"—")} · build ${esc(v.build_min??"—")} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`}
+function builtRow(t,v){return `<tr><td><b>${esc(String(v.output||t).split(/[\\/]/).pop())}</b>${v.ps4?` <span class="tag">PS4</span>${Array.isArray(v.files)?` <span class="muted small">${num(v.files.length)} package${v.files.length===1?"":"s"}</span>`:""}`:""}${v.output?`<div class="small">Location: ${pathHtml(v.output_host,v.output)}</div>`:""}<div class="small muted">Source: ${v.source?pathHtml(v.source_host,v.source):"—"}</div></td><td class="small">${esc(v.built||"")}</td><td>${esc(gib(v.bytes))}</td><td class="small">${v.ps4?"copied as they are":v.prep_min==null&&v.build_min==null&&v.seconds!=null?`total ${esc((num(v.seconds)/60).toFixed(1))} min`:`prep ${esc(v.prep_min??"—")} · build ${esc(v.build_min??"—")} min`}${v.level!=null?` · L${esc(v.level)}`:""}</td><td class="small">${esc(v.validate??v.validated??"")}${v.backport&&v.backport.differs?`<div class="muted">image differed from the original in ${num(v.backport.files)} file(s): the ${esc(v.backport.used)} was used</div>`:""}${typeof v.sha256==="string"?`<div class="muted">sha256 ${esc(v.sha256.slice(0,16))}…</div>`:""}</td></tr>`}
 function failedRow(f){return `<tr><td><b>${esc(f.name||f.title||f.title_id)}</b> ${failTag(f)}<div class="small">${esc(f.summary)}</div><div class="small muted">${esc(f.next||"")}</div>${failureButtons(f,false)}<details><summary class="small">Details and the log of this attempt</summary>${failureBody(f)}</details></td><td class="small">${esc(f.at_text||"")}</td><td>—</td><td class="small">attempt ${esc(f.attempts||1)} · ${esc(f.phase||"")}</td><td class="small">${esc(f.code||"")}</td></tr>`}
 async function loadHist(){const [l,fl]=await Promise.all([api("/api/ledger"),api("/api/failures")]);   // ledger entries from older versions have other field names and gaps
   const flt=$("#histFilter").value;

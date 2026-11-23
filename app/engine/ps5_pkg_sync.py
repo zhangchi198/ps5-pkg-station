@@ -1013,10 +1013,148 @@ def ps4_plan(cfg, pick):
                 dest_dir=str(Path(cfg["output"]) / "PS4" / folder), files=files, notes=list(pick.get("notes") or []))
 
 
-def choose(cfg, cands, ledger, failures=None):
+KIND_LABEL = {"ffpfsc": "image (.ffpfsc)", "ffpfs": "image (.ffpfs)", "exfat": "image (.exfat)", "ffpkg": "image (.ffpkg)",
+              "rar": "archive (.rar)", "zip": "archive (.zip)", "7z": "archive (.7z)", "folder": "unpacked folder",
+              "archive-image": "image inside an archive", "archive-pkg": ".pkg inside an archive", "archive-ps4": "PS4 packages in an archive",
+              "ps4-folder": "PS4 game folder"}
+ARCHIVE_KINDS = ("rar", "zip", "7z")
+
+
+def kind_label(kind):
+    return KIND_LABEL.get(kind, kind or "?")
+
+
+def backport_decision(image_fw, original_fw, console_fw, override=None):
+    """Which copy of a game with modified executables runs on the console: ("image" | "original" | None, who decided).
+    The rules of resolve_modified_exec(), so the Library can show now what the build will do."""
+    console = (console_fw or "").strip()
+    if override == "image":
+        return "image", "your option"
+    if override == "original":
+        return "original", "your option"
+    if console and original_fw and vkey(original_fw) > vkey(console) and vkey(image_fw or "99") <= vkey(console):
+        return "image", "your console's firmware"
+    if console and original_fw and vkey(original_fw) <= vkey(console):
+        return "original", "your console's firmware"
+    return None, ("no console firmware is set (Settings)" if not console else "neither copy is known to run on the console")
+
+
+def explain_candidates(lst, pick, ov, twin):
+    """Every copy found of one game, with what became of it: [{source, kind, kind_label, version, fw, packed, size, origin,
+    verdict, reason}]. verdict: chosen | verifies | older | packed | same_version | not_used (the user chose another)."""
+    out = []
+    newer = any(vkey(c["version"]) < vkey(pick["version"]) for c in lst if c is not pick)
+    same = [c for c in lst if c is not pick and vkey(c["version"]) == vkey(pick["version"]) and not c.get("packed")]
+    pref = lambda c: KIND_PREF.get(c["kind"], 9)
+    for c in lst:
+        if c is pick:
+            if ov.get("source"):
+                verdict, reason = "chosen", "chosen by you (Copy to use)"
+            elif len(lst) == 1:
+                verdict, reason = "chosen", "the only copy found"
+            else:
+                bits = []
+                if newer:
+                    bits.append(f"newest version (v{pick['version'] or '?'})")
+                if any(pref(pick) < pref(c) for c in same):
+                    bits.append(f"{kind_label(pick['kind'])} is read faster than the other copies of that version")
+                if any(c.get("packed") and not pick.get("packed") for c in lst if c is not pick):
+                    bits.append("the packed copies are passed over")
+                if pick.get("packed"):
+                    bits.append(f"every copy is {pick['packed']}-packed")
+                verdict, reason = "chosen", "; ".join(bits) or "the first of equal copies"
+            if twin is not None and pick["kind"] not in ARCHIVE_KINDS + ("folder",):
+                reason += f"; checked against {Path(twin['source']).name}"
+        elif ov.get("source"):
+            verdict, reason = "not_used", "not used: you chose another copy"
+        elif twin is not None and c is twin and pick["kind"] not in ARCHIVE_KINDS + ("folder",):
+            verdict, reason = "verifies", "same version; the image is checked file by file against this archive before it is built"
+        elif c.get("packed") and not pick.get("packed"):
+            verdict, reason = "packed", f"{c['packed']}-packed: UltraPack builds from unpacked files, so this copy is passed over"
+        elif vkey(c["version"]) < vkey(pick["version"]):
+            verdict, reason = "older", f"older version (v{c['version'] or '?'}; the newest is v{pick['version'] or '?'})"
+        elif pref(pick) < pref(c):
+            verdict, reason = "same_version", f"same version; {kind_label(pick['kind'])} is read faster than {kind_label(c['kind'])}"
+        else:
+            verdict, reason = "same_version", "same version; the first one found is used"
+        out.append(dict(source=c["source"], kind=c["kind"], kind_label=kind_label(c["kind"]), version=c["version"], fw=c.get("fw", ""),
+                        packed=c.get("packed", ""), size=c.get("size", 0), origin=c.get("origin", ""), verdict=verdict, reason=reason))
+    return out
+
+
+def backport_info(cfg, pick, twin, ov):
+    """The backport question for a game with an image and an original archive of one version: None without such a
+    pair, else {present, confirmed, image_fw, original_fw, console_fw, decision, decided_by}. `present` is judged
+    from the firmware the two copies ask for (known from the scan); whether the executables really differ is only
+    found when the build starts (`confirmed` stays false until then, and the outcome is kept with the build)."""
+    if twin is None or pick["kind"] in ARCHIVE_KINDS + ("folder", "archive-ps4", "ps4-folder"):
+        return None
+    image_fw, original_fw, console = pick.get("fw", ""), twin.get("fw", ""), (cfg.get("console_fw") or "")
+    decision, by = backport_decision(image_fw, original_fw, console, ov.get("modified_exec"))
+    return dict(present=bool(image_fw and original_fw and vkey(image_fw) < vkey(original_fw)), confirmed=False, image_fw=image_fw,
+                original_fw=original_fw, console_fw=console, decision=decision, decided_by=by)
+
+
+# ------------------------------------------------------------------ titles learned from extracted games
+
+_titles_lock = threading.Lock()
+
+
+def load_titles():
+    """{title_id: title} of games whose real title was only known after extraction (state/titles.json)."""
+    try:
+        data = json.loads((STATE / "titles.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, str) and v} if isinstance(data, dict) else {}
+
+
+def remember_title(tid, title):
+    """Keep the title a game turned out to have, so the Library can show it before the next extraction."""
+    if not title:
+        return
+    with _titles_lock:
+        titles = load_titles()
+        if titles.get(tid) != title:
+            titles[tid] = title
+            try:
+                write_json_atomic(STATE / "titles.json", titles)
+            except OSError:
+                pass
+
+
+WRAPPED_KINDS = ("archive-image", "archive-pkg")     # no param.json is read while scanning these: their "title" is a folder name
+
+
+def best_title(tid, lst, pick, ledger, titles):
+    """The title to show for a game. A copy wrapped in an archive has only its folder's name; a loose copy of the
+    same game, a title learned when it was last extracted, or the name of what was built from it say better."""
+    if pick["kind"] not in WRAPPED_KINDS:
+        return pick["title"]
+    other = next((c["title"] for c in lst if c["kind"] not in WRAPPED_KINDS and c.get("title")), None)
+    if other:
+        return other
+    if (titles or {}).get(tid):
+        return titles[tid]
+    out = ((ledger or {}).get(tid) or {}).get("output")
+    m = re.match(r"(.+?) \[(?:PPSA|CUSA)\d{5}\]", Path(str(out)).name) if out else None
+    return m.group(1) if m else pick["title"]
+
+
+def unrecognised(cands):
+    """The sources a scan could not use, with why: [{source, origin, error}]. They are not in the plan (there is
+    no game to plan), so without this list "why is my game not shown" has no answer."""
+    out = []
+    for c in cands:
+        if c.get("error") or not c.get("title_id"):
+            out.append(dict(source=c.get("source", ""), origin=c.get("origin", ""), error=str(c.get("error") or "no title ID found")[:300]))
+    return sorted(out, key=lambda x: x["source"])
+
+
+def choose(cfg, cands, ledger, failures=None, titles=None):
     """The plan: one entry per title. `failures` (state/failures.json) makes a title that failed, with nothing
     changed since, action "failed" instead of "build": preparing it again would copy the same hundreds of GiB
-    to fail the same way."""
+    to fail the same way. `titles` (state/titles.json) names the games whose scan only found a folder name."""
     failures = failures or {}
     by = {}
     for c in cands:
@@ -1035,6 +1173,8 @@ def choose(cfg, cands, ledger, failures=None):
             usable = [c for c in lst if not c.get("packed")] or lst
             pick = sorted(usable, key=lambda c: (tuple(-x for x in vkey(c["version"])), KIND_PREF.get(c["kind"], 9)))[0]
         done = ledger.get(tid)
+        pick = dict(pick, title=best_title(tid, lst, pick, ledger, titles))
+        lst = [pick if c["source"] == pick["source"] else c for c in lst]
         shown = pick                                                         # what the package will say: the patch's param.json wins
         if not pick.get("ps4") and ov.get("patch"):
             pi = patched_identity(ov["patch"])
@@ -1051,8 +1191,9 @@ def choose(cfg, cands, ledger, failures=None):
         elif tid.startswith("CUSA") and not ps4:
             action, why = "skip", "PS4 title that is not a set of packages: not handled"
         elif pick.get("packed"):
-            action, why = "skip", f"only {pick['packed']}-packed sources"
-        elif done and vkey(done.get("source_version") or done["version"]) >= vkey(pick["version"]) and nas_exists(done["output"]):
+            action, why = "skip", (f"only {pick['packed']}-packed copies: UltraPack builds from unpacked files, so this game is skipped "
+                                   f"until an unpacked copy is found")
+        elif done and vkey(done.get("source_version") or done.get("version")) >= vkey(pick["version"]) and done.get("output") and nas_exists(done["output"]):
             action, why = "done", f"built {done.get('built', '')}: {Path(done['output']).name}"
         elif ps4:
             action, why = "copy", "PS4: copy packages as they are" + (" (newer version)" if done else "")
@@ -1069,8 +1210,9 @@ def choose(cfg, cands, ledger, failures=None):
                          archive_root=pick.get("archive_root"), inner=pick.get("inner"), patch=ov.get("patch"),
                          name=name if shown["version"] else f"{clean_title(shown['title'])} [{tid}] (version read after extraction)",
                          action=action, why=why,
-                         candidates=[dict(source=c["source"], kind=c["kind"], version=c["version"],
-                                          packed=c.get("packed", ""), size=c.get("size", 0)) for c in lst],
+                         candidates=explain_candidates(lst, pick, ov, twin),
+                         backport=backport_info(cfg, pick, twin if twin and pick["kind"] not in ("rar", "zip", "7z", "folder") else None, ov),
+                         **(dict(help="packed") if pick.get("packed") and action == "skip" else {}),
                          skipped_duplicates=[f"{c['source']} (v{c['version']}{', ' + c['packed'] if c.get('packed') else ''})"
                                              for c in lst if c["source"] != pick["source"]]))
         entry = plan[-1]
@@ -1163,20 +1305,25 @@ def resolve_modified_exec(cfg, job, want, log):
         if base:
             base.close()
     if not diff and not extra:
+        job["backport_outcome"] = dict(differs=False, used="image", image_fw=job.get("fw"))
         return want
     ov = cfg["overrides"].get(job["title_id"], {})
     a = archive_param(cfg, job["verify_archive"], job.get("verify_root"))
     console = cfg.get("console_fw", "")
+    outcome = dict(differs=True, files=len(diff) + len(extra), examples=(diff + extra)[:4], image_fw=job.get("fw"), original_fw=a["fw"], console_fw=console)
     log(f"  image differs from the original in {len(diff)} file(s){f' + {len(extra)} fakelib file(s)' if extra else ''}: "
         f"{', '.join((diff + extra)[:6])}{' ...' if len(diff) + len(extra) > 6 else ''}; image fw {job.get('fw')}, "
         f"original fw {a['fw']}, console fw {console or '?'}")
-    if ov.get("modified_exec") == "image" or (console and a["fw"] and vkey(a["fw"]) > vkey(console)
-                                               and vkey(job.get("fw") or "99") <= vkey(console)):
+    want_exec = ov.get("modified_exec")                  # your option comes first (the Library shows the decision by backport_decision(), the same rules)
+    if want_exec == "image" or (want_exec != "original" and console and a["fw"] and vkey(a["fw"]) > vkey(console)
+                                and vkey(job.get("fw") or "99") <= vkey(console)):
         log("  keeping the image's modified executables (original needs newer firmware than the console)")
+        job["backport_outcome"] = dict(outcome, used="image", decided_by="your option" if ov.get("modified_exec") == "image" else "your console's firmware")
         return {k: v for k, v in want.items() if not EXEC_RE.search(k) and not
                 (k == "sce_sys/param.json" and any(d.startswith("sce_sys/param.json") for d in diff))}
-    if ov.get("modified_exec") == "original" or (console and a["fw"] and vkey(a["fw"]) <= vkey(console)):
+    if want_exec == "original" or (console and a["fw"] and vkey(a["fw"]) <= vkey(console)):
         log(f"  switching to the original archive (runs on fw {console})")
+        job["backport_outcome"] = dict(outcome, used="original", decided_by="your option" if ov.get("modified_exec") == "original" else "your console's firmware")
         job.update(kind="rar", source=job["verify_archive"], archive_root=job.get("verify_root"), verify_archive=None,
                    fw=a["fw"], name=pkg_name(dict(job, fw=a["fw"])))
         return None
@@ -1359,7 +1506,7 @@ def notify(cfg, title, msg):
         pass
 
 
-RESULT_KEYS = ("title_id", "name", "title", "status", "why", "validate", "prep_min", "build_min", "gib", "code", "phase", "data", "size", "at")
+RESULT_KEYS = ("title_id", "name", "title", "status", "why", "validate", "prep_min", "build_min", "gib", "code", "phase", "data", "size", "at", "backport")
 
 
 def build_progress(logf):
@@ -1446,6 +1593,7 @@ def prepare(cfg, job, log, headroom=0):
                                      found=ident["title_id"], expected=job["title_id"])
     if not job.get("version"):
         job.update(version=ident["version"], fw=ident["fw"], title=clean_title(ident["title"]), name=pkg_name(ident))
+        remember_title(job["title_id"], job["title"])
         log(f"  identified after extraction: {job['name']}")
     res = dict(app=app, clean=clean(app, job.get("patch"), log), prep_min=round((time.time() - t0) / 60, 1))
     name_after_patch(job, app, res["clean"], log)
@@ -1683,7 +1831,8 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
             copy_secs = time.time() - t_cp
         else:
             pkgs[0].rename(final)
-        res.update(status="built", output=str(final), gib=round(final.stat().st_size / 2**30, 2), build_secs=round(time.time() - b["t0"], 1))
+        res.update(status="built", output=str(final), gib=round(final.stat().st_size / 2**30, 2), build_secs=round(time.time() - b["t0"], 1),
+                   backport=job.get("backport_outcome"))
         secs = tr.stage_secs() if tr is not None else {}
         if all(str(n) in secs for n in range(1, 6)):         # a build seen from its first line: its stage times teach the next estimate
             secs.update(validate=round(validate_secs, 1), copy=round(copy_secs, 1))
@@ -1695,7 +1844,8 @@ def finish_build(cfg, b, log, ledger_p, ledger, ledger_lock):
                                            built=time.strftime("%Y-%m-%d %H:%M"), built_ts=time.time(), prep_min=prep.get("prep_min"),
                                            build_min=res["build_min"], bytes=final.stat().st_size, source_bytes=job.get("size"),
                                            level=cfg["compression_level"], validate=summ, clean=prep.get("clean"),
-                                           sha256=res.get("sha256"), **({"stage_secs": secs} if secs else {}))
+                                           sha256=res.get("sha256"), **({"stage_secs": secs} if secs else {}),
+                                           **({"backport": job["backport_outcome"]} if job.get("backport_outcome") else {}))
             ledger_p.write_text(json.dumps(ledger, indent=2, ensure_ascii=False))
         return res
     except Exception as ex:
@@ -2353,7 +2503,8 @@ def main():
         cands = discover(cfg, log, cache)
         cache_p.write_text(json.dumps(cache, indent=1, ensure_ascii=False))
         failures = failure_store().load()
-        plan = choose(cfg, cands, ledger, failures)
+        plan = choose(cfg, cands, ledger, failures, titles=load_titles())
+        write_json_atomic(STATE / "unrecognised.json", unrecognised(cands))
         for j in plan:                                  # built since (by hand, or by another copy): nothing to remember
             if j["action"] == "done" and j["title_id"] in failures:
                 failure_store().clear(j["title_id"])

@@ -114,7 +114,7 @@ class Overrides(StorageCase):
     def test_remove_deletes_just_that_entry(self):
         before = self.raw()
         r = self.client.delete("/api/overrides/PPSA05678")
-        self.assertEqual((r.status_code, r.json()), (200, {"ok": True, "removed": "PPSA05678"}))
+        self.assertEqual((r.status_code, r.json()), (200, {"ok": True, "removed": "PPSA05678", "replan": "now"}))
         after = self.raw()
         self.assertEqual(sorted(after["overrides"]), ["PPSA01234", "PPSA09999"])
         self.assertEqual(after["overrides"]["PPSA01234"], OVERRIDES["PPSA01234"])

@@ -32,6 +32,7 @@ PY = sys.executable
 sys.path.insert(0, str(ENGINE.parent))
 import ps5_pkg_sync as E  # noqa: E402  (same defaults/validation as the engine)
 import ps5_failures as FL  # noqa: E402  (games that failed: why, and when another try can help)
+import ps5_progress as PG  # noqa: E402  (what earlier builds say about how long a game takes)
 import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
 import ps5_settingsio as IO  # noqa: E402  (export / import of the settings)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
@@ -257,6 +258,37 @@ def live_plan(entries):
     return out
 
 
+def build_pace(cfg):
+    """What earlier builds of this install say about the time a game takes: seconds per source GiB to prepare and to
+    build at the current compression level, and how many builds that rests on (None until there is one)."""
+    ledger = read_json_cached(STATE / "ledger.json", {})
+    h = PG.history(ledger if isinstance(ledger, dict) else {}, cfg.get("compression_level"))
+    return dict(build_per_gib=h["build_per_gib"], prep_per_gib=h["prep_per_gib"], builds=h["builds"])
+
+
+def library_extras(p, cfg, ledger):
+    """A plan entry as the Library shows it, with what depends on the settings of the moment (so a change to the console
+    firmware or a backport option shows at once, without a new scan): the backport decision, and whether the copy that
+    will be used asks for more firmware than the console has (`fw_check`: need, console, ok = True / False / None)."""
+    if not isinstance(p, dict) or p.get("ps4"):
+        return p
+    tid, console = p.get("title_id"), (cfg.get("console_fw") or "").strip()
+    bp, need = p.get("backport"), (p.get("fw") if isinstance(p.get("fw"), str) else "")
+    if isinstance(bp, dict):
+        ov = (cfg.get("overrides") or {}).get(tid) or {}
+        image_fw, original_fw = (str(bp.get(k) or "") for k in ("image_fw", "original_fw"))
+        decision, by = E.backport_decision(image_fw, original_fw, console, ov.get("modified_exec") if isinstance(ov, dict) else None)
+        p = dict(p, backport=dict(bp, console_fw=console, decision=decision, decided_by=by))
+        if bp.get("present") and decision:
+            need = (original_fw if decision == "original" else image_fw) or need
+    if need:
+        p = dict(p, fw_check=dict(need=need, console=console, ok=(E.vkey(need) <= E.vkey(console)) if console else None))
+    last = (ledger or {}).get(tid) if isinstance(ledger, dict) else None
+    if p.get("action") == "done" and isinstance(last, dict) and isinstance(last.get("backport"), dict):
+        p = dict(p, last_backport=last["backport"])
+    return p
+
+
 def next_run(schedule, now=None):
     """When the schedule starts the next run, from the server's clock: {at, time, day: today|tomorrow, label}, or
     None when nothing is scheduled."""
@@ -462,12 +494,33 @@ def scheduler_tick(fired, now=None):
             E.log_to(fh)(f"=== scheduled run {hm}: {msg}")
 
 
+_replan = {"pending": False}
+
+
+def request_replan():
+    """Plan again so the Library shows what an option change does, without anyone pressing Scan: at once when
+    nothing runs (with the scan cache warm that is about a second), else as soon as the run or scan is over (the
+    scheduler's tick sees the flag). Returns "now", "after_run" or "after_scan": what the page tells the user."""
+    if run_scan():
+        _replan["pending"] = False
+        return "now"
+    _replan["pending"] = True
+    return "after_run" if engine_pid() else "after_scan"
+
+
+def replan_tick():
+    if _replan["pending"] and not engine_pid() and not _scan["running"]:
+        _replan["pending"] = False
+        run_scan()
+
+
 def scheduler():
     fired = set()
     while True:
         time.sleep(20)
         try:
             scheduler_tick(fired)
+            replan_tick()
         except Exception:
             pass
 
@@ -560,6 +613,7 @@ def status(request: Request):
                                 at_text=a.get("at_text"), will_retry=a["will_retry"]) for a in attention],
                 scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
                 status=st if pid else dict(st, live=False), next_run=next_run(cfg.get("schedule")), last_run=last_run(st, bool(pid)), space=space,
+                pace=build_pace(cfg),
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "copy", "failed", "done", "skip", "error")},
@@ -578,7 +632,8 @@ def plan():
     cfg = load_cfg()
     data, mapping = read_json(STATE / "plan.json", []), host_view(cfg)["mapping"]
     if isinstance(data, list):
-        data = plan_with_failures(live_plan(data), cfg, mapping)
+        ledger = read_json_cached(STATE / "ledger.json", {})
+        data = [library_extras(p, cfg, ledger) for p in plan_with_failures(live_plan(data), cfg, mapping)]
     if not mapping or not isinstance(data, list):
         return data
     out = []
@@ -589,6 +644,14 @@ def plan():
             p = dict(p, candidates=[host_twins(c, mapping, ("source",)) for c in p["candidates"]])
         out.append(p)
     return out
+
+
+@app.get("/api/unrecognised")
+def unrecognised_sources():
+    """The sources the last scan could not use: [{source, source_host, origin, error}], so "why is my game not
+    listed" has an answer. A source that is not a game at all (an add-on, a patch) is not an error and not here."""
+    data, mapping = read_json(STATE / "unrecognised.json", []), host_view(load_cfg())["mapping"]
+    return [host_twins(x, mapping, ("source",)) for x in data if isinstance(x, dict)] if isinstance(data, list) else []
 
 
 @app.get("/api/setup")
@@ -822,6 +885,7 @@ async def import_settings(req: Request, dry_run: int = 0, parts: str = ""):
         return dict(d, ok=True, dry_run=True)
     before = {b["name"] for b in E.list_backups()}
     cfg = update_cfg(lambda raw: IO.apply_import(raw, settings, overrides, want))
+    request_replan()
     made = [b["name"] for b in E.list_backups() if b["name"] not in before]
     return dict(d, ok=True, dry_run=False, backup=made[0] if made else None,
                 config={k: cfg.get(k) for k in SETTINGS}, overrides=cfg.get("overrides", {}))
@@ -857,6 +921,7 @@ def restore_backup(name: str, dry_run: int = 0):
         E.restore_backup(name)
     except ValueError as ex:
         raise HTTPException(400, str(ex))
+    request_replan()
     made = [b["name"] for b in E.list_backups() if b["name"] not in before]
     return dict(d, backup=made[0] if made else None)
 
@@ -873,7 +938,7 @@ def delete_override(tid: str):
     update_cfg(apply)
     if not gone:
         raise HTTPException(404, "there is no override for that title")
-    return {"ok": True, "removed": tid}
+    return {"ok": True, "removed": tid, "replan": request_replan()}
 
 
 @app.get("/api/overrides")
@@ -913,7 +978,7 @@ async def put_override(tid: str, req: Request):
         else:
             raw["overrides"].pop(tid, None)
     cfg = update_cfg(apply)
-    return host_twins(cfg.get("overrides", {}).get(tid, {}), host_view(cfg)["mapping"], ("source", "patch"))
+    return dict(host_twins(cfg.get("overrides", {}).get(tid, {}), host_view(cfg)["mapping"], ("source", "patch")), replan=request_replan())
 
 
 @app.get("/api/failures")

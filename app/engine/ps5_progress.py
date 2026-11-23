@@ -258,7 +258,7 @@ def history(ledger, level=None):
     to prepare ("prep_per_gib") and to copy a PS4 title ("ps4_per_gib")."""
     shares_by, build, prep, ps4 = {k: [] for k in STAGE_KEYS}, [], [], []
     n_shares = 0
-    for v in (ledger or {}).values():
+    for v in (ledger.values() if isinstance(ledger, dict) else []):
         if not isinstance(v, dict):
             continue
         size = v.get("source_bytes")

@@ -36,7 +36,7 @@ Open `http://<host>:8765`.
 | Page | |
 |---|---|
 | Dashboard | the current run first (how far along, about how long it will take, each build's stage), run now, stop after the current games, rescan; what is being prepared and what is next; the last run's result when idle; setup checklist; free space; why a scan or run failed |
-| Library | every game found, the copy that will be used and why; per-game options: force a source, keep the backport or the original, overlay a folder of patch files, skip, build just this one |
+| Library | every game found, the copy that will be used and why (each copy with its path, version and what became of it), whether it runs on your console's firmware, the backport decision, files that could not be identified; per-game options: copy to use, keep the backport or the original, extra files folder, never build, build just this one |
 | History | every finished package with its validation result, size and times |
 | Settings | folders, compression level, parallel builds, console firmware, junk-file cleanup patterns, schedule, notifications |
 | Logs | the run log and each build's log, live |
@@ -61,6 +61,27 @@ finished build adds its stage times, source size and finish time to `ledger.json
 
 There is no login unless you set a password. Keep port 8765 on your LAN or behind a VPN such as Tailscale, and
 don't forward it to the internet. See [Keeping it private](#keeping-it-private).
+
+### The Library: why this copy
+
+Each game has a **Why this copy · Options** panel. It lists every copy found with its full path, kind, version and
+the firmware it asks for, and says what became of each: used (and why: the newest version, the faster kind, your
+choice), an older version, an archive that checks the image, a packed copy that is passed over, or not used because you
+chose another. Under the title you see the firmware the game needs next to your console's (Settings), and a red tag when
+it is higher. If an image and its original archive ask for different firmware (a backport) the panel says which will be
+used for your console and who decided; the files are compared when the build starts, and what it did is shown afterwards
+(Library and History). Files a scan looked at but could not identify are listed under "Not recognised", with the error.
+
+Saving options plans again by itself (a second or so with the scan cache warm); during a run it says the change
+applies from the next run and the list updates when the run ends. Typing in the filter does not reload anything, and an
+open panel or an unsaved edit stays. **Build only this** asks first, with the size and, once a build has finished on this
+machine, about how long it takes.
+
+### Packed copies (LZ4 / Zstd)
+
+Some dumps store the game's AMPR assets compressed (LZ4 or Zstd packs). UltraPack builds from unpacked files, so the app
+passes over such a copy when another copy of the game exists, and a game that only has packed copies is listed as
+**skipped**. To build it, use an unpacked copy of the game (an image or a folder from the original dump), then scan again.
 
 ### Keeping it private
 

@@ -180,7 +180,7 @@ class UnknownKeysAndFormat(ServerCase):
     def test_clearing_an_override_removes_only_that_title(self):
         self.write_cfg(legacy_config())
         r = self.client.put("/api/overrides/PPSA01234", json={})
-        self.assertEqual((r.status_code, r.json()), (200, {}))
+        self.assertEqual((r.status_code, r.json()), (200, {"replan": "now"}))
         self.assertEqual(list(json.loads(self.cfg_path.read_text())["overrides"]), ["PPSA05678"])
 
     def test_the_file_stays_pretty_json_with_real_characters(self):

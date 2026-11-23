@@ -134,7 +134,7 @@ class Session(StateCase):
     def test_forged_and_broken_cookies_are_refused(self):
         c = W.make_session(self.state, "secret", now=time.time())
         ver, exp, sig = c.split(".")
-        for bad in ["", None, "x", "v1.1.2", f"v1.{int(exp) + 99}.{sig}", f"v2.{exp}.{sig}", f"v1.{exp}.{sig[:-1]}0", f"v1.{exp}.", ".".join([ver, exp, sig, "x"]), f"v1.abc.{sig}"]:
+        for bad in ["", None, "x", "v1.1.2", f"v1.{int(exp) + 99}.{sig}", f"v2.{exp}.{sig}", f"v1.{exp}.{sig[:-1]}{'1' if sig[-1] == '0' else '0'}", f"v1.{exp}.", ".".join([ver, exp, sig, "x"]), f"v1.abc.{sig}"]:
             with self.subTest(bad):
                 self.assertFalse(W.session_valid(bad, self.state, "secret"))
 
