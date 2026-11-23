@@ -1,5 +1,0 @@
-Path = CUSA12345/release.pkg
-Folder = -
-Size = 20480
-CRC = EE688278
-
