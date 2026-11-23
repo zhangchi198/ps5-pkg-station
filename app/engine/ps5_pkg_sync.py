@@ -22,17 +22,26 @@ A ledger (state/ledger.json) remembers what was built.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import threading
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import NamedTuple
+
+try:
+    import fcntl
+except ImportError:          # not POSIX: writes stay atomic, only the lock shared between processes is lost
+    fcntl = None
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -80,13 +89,280 @@ def set_junk(cfg):
     JUNK_TITLE = re.compile(r"\s*[-_–—]?\s*(?:" + "|".join(f"(?:{x})" for x in jt) + r")\s*", re.I) if jt else None
 
 
-def load_cfg():
-    STATE.mkdir(parents=True, exist_ok=True)
-    cfg = dict(DEFAULT_CFG)
-    if CFG_PATH.exists():
-        cfg.update(json.loads(CFG_PATH.read_text()))
-    CFG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+# ------------------------------------------------------------------ settings file
+#
+# config.json is read by two processes (the web server on every status poll and scheduler tick, the engine
+# when it starts), written by the web server when Settings or a per-game option is saved, and may be edited
+# by hand. So: reading never writes; the file is only ever replaced atomically; a save is a locked
+# read-modify-write of what is in the file (a concurrent save can't be reverted, keys this version doesn't
+# know survive); and a file that can't be used is reported instead of raised.
+
+SETTINGS = {  # key: (type, min, max) - everything the Settings page may change
+    "library": (str,), "downloads": (str,), "output": (str,), "temp": (str,),
+    "compression_level": (int, 1, 9), "cpu_count": (int, 1, 64), "nice": (int, 0, 19),
+    "max_compress": (int, 1, 4), "max_builds": (int, 1, 6), "ssd_reserve_gb": (int, 0, 10000),
+    "build_on_ssd": (bool,), "console_fw": (str,), "notify_url": (str,),
+    "skip_download_prefixes": (list,), "junk_file_patterns": (list,), "junk_title_patterns": (list,),
+    "schedule": (dict,),
+}
+FILE_ONLY = {"ultrapack_src": (str,), "python": (str,)}   # valid in the file, not on the Settings page
+EXIT_BAD_CONFIG = 4
+_WORDS = {str: "text", list: "a list", dict: "an object"}
+
+
+class ConfigError(Exception):
+    """config.json exists but can't be used: not JSON, not an object, or unreadable."""
+
+    def __init__(self, message, line=None, column=None):
+        super().__init__(message)
+        self.message, self.line, self.column = message, line, column
+
+    def describe(self):
+        return f"line {self.line}: {self.message}" if self.line else self.message
+
+    def as_dict(self):
+        return dict(message=self.message, line=self.line, column=self.column)
+
+
+class CfgInfo(NamedTuple):
+    cfg: dict               # effective settings: defaults, then the file, invalid values replaced
+    error: object           # ConfigError when the file can't be used (cfg is then the last good one), else None
+    problems: list          # invalid values found in the file and replaced by their defaults
+    rev: object             # "mtime_ns-size" of the file, changes whenever it is rewritten; None when absent
+    fallback: object = None  # with an error: "last_good" or "defaults", whichever cfg is
+
+
+def _short(v):
+    r = repr(v)
+    return r if len(r) <= 60 else r[:57] + "..."
+
+
+def validate_setting(key, v):
+    """One value from the Settings page or from config.json: returns it cleaned up, or raises ValueError(why)."""
+    spec = SETTINGS.get(key) or FILE_ONLY.get(key)
+    if spec is None:
+        raise ValueError(f"unknown setting {key}")
+    t = spec[0]
+    if t is int:
+        n = v
+        if isinstance(v, str) and re.fullmatch(r"\s*-?\d+\s*", v):
+            n = int(v)
+        elif isinstance(v, float) and v.is_integer():
+            n = int(v)
+        if isinstance(n, bool) or not isinstance(n, int):
+            raise ValueError(f"{key} must be a whole number {spec[1]}..{spec[2]}")
+        if not spec[1] <= n <= spec[2]:
+            raise ValueError(f"{key} must be {spec[1]}..{spec[2]}")
+        return n
+    if t is bool:
+        if not isinstance(v, bool):
+            raise ValueError(f"{key} must be true or false")
+        return v
+    if not isinstance(v, t):
+        raise ValueError(f"{key} must be {_WORDS[t]}")
+    if key == "console_fw" and v and not re.fullmatch(r"\d{1,2}\.\d{2}", v):
+        raise ValueError("console_fw looks like 13.20")
+    if t is list:
+        if not all(isinstance(x, str) for x in v):
+            raise ValueError(f"{key} must be a list of text")
+        v = [x for x in v if x.strip()]
+        if key in ("junk_file_patterns", "junk_title_patterns"):
+            for x in v:
+                try:
+                    re.compile(f"(?:{x})")
+                except re.error as ex:
+                    raise ValueError(f"{key}: bad pattern {x!r}: {ex}")
+    if key == "schedule":
+        enabled, times = v.get("enabled", False), v.get("times", [])
+        if not isinstance(enabled, bool):
+            raise ValueError("schedule.enabled must be true or false")
+        if not isinstance(times, list):
+            raise ValueError("schedule.times must be a list")
+        for x in times:
+            if not (isinstance(x, str) and re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", x)):
+                raise ValueError(f"schedule.times: {_short(x)} is not a 24-hour HH:MM time")
+        v = dict(enabled=enabled, times=times)
+    return v
+
+
+def _clean_overrides(v):
+    """Per-title options: returns (clean overrides, notes). Fields the engine doesn't read are kept as they are."""
+    if not isinstance(v, dict):
+        return {}, [f"overrides must be an object (found {_short(v)}); ignoring it"]
+    is_str, is_bool = (lambda x: isinstance(x, str)), (lambda x: isinstance(x, bool))
+    fields = (("source", is_str), ("patch", is_str), ("note", is_str), ("skip", is_bool),
+              ("modified_exec", lambda x: x in ("", "image", "original")))
+    out, notes = {}, []
+    for tid, ov in v.items():
+        if not isinstance(ov, dict):
+            notes.append(f"overrides.{tid} must be an object (found {_short(ov)}); ignoring it")
+            continue
+        ov = dict(ov)
+        for k, ok in fields:
+            if ov.get(k) is not None and not ok(ov[k]):
+                notes.append(f"overrides.{tid}.{k} is not valid (found {_short(ov[k])}); ignoring it")
+                del ov[k]
+        out[tid] = ov
+    return out, notes
+
+
+def validate_cfg(raw):
+    """The effective settings for the contents of config.json: (cfg, problems). Defaults fill what the file
+    leaves out; a value that fails validation is replaced by its default and listed in problems; keys this
+    version doesn't know are kept. Never touches the file."""
+    cfg = copy.deepcopy(DEFAULT_CFG)
+    problems = []
+    for k, v in raw.items():
+        if k == "overrides":
+            cfg[k], notes = _clean_overrides(v)
+            problems += notes
+        elif k in SETTINGS or k in FILE_ONLY:
+            try:
+                cfg[k] = validate_setting(k, v)
+            except ValueError as ex:
+                problems.append(f"{ex} (found {_short(v)}); using the default {_short(DEFAULT_CFG[k])}")
+        else:
+            cfg[k] = v
+    return cfg, problems
+
+
+def cfg_rev():
+    try:
+        st = CFG_PATH.stat()
+    except OSError:
+        return None
+    return f"{st.st_mtime_ns}-{st.st_size}"
+
+
+def _read_raw():
+    """The parsed file as a dict, None when there is no file; raises ConfigError. A second try after a moment
+    covers an editor that saves by truncating and rewriting in place."""
+    err = None
+    for attempt in (0, 1):
+        try:
+            text = CFG_PATH.read_text(encoding="utf-8-sig")
+        except FileNotFoundError:
+            return None
+        except UnicodeDecodeError:
+            err = ConfigError("the file is not UTF-8 text")
+        except OSError as ex:
+            raise ConfigError(f"can't read the file: {ex.strerror or ex}")
+        else:
+            try:
+                raw = json.loads(text)
+            except json.JSONDecodeError as ex:
+                err = ConfigError(ex.msg, ex.lineno, ex.colno)
+            else:
+                if isinstance(raw, dict):
+                    return raw
+                err = ConfigError("the top level must be a JSON object ({ ... })", 1, 1)
+        if attempt == 0:
+            time.sleep(0.05)
+    raise err
+
+
+def write_json_atomic(path, obj):
+    """Pretty JSON into a temp file next to `path`, then one rename over it: a reader sees the old file or the
+    new one, never half of it. Keeps the permission bits the file already had."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".part")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o666)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(obj, indent=2, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        except FileNotFoundError:
+            pass
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+_cfg_thread_lock = threading.Lock()
+_good_lock = threading.Lock()
+_last_good = None            # (cfg, problems) from the last file that parsed, for when it stops parsing
+
+
+class _cfg_write_lock:
+    """Exclusive lock on config.json.lock: held by anything about to change config.json, in any process."""
+
+    def __enter__(self):
+        _cfg_thread_lock.acquire()
+        self.fd = None
+        try:
+            STATE.mkdir(parents=True, exist_ok=True)
+            if fcntl:
+                lock = STATE / (CFG_PATH.name + ".lock")
+                try:
+                    self.fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o666)
+                except PermissionError:          # created by another user: a read-only handle can still lock
+                    self.fd = os.open(lock, os.O_RDONLY)
+                fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            os.close(self.fd)                    # closing the descriptor releases the lock
+        _cfg_thread_lock.release()
+
+
+def _remember_good(cfg, problems):
+    global _last_good
+    with _good_lock:
+        _last_good = (copy.deepcopy(cfg), list(problems))
+
+
+def load_cfg_info():
+    """Read-only view of the settings. Never writes the file (except creating it from the defaults when there
+    is none yet) and never raises for a bad file: it returns the last good settings with `error` set, or the
+    defaults when the file has been bad since this process started."""
+    rev = cfg_rev()
+    try:
+        raw = _read_raw()
+    except ConfigError as err:
+        with _good_lock:
+            good = copy.deepcopy(_last_good)
+        cfg, problems = good if good else (copy.deepcopy(DEFAULT_CFG), [])
+        return CfgInfo(cfg, err, problems, rev, "last_good" if good else "defaults")
+    if raw is None:                             # first start: leave a file to edit, once
+        try:
+            with _cfg_write_lock():
+                if not CFG_PATH.exists():
+                    write_json_atomic(CFG_PATH, DEFAULT_CFG)
+        except OSError:
+            pass
+        rev = cfg_rev()
+        raw = {}
+    cfg, problems = validate_cfg(raw)
+    _remember_good(cfg, problems)
     set_junk(cfg)
+    return CfgInfo(cfg, None, problems, rev)
+
+
+def load_cfg():
+    return load_cfg_info().cfg
+
+
+def update_cfg(mutate):
+    """Change config.json: under the lock, re-read the file, let mutate(raw) edit that dict in place, write it
+    back atomically. Only what mutate touches changes; other values, keys this version doesn't know and
+    anything invalid stay as they are. Returns the effective settings. Raises ConfigError, writing nothing,
+    when the file can't be parsed: a hand edit is never overwritten."""
+    with _cfg_write_lock():
+        raw = _read_raw()
+        if raw is None:
+            raw = copy.deepcopy(DEFAULT_CFG)
+        mutate(raw)
+        write_json_atomic(CFG_PATH, raw)
+    cfg, problems = validate_cfg(raw)
+    _remember_good(cfg, problems)
     return cfg
 
 
@@ -1012,9 +1288,16 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--rescan", action="store_true")
     a = ap.parse_args()
-    cfg = load_cfg()
     LOGS.mkdir(parents=True, exist_ok=True)
     log = log_to(open(LOGS / "pkg_sync.log", "a", encoding="utf-8"))
+    info = load_cfg_info()
+    if info.error:       # no last good settings to fall back on in a fresh process: say why and stop
+        log(f"=== not starting: {CFG_PATH.name} can't be used ({info.error.describe()}). "
+            f"Fix the file, restore a backup, or delete it to go back to the defaults.")
+        sys.exit(EXIT_BAD_CONFIG)
+    for note in info.problems:
+        log(f"config: {note}")
+    cfg = info.cfg
     for p in (cfg["library"], cfg["downloads"]):
         if not os.path.isdir(p):
             log(f"not mounted: {p}" + (f"  (mounted: {', '.join(os.listdir('/Volumes'))})" if os.path.isdir("/Volumes") else ""))

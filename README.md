@@ -91,6 +91,25 @@ All settings live in `/config/state/config.json` and can be changed from the Set
 - `overrides`: per title ID, `source`, `patch` (a folder, for example under `/config/patches`, whose files are
   copied over the game), `modified_exec` (`image` or `original`), `skip`. Usually set from the Library page.
 
+### Editing `config.json` by hand
+
+Hand-editing is supported (with the compose file above, the file is `./config/state/config.json`).
+Keys you leave out use their defaults, and keys this version doesn't know are kept when Settings saves.
+
+- **When an edit takes effect.** The Dashboard and the schedule pick it up within seconds, and the
+  Settings page reloads it (or asks first, if you have unsaved edits there). A scan or run reads the file
+  when it starts, so the next one uses it; a run that's already going keeps the settings it started with.
+  Nothing needs a restart.
+- **An invalid value** (say `"compression_level": 99`) is listed in an amber banner, and that one setting
+  uses its default until you fix it. The file isn't touched.
+- **A syntax error** (a missing comma, say) shows a red banner with the line number. The page and the
+  schedule carry on with the last working settings, saving from Settings is refused so your edit isn't
+  overwritten, and a scan or run won't start (the log says why) until the file is valid again. Deleting the
+  file goes back to the defaults.
+- Reading never changes the file. It's written only when you save from Settings or the Library page (and
+  once with the defaults if it doesn't exist yet). A save rewrites the whole file (indented JSON), through a
+  lock, in one step. `config.json.lock` next to it is that lock; leave it.
+
 ## Updating
 
 `docker compose pull && docker compose up -d`. Recreating the container stops a run that's in progress.

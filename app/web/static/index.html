@@ -25,6 +25,7 @@ table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;
 input,select{font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}input[type=text]{width:100%}
 label.f{display:grid;grid-template-columns:220px 1fr;gap:10px;align-items:center;margin:6px 0}label.f span{color:var(--muted)}
 details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{color:var(--bad)}
+.banner{border:1px solid;border-radius:10px;padding:10px 14px;margin-bottom:14px;background:var(--card)}.banner.bad{border-color:var(--bad);color:var(--bad)}.banner.warn{border-color:var(--warn);color:var(--warn)}.banner ul{margin:6px 0 0;padding-left:18px}
 @media (max-width:640px){label.f{grid-template-columns:1fr}main{padding:10px}td,th{padding:5px 4px}}
 </style>
 </head>
@@ -38,6 +39,7 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
   <div class="state" id="state">…</div>
 </header>
 <main>
+<div id="cfgBanner"></div>
 <section id="dash" class="on">
   <div class="card"><div class="row">
     <button class="btn pri" id="bRun">Run now</button><button class="btn" id="bStop">Stop after current</button>
@@ -59,6 +61,7 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
 </section>
 <section id="hist"><div class="card"><table><thead><tr><th>Package</th><th>Built</th><th>Size</th><th>Times</th><th>Checks</th></tr></thead><tbody id="histRows"></tbody></table></div></section>
 <section id="set">
+  <div class="banner warn" id="cfgChanged" hidden>Settings file changed on disk. <button class="btn" id="bReload">Reload from the file</button> <span class="small">(what you edited on this page and haven't saved is discarded)</span></div>
   <div class="card"><h2>Folders</h2><div id="fFolders"></div></div>
   <div class="card"><h2>Conversion</h2><div id="fConv"></div></div>
   <div class="card"><h2>Schedule &amp; notifications</h2><div id="fSched"></div></div>
@@ -78,8 +81,18 @@ function say(t,bad){$("#msg").textContent=t;$("#msg").className="small "+(bad?"e
 $("#bRun").onclick=()=>api("/api/run",{method:"POST",body:"{}"}).then(()=>say("Run started")).catch(e=>say(e.message,1)).finally(refresh);
 $("#bStop").onclick=()=>api("/api/stop",{method:"POST"}).then(()=>say("Stopping after the running builds")).catch(e=>say(e.message,1)).finally(refresh);
 $("#bScan").onclick=()=>api("/api/scan",{method:"POST"}).then(()=>say("Scanning…")).catch(e=>say(e.message,1)).finally(refresh);
+let cfgRev,cfgLoadedAt=0,setDirty=false,bannerHtml="";   // cfgRev: version of config.json the Settings form shows
+function banners(s){const e=s.config_error,p=s.config_problems||[];let h="";
+  if(e)h+=`<div class="banner bad"><b>Settings file could not be read</b> (${e.line?`line ${e.line}: `:""}${esc(e.message)}). ${e.using==="last_good"?"Using the last working settings.":"Using the default settings."} Fix the file or restore a backup.</div>`;
+  if(p.length)h+=`<div class="banner warn"><b>Some settings in the settings file are not valid.</b> The defaults are used for them; the file itself is unchanged.<ul>${p.map(x=>`<li>${esc(x)}</li>`).join("")}</ul></div>`;
+  if(h!==bannerHtml){bannerHtml=h;$("#cfgBanner").innerHTML=h}}
+async function poll(){const t0=performance.now(),s=await api("/api/status");banners(s);
+  // config.json was edited since the form was loaded (a poll that started before the last load says nothing new)
+  if(tab==="set"&&!s.config_error&&cfgRev!==undefined&&t0>cfgLoadedAt&&s.config_rev!==cfgRev){
+    if(setDirty)$("#cfgChanged").hidden=false;else loadSet("Settings file changed on disk: reloaded.")}
+  return s}
 async function refresh(){
-  const s=await api("/api/status");const st=s.status||{};
+  const s=await poll();const st=s.status||{};
   $("#state").textContent=s.engine_running?(s.stop_requested?"Stopping after current":"Running")+` · load ${s.load[0].toFixed(1)}/${s.cpus}`:s.scan.running?"Scanning…":"Idle"+(s.schedule?.enabled?` · next ${s.schedule.times.join(", ")}`:"");
   $("#bRun").disabled=s.engine_running||s.scan.running;$("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
   const d=s.disks;const FL={library:"Library (read-only)",downloads:"Downloads (read-only)",output:"Finished .pkg files",temp:"Work / scratch"};$("#folders").innerHTML=`<table>${Object.entries(FL).map(([k,l])=>{const x=d[k]||{},h=(s.host_paths||{})[k];return `<tr><td>${l}</td><td><code>${esc(h||x.path||"")}</code>${h?` <span class="muted">(in the container: ${esc(x.path||"")})</span>`:""}</td><td>${x.error?esc(x.error):gib(x.free)+" free"}</td></tr>`}).join("")}</table>`;$("#kpis").innerHTML=[["To build",s.plan_counts.build],["Built",s.plan_counts.done],["Work drive free",gib(d.temp?.free)],["Output free",gib(d.output?.free)]].map(([k,v])=>`<div class="kpi"><b>${v??"—"}</b><span>${k}</span></div>`).join("")+`<div class="kpi"><b>${s.plan_time?ago(s.plan_time):"never"}</b><span>Last scan</span></div>`;
@@ -118,7 +131,10 @@ const FIELDS={fFolders:[["library","Game library (read-only)"],["downloads","Dow
  fConv:[["compression_level","Kraken level (1-9; 4 = fast, 7 = smaller)","n"],["cpu_count","Workers per build","n"],["max_compress","Builds compressing at once","n"],["max_builds","Builds alive at once","n"],["nice","CPU priority (nice 0-19)","n"],["ssd_reserve_gb","Keep free on work drive (GB)","n"],["build_on_ssd","Write package on work drive, then copy","b"],["console_fw","Console firmware (picks original vs backport)"],["skip_download_prefixes","Skip download folders starting with (comma separated)","l"],["junk_file_patterns","Delete files whose name matches (regex, comma separated)","l"],["junk_title_patterns","Cut from game titles (regex, comma separated)","l"]],
  fSched:[["schedule.enabled","Run automatically","b"],["schedule.times","At (HH:MM, comma separated)","l"],["notify_url","Notification URL (ntfy topic, optional)"]]};
 let cfg={};
-async function loadSet(){cfg=await api("/api/config");for(const [box,fs] of Object.entries(FIELDS)){$("#"+box).innerHTML=fs.map(([k,l,t])=>{const v=k.split(".").reduce((o,x)=>o?.[x],cfg);
+$("#set").addEventListener("input",()=>{setDirty=true});$("#bReload").onclick=()=>loadSet("Reloaded from the file.");
+async function loadSet(note){cfgLoadedAt=performance.now();cfg=await api("/api/config");cfgRev=cfg.config_rev;setDirty=false;$("#cfgChanged").hidden=true;
+  if(typeof note==="string"){$("#setMsg").textContent=note;$("#setMsg").className="small muted"}
+  for(const [box,fs] of Object.entries(FIELDS)){$("#"+box).innerHTML=fs.map(([k,l,t])=>{const v=k.split(".").reduce((o,x)=>o?.[x],cfg);
   return `<label class="f"><span>${esc(l)}</span>${t==="b"?`<input type="checkbox" data-c="${k}" data-t="b" ${v?"checked":""}>`:`<input type="${t==="n"?"number":"text"}" data-c="${k}" data-t="${t||"s"}" value="${esc(Array.isArray(v)?v.join(", "):v)}">`}</label>`}).join("")}}
 $("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]").forEach(e=>{let v=e.dataset.t==="b"?e.checked:e.dataset.t==="n"?Number(e.value):e.dataset.t==="l"?e.value.split(",").map(x=>x.trim()).filter(Boolean):e.value.trim();
   const [a,b]=e.dataset.c.split(".");if(b){out[a]=out[a]||{...cfg[a]};out[a][b]=v}else out[a]=v});
@@ -126,8 +142,8 @@ $("#bSave").onclick=async()=>{const out={};document.querySelectorAll("[data-c]")
 async function loadLogs(){const l=await api("/api/logs");const cur=$("#logSel").value;$("#logSel").innerHTML=l.map(x=>`<option ${x.name===cur?"selected":""}>${esc(x.name)}</option>`).join("");showLog()}
 async function showLog(){const n=$("#logSel").value;if(!n)return;const t=await api("/api/logs/"+encodeURIComponent(n).replace(/%2F/g,"/")+"?lines=600");const p=$("#logTxt");p.textContent=t;if($("#logFollow").checked)p.scrollTop=p.scrollHeight}
 $("#logSel").onchange=showLog;$("#bLog").onclick=loadLogs;
-function load(){({dash:refresh,lib:loadLib,hist:loadHist,set:loadSet,logs:loadLogs})[tab]().catch(e=>say(e.message,1))}
-load();setInterval(()=>{if(tab==="dash")refresh().catch(()=>{});if(tab==="logs"&&$("#logFollow").checked)showLog().catch(()=>{})},5000);
+function load(){({dash:refresh,lib:loadLib,hist:loadHist,set:loadSet,logs:loadLogs})[tab]().catch(e=>say(e.message,1));if(tab!=="dash"&&tab!=="set")poll().catch(()=>{})}
+load();setInterval(()=>{(tab==="dash"?refresh():poll()).catch(()=>{});if(tab==="logs"&&$("#logFollow").checked)showLog().catch(()=>{})},5000);
 </script>
 </body>
 </html>

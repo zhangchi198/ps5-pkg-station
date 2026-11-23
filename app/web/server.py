@@ -21,7 +21,6 @@ HERE = Path(__file__).resolve().parent
 ENGINE = HERE.parent / "engine" / "ps5_pkg_sync.py"
 STATE = Path(os.environ.get("PS5PKG_STATE", "/config/state"))
 LOGS = Path(os.environ.get("PS5PKG_LOGS", "/config/logs"))
-CFG = STATE / "config.json"
 PY = sys.executable
 
 sys.path.insert(0, str(ENGINE.parent))
@@ -48,13 +47,19 @@ def read_json(p: Path, default):
 
 
 def load_cfg():
+    """Effective settings; never raises and never writes. If config.json can't be parsed this is the last
+    good copy (see E.load_cfg_info)."""
     return E.load_cfg()
 
 
-def save_cfg(cfg):
-    tmp = CFG.with_suffix(".part")
-    tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(CFG)
+def update_cfg(mutate):
+    """Locked, atomic read-modify-write of config.json (see E.update_cfg). A file that can't be parsed
+    is not overwritten: the save is refused with the reason."""
+    try:
+        return E.update_cfg(mutate)
+    except E.ConfigError as ex:
+        raise HTTPException(409, f"The settings file could not be read ({ex.describe()}). "
+                                 f"Nothing was saved: fix the file first, then save again.")
 
 
 def engine_pid():
@@ -67,7 +72,15 @@ def engine_pid():
         return None
 
 
+class EngineStartError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
 def start_engine(*args):
+    """Start a detached run. False when one is already active; raises EngineStartError when the engine
+    process exits straight away (a settings file it can't read, a folder that isn't mounted, ...)."""
     with _lock:
         if engine_pid() or _scan["running"]:
             return False
@@ -76,12 +89,18 @@ def start_engine(*args):
             lock.unlink()                     # stale (pid gone)
         LOGS.mkdir(parents=True, exist_ok=True)
         out = open(LOGS / f"run_{time.strftime('%Y%m%d-%H%M%S')}.stdout.log", "ab")
-        subprocess.Popen([PY, "-I", "-u", str(ENGINE), "run", *args], stdout=out, stderr=subprocess.STDOUT,
-                         stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
+        proc = subprocess.Popen([PY, "-I", "-u", str(ENGINE), "run", *args], stdout=out, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True, env=os.environ.copy())
         for _ in range(50):                   # wait for the lock so the UI shows "running" at once
-            if engine_pid():
+            if engine_pid() or proc.poll() is not None:
                 break
             time.sleep(0.1)
+        rc = proc.poll()
+        if rc not in (None, 0) and not engine_pid():          # exited before it could take the lock
+            if rc == E.EXIT_BAD_CONFIG:
+                raise EngineStartError(409, "The settings file (config.json) could not be read, so the run did "
+                                            "not start. Fix the file and try again.")
+            raise EngineStartError(500, f"The run did not start: the engine exited with code {rc}. See Logs.")
         return True
 
 
@@ -103,22 +122,31 @@ def run_scan():
 
 # ---------------------------------------------------------------- scheduler
 
+def scheduler_tick(fired, now=None):
+    """One look at the schedule (every 20 s). load_cfg() falls back to the last good settings when
+    config.json is unreadable, so a typo in the file doesn't stop scheduled runs from being attempted."""
+    sch = load_cfg().get("schedule") or {}
+    if not sch.get("enabled"):
+        return
+    now = now or time.localtime()
+    hm = time.strftime("%H:%M", now)
+    key = time.strftime("%Y-%m-%d ", now) + hm
+    if hm in (sch.get("times") or []) and key not in fired:
+        fired.add(key)
+        try:
+            msg = "started" if start_engine() else "skipped (a run or scan is active)"
+        except EngineStartError as ex:
+            msg = f"did not start: {ex}"
+        with open(LOGS / "pkg_sync.log", "a", encoding="utf-8") as fh:
+            E.log_to(fh)(f"=== scheduled run {hm}: {msg}")
+
+
 def scheduler():
     fired = set()
     while True:
         time.sleep(20)
         try:
-            sch = load_cfg().get("schedule") or {}
-            if not sch.get("enabled"):
-                continue
-            now = time.localtime()
-            hm = time.strftime("%H:%M", now)
-            key = time.strftime("%Y-%m-%d ", now) + hm
-            if hm in (sch.get("times") or []) and key not in fired:
-                fired.add(key)
-                started = start_engine()
-                E.log_to(open(LOGS / "pkg_sync.log", "a", encoding="utf-8"))(
-                    f"=== scheduled run {hm}: " + ("started" if started else "skipped (a run or scan is active)"))
+            scheduler_tick(fired)
         except Exception:
             pass
 
@@ -136,7 +164,8 @@ def index():
 def status():
     st = read_json(STATE / "status.json", {})
     pid = engine_pid()
-    cfg = load_cfg()
+    info = E.load_cfg_info()
+    cfg = info.cfg
     disks = {}
     for k in ("temp", "output", "library", "downloads"):
         try:
@@ -150,7 +179,8 @@ def status():
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "done", "skip", "error")},
                 stop_requested=(STATE / "stop.request").exists(), schedule=cfg.get("schedule"),
-                host_paths=HOST_PATHS)
+                host_paths=HOST_PATHS, config_rev=info.rev, config_problems=info.problems,
+                config_error=dict(info.error.as_dict(), using=info.fallback) if info.error else None)
 
 
 @app.get("/api/plan")
@@ -169,7 +199,11 @@ def scan():
 async def run(req: Request):
     body = await req.json() if (await req.body()) else {}
     only = [t for t in (body.get("only") or []) if re.fullmatch(r"(PPSA|CUSA)\d{5}", t)]
-    if not start_engine(*(["--only", *only] if only else [])):
+    try:
+        started = start_engine(*(["--only", *only] if only else []))
+    except EngineStartError as ex:
+        raise HTTPException(ex.status, str(ex))
+    if not started:
         raise HTTPException(409, "a run or scan is already active")
     return {"ok": True}
 
@@ -182,53 +216,31 @@ def stop():
     return {"ok": True}
 
 
-SETTINGS = {  # key: (type, min, max) - everything the Settings page may change
-    "library": (str,), "downloads": (str,), "output": (str,), "temp": (str,),
-    "compression_level": (int, 1, 9), "cpu_count": (int, 1, 64), "nice": (int, 0, 19),
-    "max_compress": (int, 1, 4), "max_builds": (int, 1, 6), "ssd_reserve_gb": (int, 0, 10000),
-    "build_on_ssd": (bool,), "console_fw": (str,), "notify_url": (str,),
-    "skip_download_prefixes": (list,), "junk_file_patterns": (list,), "junk_title_patterns": (list,),
-    "schedule": (dict,),
-}
+SETTINGS = E.SETTINGS   # key: (type, min, max) - everything the Settings page may change
 
 
 @app.get("/api/config")
 def get_config():
-    cfg = load_cfg()
-    return {k: cfg.get(k) for k in SETTINGS}
+    # config_rev says which version of the file the values are from; the Settings page compares it with the
+    # one in /api/status to notice a change on disk
+    info = E.load_cfg_info()
+    return {**{k: info.cfg.get(k) for k in SETTINGS}, "config_rev": info.rev}
 
 
 @app.put("/api/config")
 async def put_config(req: Request):
     body = await req.json()
-    cfg = load_cfg()
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+    changes = {}
     for k, v in body.items():
-        spec = SETTINGS.get(k)
-        if not spec:
+        if k not in SETTINGS:
             raise HTTPException(400, f"unknown setting {k}")
-        t = spec[0]
-        if t is int:
-            v = int(v)
-            if not spec[1] <= v <= spec[2]:
-                raise HTTPException(400, f"{k} must be {spec[1]}..{spec[2]}")
-        elif t is bool:
-            v = bool(v)
-        elif not isinstance(v, t):
-            raise HTTPException(400, f"{k} must be {t.__name__}")
-        if k == "console_fw" and v and not re.fullmatch(r"\d{1,2}\.\d{2}", v):
-            raise HTTPException(400, "console_fw looks like 13.20")
-        if k in ("junk_file_patterns", "junk_title_patterns"):
-            v = [str(x) for x in v if str(x).strip()]
-            for x in v:
-                try:
-                    re.compile(x)
-                except re.error as ex:
-                    raise HTTPException(400, f"{k}: bad pattern {x!r}: {ex}")
-        if k == "schedule":
-            times = [x for x in v.get("times", []) if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", x)]
-            v = dict(enabled=bool(v.get("enabled")), times=times)
-        cfg[k] = v
-    save_cfg(cfg)
+        try:
+            changes[k] = E.validate_setting(k, v)     # the same checks as when the file is read
+        except ValueError as ex:
+            raise HTTPException(400, str(ex))
+    cfg = update_cfg(lambda raw: raw.update(changes))
     return {k: cfg.get(k) for k in SETTINGS}
 
 
@@ -250,13 +262,15 @@ async def put_override(tid: str, req: Request):
         ov["modified_exec"] = body["modified_exec"]
     if body.get("skip"):
         ov["skip"] = True
-    cfg = load_cfg()
-    if ov:
-        cfg.setdefault("overrides", {})[tid] = ov
-    else:
-        cfg.get("overrides", {}).pop(tid, None)
-    save_cfg(cfg)
-    return cfg.get("overrides", {}).get(tid, {})
+
+    def apply(raw):
+        if not isinstance(raw.get("overrides"), dict):
+            raw["overrides"] = {}
+        if ov:
+            raw["overrides"][tid] = ov
+        else:
+            raw["overrides"].pop(tid, None)
+    return update_cfg(apply).get("overrides", {}).get(tid, {})
 
 
 @app.get("/api/ledger")
