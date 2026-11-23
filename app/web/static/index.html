@@ -44,6 +44,7 @@ details summary{cursor:pointer}.ovr{display:grid;gap:6px;padding:8px 0}.err{colo
     <button class="btn" id="bScan">Scan for new games</button><span class="muted small" id="msg"></span>
   </div></div>
   <div class="grid" id="kpis"></div>
+  <div class="card"><h2>Folders</h2><div id="folders" class="muted">—</div></div>
   <div class="card"><h2>Building</h2><div id="builds" class="muted">Nothing building.</div></div>
   <div class="card"><h2>Preparing</h2><div id="preparing" class="muted">—</div></div>
   <div class="card"><h2>Queue</h2><div id="queue" class="muted">—</div></div>
@@ -81,7 +82,7 @@ async function refresh(){
   const s=await api("/api/status");const st=s.status||{};
   $("#state").textContent=s.engine_running?(s.stop_requested?"Stopping after current":"Running")+` · load ${s.load[0].toFixed(1)}/${s.cpus}`:s.scan.running?"Scanning…":"Idle"+(s.schedule?.enabled?` · next ${s.schedule.times.join(", ")}`:"");
   $("#bRun").disabled=s.engine_running||s.scan.running;$("#bScan").disabled=s.engine_running||s.scan.running;$("#bStop").disabled=!s.engine_running||s.stop_requested;
-  const d=s.disks;$("#kpis").innerHTML=[["To build",s.plan_counts.build],["Built",s.plan_counts.done],["Work drive free",gib(d.temp?.free)],["Output free",gib(d.output?.free)]].map(([k,v])=>`<div class="kpi"><b>${v??"—"}</b><span>${k}</span></div>`).join("")+`<div class="kpi"><b>${s.plan_time?ago(s.plan_time):"never"}</b><span>Last scan</span></div>`;
+  const d=s.disks;const FL={library:"Library (read-only)",downloads:"Downloads (read-only)",output:"Finished .pkg files",temp:"Work / scratch"};$("#folders").innerHTML=`<table>${Object.entries(FL).map(([k,l])=>{const x=d[k]||{},h=(s.host_paths||{})[k];return `<tr><td>${l}</td><td><code>${esc(h||x.path||"")}</code>${h?` <span class="muted">(in the container: ${esc(x.path||"")})</span>`:""}</td><td>${x.error?esc(x.error):gib(x.free)+" free"}</td></tr>`}).join("")}</table>`;$("#kpis").innerHTML=[["To build",s.plan_counts.build],["Built",s.plan_counts.done],["Work drive free",gib(d.temp?.free)],["Output free",gib(d.output?.free)]].map(([k,v])=>`<div class="kpi"><b>${v??"—"}</b><span>${k}</span></div>`).join("")+`<div class="kpi"><b>${s.plan_time?ago(s.plan_time):"never"}</b><span>Last scan</span></div>`;
   const b=s.engine_running?(st.builds||[]):[];
   $("#builds").innerHTML=b.length?b.map(x=>`<div style="margin:8px 0"><div class="row"><b>${esc(x.name)}</b><span class="muted small">stage ${x.stage}/5 ${esc(x.stage_text)} · ${esc(x.part)} ${x.pct}% · ${ago(x.since)}</span></div><div class="bar"><i style="width:${((x.stage-1)*20+x.pct/5)}%"></i></div></div>`).join(""):"Nothing building.";
   $("#preparing").innerHTML=(s.engine_running&&st.preparing?.length)?st.preparing.map(x=>`<div>${esc(x.name)} <span class="muted small">copying &amp; verifying · ${ago(x.since)}</span></div>`).join(""):"—";

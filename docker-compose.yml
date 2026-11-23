@@ -11,6 +11,8 @@ services:
       - "8765:8765"
     environment:
       TZ: Etc/UTC                   # your time zone, used by the schedule
+      # optional, display only: show the host folders on the Dashboard
+      # PS5PKG_HOST_PATHS: '{"library": "/path/to/ps5/library", "output": "/path/to/ps5/pkg"}'
     mem_limit: 16g                  # optional: cap what builds may use
     volumes:
       - /path/to/ps5/library:/library:ro      # game images (.exfat/.ffpfsc/...) and/or folders, read-only

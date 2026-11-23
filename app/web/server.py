@@ -27,6 +27,13 @@ PY = sys.executable
 sys.path.insert(0, str(ENGINE.parent))
 import ps5_pkg_sync as E  # noqa: E402  (same defaults/validation as the engine)
 
+# optional: where the container's folders are on the host, for display only, e.g.
+#   PS5PKG_HOST_PATHS='{"library": "/srv/games/ps5", "output": "/srv/games/ps5/pkg"}'
+try:
+    HOST_PATHS = {k: str(v) for k, v in json.loads(os.environ.get("PS5PKG_HOST_PATHS") or "{}").items()}
+except Exception:
+    HOST_PATHS = {}
+
 app = FastAPI(title="PS5 PKG Station", docs_url=None, redoc_url=None)
 _scan = {"running": False, "started": None, "finished": None, "rc": None}
 _lock = threading.Lock()
@@ -142,7 +149,8 @@ def status():
                 disks=disks, load=os.getloadavg(), cpus=os.cpu_count(), now=time.time(),
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "done", "skip", "error")},
-                stop_requested=(STATE / "stop.request").exists(), schedule=cfg.get("schedule"))
+                stop_requested=(STATE / "stop.request").exists(), schedule=cfg.get("schedule"),
+                host_paths=HOST_PATHS)
 
 
 @app.get("/api/plan")
