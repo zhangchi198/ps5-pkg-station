@@ -87,7 +87,7 @@ class SetupApi(SetupCase):
         self.assertIn("Example Game", work["message"])
 
     def test_the_host_paths_row_follows_the_env_setting(self):
-        with mock.patch.object(self.srv, "HOST_PATHS", {"library": "/srv/games/ps5"}):
+        with mock.patch.dict(os.environ, {"PS5PKG_HOST_LIBRARY": "/srv/games/ps5"}):
             self.assertEqual({c["id"]: c for c in self.get("/api/setup")}["host_paths"]["level"], "ok")
 
     def test_status_carries_the_server_clock_next_to_the_schedule(self):

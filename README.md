@@ -47,7 +47,7 @@ to the internet.
 Requirements: an x86-64 Linux Docker host (UltraPack's Linux tools are x64 only), and a fast scratch
 disk (SSD/NVMe) with free space a little larger than your biggest game.
 
-1. Copy [`docker-compose.yml`](docker-compose.yml) and change the five paths on the left-hand side, plus
+1. Copy [`docker-compose.yml`](docker-compose.yml) and change the five paths under `x-paths`, plus
    `user:` (run `id` on the host to see the uid:gid that owns your output folder).
 2. `docker compose up -d`
 3. Open `http://<host>:8765`. The **Setup** card at the top of the Dashboard checks your folders and tells you
@@ -84,6 +84,46 @@ To build the image yourself instead of pulling it, use `build: .` in the compose
 | `/output` | finished `.pkg` files | read-write |
 | `/work` | scratch space for extraction and building | read-write, fast disk |
 | `/config` | `state/config.json`, history, caches, logs, patch folders | read-write |
+
+These are fixed by the `volumes:` list in the compose file, so Settings shows them read-only.
+
+### Folders on your NAS
+
+Everything the app shows is a path inside the container (`/output`), which isn't where you'd look for a
+finished package. Docker doesn't tell a container where its bind mounts come from, so you tell the app, and it
+then shows real locations on the Dashboard (the Folders card) and under Settings > Folders. The example
+compose file writes each host folder once, under `x-paths`, and uses that value for both the volume and
+a `PS5PKG_HOST_*` variable, so they can't drift:
+
+| Variable | Host folder mounted at |
+|---|---|
+| `PS5PKG_HOST_LIBRARY` | `/library` |
+| `PS5PKG_HOST_DOWNLOADS` | `/downloads` |
+| `PS5PKG_HOST_OUTPUT` | `/output` |
+| `PS5PKG_HOST_WORK` | `/work` (the app works in `/work/tmp` and adds the `/tmp` itself) |
+| `PS5PKG_HOST_CONFIG` | `/config` |
+
+Prefer a `.env` file next to the compose file? Put `GAMES_LIBRARY=/srv/games/ps5` in it and write
+`- ${GAMES_LIBRARY}:/library:ro` under `volumes:` and `PS5PKG_HOST_LIBRARY: ${GAMES_LIBRARY}` under
+`environment:` (the same for the other folders).
+
+Where a folder's location comes from, first match wins:
+
+1. `PS5PKG_HOST_LIBRARY` and the other `PS5PKG_HOST_*` variables above.
+2. `PS5PKG_HOST_PATHS`, the original single JSON variable, still supported unchanged:
+   `'{"library": "/srv/games/ps5", "output": "/srv/games/ps5/pkg", "temp": "/srv/scratch/tmp"}'`. Its values are
+   the location of the folder exactly as the app shows it (so `temp` is the host path of `/work/tmp`);
+   the keys are `library`, `downloads`, `output`, `temp` (or `work`) and `config`.
+3. **Settings > Folders > "is shown as"**, saved as `host_paths` in `config.json`, so it survives recreating the
+   container. Used only when the variables above don't cover that folder; a folder set by a variable is shown
+   read-only as "set in docker-compose".
+4. A hint read from the container's mount table (`/proc/self/mountinfo`), shown as `…/games/ps5 (detected,
+   volume prefix unknown)`: it knows the end of the host path but not the volume prefix in front of it.
+
+The hint is also compared with what you configured: if the tail doesn't match, the folder gets a note. That
+is only a hint, since btrfs subvolumes and overlay set-ups add prefixes. A malformed variable (bad JSON,
+an unknown folder name, a relative path) is shown in an amber banner and ignored, not dropped silently. Until
+at least one location is set, the Dashboard shows a dismissible reminder.
 
 ### Synology DSM (Container Manager)
 

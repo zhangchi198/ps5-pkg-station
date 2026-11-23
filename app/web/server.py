@@ -25,14 +25,10 @@ PY = sys.executable
 
 sys.path.insert(0, str(ENGINE.parent))
 import ps5_pkg_sync as E  # noqa: E402  (same defaults/validation as the engine)
+import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
 
-# optional: where the container's folders are on the host, for display only, e.g.
-#   PS5PKG_HOST_PATHS='{"library": "/srv/games/ps5", "output": "/srv/games/ps5/pkg"}'
-try:
-    HOST_PATHS = {k: str(v) for k, v in json.loads(os.environ.get("PS5PKG_HOST_PATHS") or "{}").items()}
-except Exception:
-    HOST_PATHS = {}
+MOUNTINFO = "/proc/self/mountinfo"      # the hint for "where is /library on the host" (see ps5_hostpaths)
 
 app = FastAPI(title="PS5 PKG Station", docs_url=None, redoc_url=None)
 # What the last scan / run did. rc is the engine's exit code; when it isn't 0, `error` says why in plain words
@@ -54,6 +50,20 @@ def load_cfg():
     """Effective settings; never raises and never writes. If config.json can't be parsed this is the last
     good copy (see E.load_cfg_info)."""
     return E.load_cfg()
+
+
+def folders_info(cfg):
+    """Where each folder is, in the container and on the host (see ps5_hostpaths for the precedence), plus what
+    is wrong with the PS5PKG_HOST_* environment. Read per call: it is cheap and the settings can change."""
+    env, problems = H.read_env(os.environ)
+    try:
+        config_root = os.path.commonpath([str(STATE), str(LOGS)])
+    except ValueError:
+        config_root = str(STATE.parent)
+    containers = {k: cfg[k] for k in H.FOLDERS if k != "config"}
+    containers["config"] = config_root
+    folders = H.resolve(containers, env, cfg.get("host_paths") or {}, H.read_mountinfo(MOUNTINFO))
+    return folders, {k: f["host"] for k, f in folders.items() if f["source"] in ("env", "settings")}, problems
 
 
 def update_cfg(mutate):
@@ -96,7 +106,7 @@ def explain_exit(rc):
     if rc == E.EXIT_BAD_CONFIG:
         return "The settings file (config.json) could not be read. Fix the file and try again."
     if rc == E.EXIT_SETUP:
-        fails = S.blocking(S.run_checks(cfg, state_dir=STATE, host_paths=HOST_PATHS))
+        fails = S.blocking(S.run_checks(cfg, state_dir=STATE))
         return ("Setup problem: " + "; ".join(f"{r['title']}: {r['message']}" for r in fails)) if fails else \
             "A setup check failed; see the Setup checklist."
     if rc == E.EXIT_LOCKED:
@@ -222,13 +232,14 @@ def status():
     pid = engine_pid()
     info = E.load_cfg_info()
     cfg = info.cfg
+    folders, configured, host_problems = folders_info(cfg)
     disks = {}
-    for k in ("temp", "output", "library", "downloads"):
+    for k, f in folders.items():
         try:
-            u = shutil.disk_usage(cfg[k])
-            disks[k] = dict(path=cfg[k], free=u.free, total=u.total)
+            u = shutil.disk_usage(f["container"])
+            disks[k] = dict(path=f["container"], free=u.free, total=u.total)
         except Exception:
-            disks[k] = dict(path=cfg.get(k), error="not available")
+            disks[k] = dict(path=f["container"], error="not available")
     plan = read_json(STATE / "plan.json", [])
     return dict(engine_running=bool(pid), engine_pid=pid, scan=dict(_scan), run=dict(_run), clock=S.clock_info(),
                 status=st if pid else dict(st, live=False),
@@ -236,7 +247,8 @@ def status():
                 plan_time=(STATE / "plan.json").stat().st_mtime if (STATE / "plan.json").exists() else None,
                 plan_counts={a: sum(1 for p in plan if p.get("action") == a) for a in ("build", "done", "skip", "error")},
                 stop_requested=(STATE / "stop.request").exists(), schedule=cfg.get("schedule"),
-                host_paths=HOST_PATHS, config_rev=info.rev, config_problems=info.problems,
+                folders=folders, host_paths=configured, host_problems=host_problems, in_docker=E.IN_DOCKER,
+                config_rev=info.rev, config_problems=info.problems,
                 config_error=dict(info.error.as_dict(), using=info.fallback) if info.error else None)
 
 
@@ -249,7 +261,10 @@ def plan():
 def setup():
     """The first-run checklist: [{id, level ok|warn|fail, title, message, fix, advisory, link}]. Touches the
     disks (a write test in each folder that must be writable), so the page asks on load and on demand."""
-    return S.run_checks(load_cfg(), state_dir=STATE, plan=read_json(STATE / "plan.json", []), host_paths=HOST_PATHS)
+    cfg = load_cfg()
+    _, configured, host_problems = folders_info(cfg)
+    return S.run_checks(cfg, state_dir=STATE, plan=read_json(STATE / "plan.json", []), host_paths=configured,
+                        host_problems=host_problems)
 
 
 @app.post("/api/scan")
@@ -288,7 +303,8 @@ def get_config():
     # config_rev says which version of the file the values are from; the Settings page compares it with the
     # one in /api/status to notice a change on disk
     info = E.load_cfg_info()
-    return {**{k: info.cfg.get(k) for k in SETTINGS}, "config_rev": info.rev}
+    return {**{k: info.cfg.get(k) for k in SETTINGS}, "config_rev": info.rev, "in_docker": E.IN_DOCKER,
+            "folders": folders_info(info.cfg)[0]}
 
 
 @app.put("/api/config")

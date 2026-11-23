@@ -46,6 +46,7 @@ except ImportError:          # not POSIX: writes stay atomic, only the lock shar
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import ps5_ampr_audit as A  # noqa: E402  (read-only exFAT/PFS/PFSC/UFS2 readers)
+import ps5_hostpaths  # noqa: E402  (where the container's folders are on the host: validated here, shown by the server)
 import ps5_setup  # noqa: E402  (first-run setup checks, shared with the web server)
 
 ROOT = HERE.parent
@@ -75,6 +76,7 @@ DEFAULT_CFG = {
     "junk_title_patterns": [],     # regexes cut out of game titles
     # title_id -> {"source": exact path (optional), "patch": dir of loose files to overlay}
     "overrides": {},
+    "host_paths": {},              # folder -> where it is on the host, for display only (see ps5_hostpaths)
 }
 SEVENZ = ps5_setup.SEVENZ
 JUNK_FILE = JUNK_TITLE = None   # compiled from cfg junk_file_patterns / junk_title_patterns by load_cfg()
@@ -104,7 +106,7 @@ SETTINGS = {  # key: (type, min, max) - everything the Settings page may change
     "max_compress": (int, 1, 4), "max_builds": (int, 1, 6), "ssd_reserve_gb": (int, 0, 10000),
     "build_on_ssd": (bool,), "console_fw": (str,), "notify_url": (str,),
     "skip_download_prefixes": (list,), "junk_file_patterns": (list,), "junk_title_patterns": (list,),
-    "schedule": (dict,),
+    "schedule": (dict,), "host_paths": (dict,),
 }
 FILE_ONLY = {"ultrapack_src": (str,), "python": (str,)}   # valid in the file, not on the Settings page
 EXIT_NOT_MOUNTED = 2        # exit codes of main(); the web server explains them to the user
@@ -176,6 +178,8 @@ def validate_setting(key, v):
                     re.compile(f"(?:{x})")
                 except re.error as ex:
                     raise ValueError(f"{key}: bad pattern {x!r}: {ex}")
+    if key == "host_paths":
+        v = ps5_hostpaths.validate_setting(v)
     if key == "schedule":
         enabled, times = v.get("enabled", False), v.get("times", [])
         if not isinstance(enabled, bool):

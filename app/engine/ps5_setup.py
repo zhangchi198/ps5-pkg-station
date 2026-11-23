@@ -141,9 +141,10 @@ def _writable_folder(id, title, field, p, uid_txt, create_ok=False):
                 link=link), None
 
 
-def run_checks(cfg, *, state_dir, plan=None, host_paths=None, uid=None):
+def run_checks(cfg, *, state_dir, plan=None, host_paths=None, host_problems=None, uid=None):
     """All setup checks for the settings `cfg`. `plan` is plan.json (for the biggest game) or None before the
-    first scan; `host_paths` is the optional PS5PKG_HOST_PATHS map."""
+    first scan; `host_paths` maps the folders whose location on the host is configured (compose or Settings) and
+    `host_problems` lists what is wrong with that configuration (see ps5_hostpaths)."""
     uid = os.getuid() if uid is None and hasattr(os, "getuid") else uid
     uid_txt = f"uid {uid}" if uid is not None else "this user"
     big = biggest_build(plan)
@@ -220,11 +221,17 @@ def run_checks(cfg, *, state_dir, plan=None, host_paths=None, uid=None):
     clock = clock_info()
     rows.append(_row("time", OK, "Server time", f"{clock['text']} - schedule times use this clock"))
 
-    hp = host_paths or {}
-    rows.append(_row("host_paths", OK, "Folder locations", "shown as set in PS5PKG_HOST_PATHS") if hp else
-                _row("host_paths", WARN, "Folder locations", "not set - paths are shown as seen inside the container",
-                     "Optional: set PS5PKG_HOST_PATHS in the compose file to show where the folders are on the host.",
-                     advisory=True))
+    hp, link = host_paths or {}, dict(tab="set", field="host_paths.library")
+    if host_problems:
+        rows.append(_row("host_paths", WARN, "Folder locations", "; ".join(host_problems),
+                         "Fix the PS5PKG_HOST_* variables in the compose file, or set the locations under Settings.",
+                         link=link))
+    elif hp:
+        rows.append(_row("host_paths", OK, "Folder locations", "set for " + ", ".join(sorted(hp)), link=link))
+    else:
+        rows.append(_row("host_paths", WARN, "Folder locations", "not set - paths are shown as seen inside the container",
+                         "Optional: tell the app where the folders are on your NAS (Settings, or PS5PKG_HOST_* in the compose file).",
+                         advisory=True, link=link))
     return rows
 
 

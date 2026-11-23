@@ -210,7 +210,7 @@ class UnknownKeysAndFormat(ServerCase):
 
     def test_the_settings_page_round_trip(self):
         self.write_cfg(legacy_config())
-        form = {k: v for k, v in self.get("/api/config").items() if k != "config_rev"}
+        form = {k: v for k, v in self.get("/api/config").items() if k in E.SETTINGS}   # what the page sends back
         form.update(compression_level=7, schedule={"enabled": False, "times": ["01:00"]})
         r = self.client.put("/api/config", json=form)
         self.assertEqual(r.status_code, 200, r.text)

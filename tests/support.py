@@ -129,10 +129,17 @@ class ServerCase(StateCase):
         super().setUp()
         self.srv = server_module()
         from fastapi.testclient import TestClient
-        for name, val in (("STATE", self.state), ("LOGS", self.logs), ("HOST_PATHS", {})):
-            p = mock.patch.object(self.srv, name, val)
-            p.start()
-            self.addCleanup(p.stop)
+        # no PS5PKG_HOST_* from the environment the tests run in, and no mount table: tests set what they need
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        for k in [k for k in os.environ if k.startswith("PS5PKG_HOST_")]:
+            del os.environ[k]
+        for name, val in (("STATE", self.state), ("LOGS", self.logs), ("MOUNTINFO", str(self.dir / "mountinfo"))):
+            if hasattr(self.srv, name):
+                p = mock.patch.object(self.srv, name, val)
+                p.start()
+                self.addCleanup(p.stop)
         self.srv._scan.update(running=False, started=None, finished=None, rc=None)
         if hasattr(self.srv, "_run"):
             self.srv._scan.update(error=None, log=None, log_tail=[])
