@@ -165,17 +165,24 @@ class Overrides(PathsCase):
         self.assertEqual((stored["patch"], stored["source"]), (cfg_root + "/patches/PPSA01234", EXFAT))
         self.assertNotIn("patch_host", stored)
 
-    def test_a_container_path_or_one_that_does_not_map_is_kept_as_typed(self):
+    def test_a_container_path_is_kept_as_typed_and_one_that_does_not_map_is_refused(self):
         self.env(**ENV)
-        for typed in ("/config/patches/PPSA01234", "/srv/unmapped/place", "patches/rel"):
-            with self.subTest(typed):
-                o = self.client.put("/api/overrides/PPSA01234", json={"patch": typed}).json()
-                self.assertEqual(o["patch"], typed)
-        self.assertNotIn("patch_host", self.client.put("/api/overrides/PPSA01234", json={"patch": "/srv/unmapped/place"}).json())
+        cfg_root = os.path.commonpath([str(self.state), str(self.logs)])
+        typed = cfg_root + "/patches/PPSA01234"
+        o = self.client.put("/api/overrides/PPSA01234", json={"patch": typed}).json()
+        self.assertEqual(o["patch"], typed)
+        for nowhere in ("/srv/unmapped/place", "patches/rel"):          # not below <config>/patches: refused, with where it belongs
+            with self.subTest(nowhere):
+                r = self.client.put("/api/overrides/PPSA01234", json={"patch": nowhere})
+                self.assertEqual(r.status_code, 400)
+                self.assertIn("/srv/docker/ps5-pkg/config/patches", r.json()["detail"])      # said as the folder is on the NAS
 
-    def test_without_a_mapping_a_typed_path_is_stored_as_it_is(self):
-        o = self.client.put("/api/overrides/PPSA01234", json={"patch": "/srv/docker/ps5-pkg/config/patches/PPSA01234"}).json()
-        self.assertEqual(o, {"patch": "/srv/docker/ps5-pkg/config/patches/PPSA01234"})
+    def test_without_a_mapping_the_path_is_stored_as_typed_when_it_is_in_the_patches_folder(self):
+        cfg_root = os.path.commonpath([str(self.state), str(self.logs)])
+        o = self.client.put("/api/overrides/PPSA01234", json={"patch": cfg_root + "/patches/PPSA01234"}).json()
+        self.assertEqual(o, {"patch": cfg_root + "/patches/PPSA01234"})
+        r = self.client.put("/api/overrides/PPSA01234", json={"patch": "/srv/docker/ps5-pkg/config/patches/PPSA01234"})
+        self.assertEqual(r.status_code, 400)                                           # a host path nobody told the app about
 
 
 class Logs(PathsCase):

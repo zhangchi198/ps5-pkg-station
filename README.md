@@ -41,8 +41,52 @@ Open `http://<host>:8765`.
 | Settings | folders, compression level, parallel builds, console firmware, junk-file cleanup patterns, schedule, notifications |
 | Logs | the run log and each build's log, live |
 
-There is no login. Keep port 8765 on your LAN or behind a VPN such as Tailscale, and don't forward it
-to the internet.
+There is no login unless you set a password. Keep port 8765 on your LAN or behind a VPN such as Tailscale, and
+don't forward it to the internet. See [Keeping it private](#keeping-it-private).
+
+### Keeping it private
+
+The page and the API are open to anyone who can reach the port, so the app does a few things to make "on my LAN"
+mean what it says:
+
+- **Other websites can't use it.** A page you have open in your browser can't start, stop or change anything:
+  every request that changes something (POST, PUT, DELETE) must come from this page (its `Origin`, or else its
+  `Referer`, must be the address you opened it at) and must be sent as `Content-Type: application/json`. No CORS
+  headers are sent. Opening the app at an IP address, `localhost`, `http://<host>.local:8765`, a single-word name
+  or a Tailscale name works as it is.
+- **Only your own host names are answered.** The `Host` header must be an IP address, `localhost`, a name without a
+  dot, or end in `.local`, `.lan`, `.home.arpa`, `.ts.net` or `.internal`. This stops DNS rebinding (a website whose
+  name is pointed at your NAS). A request for another name gets a page saying so. To use a name of your own,
+  for example behind a reverse proxy, list it in the `PS5PKG_ALLOWED_HOSTS` environment variable
+  (comma separated; `*.example.com` allows any subdomain).
+- **Scripts need one header.** `curl -X POST -H 'Content-Type: application/json' http://<host>:8765/api/scan` works;
+  without the header the request is refused with 415.
+- **Text from game files is never trusted.** A game's title ID must be `PPSA` or `CUSA` and five digits, or the
+  source is not recognised (it is logged and left out). Everything the page shows from game files, file names, log
+  lines and messages is escaped, there is no inline script or event handler, and a Content-Security-Policy allows
+  scripts from the app itself only. The page can't be put in a frame.
+- **Folders and addresses.** A game's patch folder must be inside `<config>/patches` (`/config/patches` in the
+  container), because its files are copied into the game that is built; a value already in `config.json` keeps
+  working. The notification URL must start with `http://` or `https://`.
+- **A warning when it looks open.** If a request comes from a public address, or carries the headers of a reverse
+  proxy (`X-Forwarded-For`, `Forwarded`, ...), and there is no password, the page shows a red banner. If something
+  in front of the app already asks for a login, set `PS5PKG_EXPOSURE_WARNING=0` to hide it. The footer of every page
+  says there is no login.
+- **An optional password.** Set `PS5PKG_PASSWORD` in the container's environment and the page asks for it; the
+  session is a signed cookie (`HttpOnly`, `SameSite=Strict`, `Secure` over HTTPS, 30 days). Everything under `/api/`
+  except `/api/health` (the Docker health check) then needs it. Wrong passwords are slowed down and limited. Changing
+  the password ends every session. The password is sent as typed, so use it with HTTPS or a VPN if the network is not
+  yours; on a home LAN it keeps out the neighbours and the guests, not a determined attacker.
+
+```yaml
+    environment:
+      PS5PKG_PASSWORD: "something long"          # optional: ask for a password
+      PS5PKG_ALLOWED_HOSTS: ps5.example.com      # optional: names of your own (reverse proxy)
+```
+
+Behind a reverse proxy, pass the original `Host` header (`proxy_set_header Host $host;` in nginx; Caddy and
+Traefik do it by default). If your proxy rewrites it, list the public name in `PS5PKG_ALLOWED_HOSTS`: an `Origin`
+from a listed name is accepted too.
 
 ## Quick start
 
@@ -162,7 +206,7 @@ All settings live in `/config/state/config.json` and can be changed from the Set
   deleted from the work copy, and matching text is cut out of the title in `param.json` and the file
   name. Both are empty by default.
 - `overrides`: per title ID, `source`, `patch` (a folder, for example under `/config/patches`, whose files are
-  copied over the game), `modified_exec` (`image` or `original`), `skip_verify` (don't check the copy against the
+  copied over the game; it must be inside `/config/patches`), `modified_exec` (`image` or `original`), `skip_verify` (don't check the copy against the
   original archive: "keep this copy anyway"), `skip`. Usually set from the Library page.
 
 ### Editing `config.json` by hand

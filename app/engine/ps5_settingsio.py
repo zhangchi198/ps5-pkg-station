@@ -43,9 +43,10 @@ def export_doc(cfg, *, include_notify_url=True, app_version="", now=None):
                 overrides=copy.deepcopy(cfg.get("overrides") or {}))
 
 
-def parse_import(doc):
+def parse_import(doc, patch_problem=None):
     """(settings, overrides) of an exported document, every value checked; raises ImportProblem listing all
-    problems (each starts with the key: `settings.compression_level: ...`) and nothing else."""
+    problems (each starts with the key: `settings.compression_level: ...`) and nothing else. `patch_problem(tid,
+    folder)` says why a patch folder may not be used (None when it may): the web server knows where they belong."""
     problems = []
     if not isinstance(doc, dict):
         raise ImportProblem(["the file is not a settings export (a JSON object was expected)"])
@@ -86,6 +87,8 @@ def parse_import(doc):
                 problems.append(f"overrides.{tid}.{k}: must be true or false")
             elif k == "modified_exec" and v not in ("image", "original"):
                 problems.append(f"overrides.{tid}.{k}: must be \"image\" or \"original\"")
+            elif k == "patch" and v and patch_problem and patch_problem(tid, v):
+                problems.append(f"overrides.{tid}.{k}: {patch_problem(tid, v)}")
         overrides[tid] = copy.deepcopy(ov)
     if problems:
         raise ImportProblem(problems)

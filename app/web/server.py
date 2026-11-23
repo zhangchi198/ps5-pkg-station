@@ -4,6 +4,7 @@ The engine does all the work in its own process (detached, so a UI restart never
 this server only reads its state files, edits config.json, and starts / stops runs."""
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -16,11 +17,14 @@ import time
 import zipfile
 from pathlib import Path
 
+from urllib.parse import parse_qs
+
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 HERE = Path(__file__).resolve().parent
 ENGINE = HERE.parent / "engine" / "ps5_pkg_sync.py"
+sys.path.insert(0, str(HERE))             # ps5_websec lives next to this file, however the app is started
 STATE = Path(os.environ.get("PS5PKG_STATE", "/config/state"))
 LOGS = Path(os.environ.get("PS5PKG_LOGS", "/config/logs"))
 PY = sys.executable
@@ -31,10 +35,12 @@ import ps5_failures as FL  # noqa: E402  (games that failed: why, and when anoth
 import ps5_hostpaths as H  # noqa: E402  (where the container's folders are on the host)
 import ps5_settingsio as IO  # noqa: E402  (export / import of the settings)
 import ps5_setup as S  # noqa: E402  (the first-run checklist)
+import ps5_websec as WS  # noqa: E402  (host / origin checks, the optional password, response headers)
 
 MOUNTINFO = "/proc/self/mountinfo"      # the hint for "where is /library on the host" (see ps5_hostpaths)
 
 app = FastAPI(title="PS5 PKG Station", docs_url=None, redoc_url=None)
+app.add_middleware(WS.Guard, state_dir=lambda: STATE)      # no login by default: see ps5_websec for what is checked instead
 # What the last scan / run did. rc is the engine's exit code; when it isn't 0, `error` says why in plain words
 # and `log_tail` is the end of that log, so the Dashboard never has to show a bare "Idle" after a failure.
 _scan = {"running": False, "started": None, "finished": None, "rc": None, "error": None, "log": None, "log_tail": []}
@@ -376,13 +382,59 @@ threading.Thread(target=scheduler, daemon=True).start()
 
 # ---------------------------------------------------------------- API
 
+NO_CACHE = {"Cache-Control": "no-cache"}
+LOGIN_DELAY = 1.0                 # seconds a wrong password waits for its answer
+_throttle = WS.LoginThrottle()
+
+
 @app.get("/")
-def index():
-    return FileResponse(HERE / "static" / "index.html")
+def index(request: Request):
+    if WS.password() and not request.scope.get("ps5_authed"):
+        return HTMLResponse(WS.login_page(), headers=NO_CACHE)
+    return FileResponse(HERE / "static" / "index.html", headers=NO_CACHE)
+
+
+@app.get("/static/app.js")
+def app_js():
+    """The page's script: a file of its own, so the Content-Security-Policy can forbid inline script."""
+    return FileResponse(HERE / "static" / "app.js", media_type="text/javascript", headers=NO_CACHE)
+
+
+@app.get("/login")
+def login_page():
+    return RedirectResponse("/", status_code=303)           # the form is the front page while there is no session
+
+
+@app.post("/login")
+async def login(request: Request):
+    """The login form (only when PS5PKG_PASSWORD is set): a signed session cookie, HttpOnly and SameSite=Strict."""
+    pw = WS.password()
+    if not pw:
+        return RedirectResponse("/", status_code=303)
+    who = request.client.host if request.client else "?"
+    if _throttle.blocked(who):
+        return HTMLResponse(WS.login_page("Too many wrong passwords. Wait a few minutes, then try again."), status_code=429, headers=NO_CACHE)
+    form = parse_qs((await request.body()).decode("utf-8", "replace"))
+    if not WS.password_ok((form.get("password") or [""])[0], pw):
+        _throttle.fail(who)
+        await asyncio.sleep(LOGIN_DELAY)
+        return HTMLResponse(WS.login_page("Wrong password."), status_code=401, headers=NO_CACHE)
+    _throttle.ok(who)
+    r = RedirectResponse("/", status_code=303)
+    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
+    r.set_cookie(WS.COOKIE, WS.make_session(STATE, pw), max_age=WS.SESSION_DAYS * 86400, httponly=True, samesite="strict", secure=https, path="/")
+    return r
+
+
+@app.post("/api/logout")
+def logout():
+    r = JSONResponse({"ok": True})
+    r.delete_cookie(WS.COOKIE, path="/", httponly=True, samesite="strict")
+    return r
 
 
 @app.get("/api/status")
-def status():
+def status(request: Request):
     st = read_json(STATE / "status.json", {})
     pid = engine_pid()
     info = E.load_cfg_info()
@@ -403,6 +455,8 @@ def status():
     by_id = {p.get("title_id"): p for p in entries}
     attention = [failure_view(r, by_id.get(t), cfg, mapping) for t, r in failure_store().load().items() if not r.get("dismissed")]
     return dict(engine_running=bool(pid), engine_pid=pid, clock=S.clock_info(), failures_rev=failures_rev(), version=versions(),
+                access=WS.exposure(request.client.host if request.client else None, request.headers, login=bool(WS.password()),
+                                   enabled=WS.warning_enabled(), server_ip=(request.scope.get("server") or (None,))[0]),
                 attention=[dict(title_id=a["title_id"], name=a.get("name"), state=a["state"], code=a["code"], summary=a["summary"],
                                 at_text=a.get("at_text"), will_retry=a["will_retry"]) for a in attention],
                 scan=text_twin(dict(_scan), "log_tail", mapping), run=text_twin(dict(_run), "log_tail", mapping),
@@ -458,7 +512,7 @@ def scan():
 @app.post("/api/run")
 async def run(req: Request):
     body = await req.json() if (await req.body()) else {}
-    only = [t for t in (body.get("only") or []) if re.fullmatch(r"(PPSA|CUSA)\d{5}", t)]
+    only = [t for t in (body.get("only") or []) if E.valid_title_id(t)]
     try:
         started = start_engine(*(["--only", *only] if only else []))
     except EngineStartError as ex:
@@ -503,6 +557,29 @@ async def put_config(req: Request):
             raise HTTPException(400, str(ex))
     cfg = update_cfg(lambda raw: raw.update(changes))
     return {k: cfg.get(k) for k in SETTINGS}
+
+
+def patch_root():
+    """Where patch folders belong: <config folder>/patches (/config/patches in the container)."""
+    return Path(H.config_root(STATE, LOGS)) / "patches"
+
+
+def patch_problem(path, mapping, current=None):
+    """Why a patch folder can't be set, or None. Its files are copied over the game that is built, so it must be a
+    folder below <config>/patches (symbolic links and `..` are resolved first). The value already stored is
+    accepted as it is: a file edited by hand keeps working, only a new value is judged."""
+    if not path or path == current:
+        return None
+    root = patch_root()
+    try:
+        inside = os.path.isabs(path) and Path(os.path.realpath(root)) in Path(os.path.realpath(path)).parents
+    except (OSError, ValueError):
+        inside = False
+    if inside:
+        return None
+    where = H.display_path(str(root), mapping) or str(root)
+    return (f"A patch folder must be inside {where}, in a folder of its own for each game (for example "
+            f"{where.rstrip('/')}/PPSA01234). Other places are not accepted: the files in it are copied into the game that is built.")
 
 
 def overrides_with_hosts(ovs, mapping):
@@ -630,12 +707,15 @@ async def import_settings(req: Request, dry_run: int = 0, parts: str = ""):
         doc = await req.json()
     except Exception:
         return _problems(400, ValueError("The file is not valid JSON."))
+    info = E.load_cfg_info()
     try:
         want = IO.parse_parts(parts)
-        settings, overrides = IO.parse_import(doc)
+        current = info.cfg.get("overrides") or {}
+        mapping = host_view(info.cfg)["mapping"]
+        settings, overrides = IO.parse_import(doc, (lambda tid, p: patch_problem(p, mapping, current=(current.get(tid) or {}).get("patch")))
+                                              if "overrides" in want else None)
     except ValueError as ex:                        # ImportProblem is one
         return _problems(400, ex)
-    info = E.load_cfg_info()
     if info.error:
         raise HTTPException(409, f"The settings file could not be read ({info.error.describe()}). Nothing was imported: fix the file first.")
     d = IO.diff(info.cfg, settings, overrides, want)
@@ -705,7 +785,7 @@ def get_overrides():
 
 @app.put("/api/overrides/{tid}")
 async def put_override(tid: str, req: Request):
-    if not re.fullmatch(r"(PPSA|CUSA)\d{5}", tid):
+    if not E.valid_title_id(tid):
         raise HTTPException(400, "bad title id")
     body = await req.json()
     ov = {}
@@ -721,6 +801,10 @@ async def put_override(tid: str, req: Request):
         ov["skip"] = True
     if body.get("skip_verify"):
         ov["skip_verify"] = True
+    if ov.get("patch"):
+        why = patch_problem(ov["patch"], mapping, current=((load_cfg().get("overrides") or {}).get(tid) or {}).get("patch"))
+        if why:
+            raise HTTPException(400, why)
 
     def apply(raw):
         if not isinstance(raw.get("overrides"), dict):
@@ -744,7 +828,7 @@ def failures():
 
 
 def _failure(tid):
-    if not re.fullmatch(r"(PPSA|CUSA)\d{5}", tid):
+    if not E.valid_title_id(tid):
         raise HTTPException(400, "bad title id")
     rec = failure_store().load().get(tid)
     if not rec:

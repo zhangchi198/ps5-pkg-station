@@ -26,6 +26,9 @@ services:
       PS5PKG_HOST_OUTPUT: *output
       PS5PKG_HOST_WORK: *work
       PS5PKG_HOST_CONFIG: *config
+      # The app has no login by default: keep it on your LAN or behind a VPN. Optional, see "Keeping it private" in the README:
+      # PS5PKG_PASSWORD: "something long"          # ask for a password
+      # PS5PKG_ALLOWED_HOSTS: ps5.example.com      # your own host names (reverse proxy); .local, .lan, .ts.net and IPs work as they are
     mem_limit: 16g                  # optional: cap what builds may use
     volumes:
       - { type: bind, source: *library,   target: /library,   read_only: true }

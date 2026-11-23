@@ -9,6 +9,7 @@ import os
 import time
 import unittest
 import zipfile
+from pathlib import Path
 from unittest import mock
 
 from support import E, ServerCase, legacy_config
@@ -27,6 +28,10 @@ class StorageCase(ServerCase):
         self.write_cfg(legacy_config(overrides=json.loads(json.dumps(OVERRIDES)), console_fw="9.60", nice=3,
                                      notify_url="https://ntfy.example/private-topic"))
         (self.state / "plan.json").write_text(json.dumps(PLAN))
+        # the fixtures name patch folders as the container does (/config/patches/...): so is the folder that is checked against
+        p = mock.patch.object(self.srv, "patch_root", return_value=Path("/config/patches"))
+        p.start()
+        self.addCleanup(p.stop)
 
     def backups(self):
         return [b["name"] for b in E.list_backups()]

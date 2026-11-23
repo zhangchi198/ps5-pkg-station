@@ -113,6 +113,7 @@ SETTINGS = {  # key: (type, min, max) - everything the Settings page may change
     "schedule": (dict,), "host_paths": (dict,), "ps4_mode": (str,),
 }
 PS4_MODES = ("copy", "skip")
+NOTIFY_URL_RE = re.compile(r"https?://[^\s/?#]+", re.I)     # a push notification goes to a web address, never to file:// and the like
 FILE_ONLY = {"ultrapack_src": (str,), "python": (str,)}   # valid in the file, not on the Settings page
 EXIT_NOT_MOUNTED = 2        # exit codes of main(); the web server explains them to the user
 EXIT_LOCKED = 3
@@ -173,6 +174,10 @@ def validate_setting(key, v):
         raise ValueError(f"{key} must be {_WORDS[t]}")
     if key == "console_fw" and v and not re.fullmatch(r"\d{1,2}\.\d{2}", v):
         raise ValueError("console_fw looks like 13.20")
+    if key == "notify_url":
+        v = v.strip()
+        if v and not NOTIFY_URL_RE.match(v):
+            raise ValueError("notify_url must start with http:// or https:// (an ntfy topic URL, for example)")
     if t is list:
         if not all(isinstance(x, str) for x in v):
             raise ValueError(f"{key} must be a list of text")
@@ -485,11 +490,24 @@ def fw_from_param(req):
         return ""
 
 
+TITLE_ID_RE = re.compile(r"(PPSA|CUSA)\d{5}")
+
+
+def valid_title_id(tid) -> bool:
+    """A title ID as the consoles write it: PPSA or CUSA and five digits, nothing else. The ID of a source comes
+    from a file somebody else made (param.json, PARAM.SFO), ends up in folder names, URLs and the web page, and is
+    never trusted until it has passed this."""
+    return isinstance(tid, str) and TITLE_ID_RE.fullmatch(tid) is not None
+
+
 def parse_param(raw: bytes) -> dict:
     j = json.loads(raw.decode("utf-8-sig"))
     lp = j.get("localizedParameters", {}) or {}
     title = (lp.get("en-US") or {}).get("titleName") or (lp.get(lp.get("defaultLanguage", "")) or {}).get("titleName")
-    return dict(title=title or "", title_id=j.get("titleId", ""), version=j.get("contentVersion", ""),
+    tid = j.get("titleId", "")
+    if not valid_title_id(tid):
+        raise ValueError(f"param.json has no valid title ID (PPSA or CUSA and 5 digits); found {_short(tid)}")
+    return dict(title=title or "", title_id=tid, version=j.get("contentVersion", ""),
                 fw=fw_from_param(j.get("requiredSystemSoftwareVersion")))
 
 
@@ -562,7 +580,7 @@ def ident_image_or_folder(path):
             sfo = files.get("sce_sys/param.sfo")           # a PS4 game folder: named, so Library can say it is not handled
             if sfo:
                 p = ps5_ps4pkg.parse_sfo(uw.fs.read(sfo, 0, min(sfo.size, 1 << 20)))
-                if str(p.get("TITLE_ID", "")).startswith("CUSA"):
+                if valid_title_id(p.get("TITLE_ID")) and p["TITLE_ID"].startswith("CUSA"):
                     return dict(title=str(p.get("TITLE") or ""), title_id=p["TITLE_ID"], version=ps5_ps4pkg.version_of(p), fw="",
                                 packed="", size=sum(e.size for e in files.values()), kind="ps4-folder", ps4=True)
             raise ValueError("no sce_sys/param.json")
@@ -824,6 +842,8 @@ def discover(cfg, log, cache):
         ident = cache[key]
         if ident is None:
             return
+        if not ident.get("error") and not valid_title_id(ident.get("title_id")):      # also what an older version cached
+            ident = {"error": f"not a valid title ID: {_short(ident.get('title_id'))}"}
         ident = dict(ident, source=p, origin=origin)
         cands.append(ident)
         log(f"  {origin:8} {ident.get('title_id', '?'):10} v{ident.get('version', '?'):11} {ident.get('kind', '?'):6} "
@@ -1303,7 +1323,7 @@ def notification_text(cfg, name, status, why=None, output=None):
 
 def notify(cfg, title, msg):
     url = (cfg.get("notify_url") or "").strip()
-    if not url:
+    if not url or not NOTIFY_URL_RE.match(url):
         return
     try:
         import urllib.request

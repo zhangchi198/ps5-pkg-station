@@ -144,7 +144,8 @@ class ServerCase(StateCase):
         if hasattr(self.srv, "_run"):
             self.srv._scan.update(error=None, log=None, log_tail=[])
             self.srv._run.update(pid=None, started=None, finished=None, rc=None, error=None, log=None, log_tail=[])
-        self.client = TestClient(self.srv.app)
+        # like the page: every request that changes something says it is JSON (the server refuses it otherwise)
+        self.client = TestClient(self.srv.app, headers={"Content-Type": "application/json"})
 
     def get(self, path):
         r = self.client.get(path)
@@ -168,7 +169,7 @@ def make_sfo(**fields):
     return b"\0PSF" + struct.pack("<IIII", 0x101, kstart, kstart + len(ktab), len(keys)) + index + ktab + dtab
 
 
-def make_ps4_pkg(content_id, title, app_ver, category, *, body=b"x" * 4096, with_sfo=True, extra=None):
+def make_ps4_pkg(content_id, title, app_ver, category, *, body=b"x" * 4096, with_sfo=True, extra=None, title_id=None):
     """A small package that parses like a PS4 one: the magic, the content ID, an entry table with PARAM.SFO."""
     import struct
     buf = bytearray(0x4000)
@@ -178,7 +179,7 @@ def make_ps4_pkg(content_id, title, app_ver, category, *, body=b"x" * 4096, with
     buf[0x40:0x40 + len(content_id)] = content_id.encode()
     struct.pack_into(">I", buf, 0x74, 0x1A)
     import re
-    tid = (re.search(r"CUSA\d{5}", content_id) or ["CUSA00000"])[0]
+    tid = title_id or (re.search(r"CUSA\d{5}", content_id) or ["CUSA00000"])[0]
     sfo = make_sfo(TITLE=title, TITLE_ID=tid, CONTENT_ID=content_id, CATEGORY=category, APP_VER=app_ver, VERSION=app_ver, **(extra or {})) if with_sfo else b""
     struct.pack_into(">IIIIII", buf, 0x2000, 0x1000, 0, 0, 0, 0x3000, len(sfo))
     buf[0x3000:0x3000 + len(sfo)] = sfo

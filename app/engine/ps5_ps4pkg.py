@@ -64,7 +64,7 @@ def parse_header(buf):
                 sfo = parse_sfo(buf[off:off + size])
             break
     tid = (m.group(1) if m and m.group(1).startswith("CUSA") else None) or str(sfo.get("TITLE_ID") or "") or None
-    return {"ps4": True, "content_id": cid, "title_id": tid if tid and tid.startswith("CUSA") else None,
+    return {"ps4": True, "content_id": cid, "title_id": tid if tid and re.fullmatch(r"CUSA\d{5}", tid) else None,
             "content_type": struct.unpack_from(">I", buf, 0x74)[0], "sfo": sfo}
 
 
